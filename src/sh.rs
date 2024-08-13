@@ -1,0 +1,132 @@
+use std::{
+    env,
+    fmt::Write,
+    os::unix::process::ExitStatusExt,
+    path::{Path, PathBuf},
+    process::Output,
+};
+
+use miette::{miette, IntoDiagnostic, Result};
+use tokio::process::Command;
+use tracing::error;
+
+use crate::{error, relative_to_cwd};
+
+pub trait Exec {
+    fn exec(&mut self) -> impl std::future::Future<Output = Result<Output>>;
+    fn display(&self) -> String;
+}
+
+pub trait Script {
+    fn from_str(script: &str) -> Command;
+}
+
+impl Exec for Command {
+    #[tracing::instrument(skip(self))]
+    async fn exec(&mut self) -> Result<Output> {
+        let output = self.output().await.into_diagnostic()?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            let program = self.as_std().get_program().to_str().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let msg = if let Some(code) = output.status.code() {
+                format!("{} failed with exit status {}.", self.display(), code)
+            } else {
+                format!(
+                    "{} interrupted by signal {}.",
+                    program,
+                    output.status.signal().unwrap()
+                )
+            };
+            error!("{msg}\nStdOut:\n{stdout}\nStdErr\n{stderr}");
+            Err(error::Command {
+                msg,
+                stderr,
+                stdout,
+            }
+            .into())
+        }
+    }
+
+    // This is needlessly complicated, trying to minimize allocations, like grown-ups,
+    // not because it's needed —I didn't even measure anything— but becauase I'm exercising my rust.
+    fn display(&self) -> String {
+        let program = self.as_std().get_program();
+        let args = self.as_std().get_args();
+        let cwd = self.as_std().get_current_dir();
+        let capacity = program.len() + 1 + args.len() + 1; // + 1 for spaces
+        let mut res = String::with_capacity(
+            capacity
+                + cwd.map_or(
+                    0,
+                    // + 3 = 2 brackets and a space.
+                    // we always overallocate by 1 (alignment aside); see the formatting of args.
+                    |a| a.to_str().unwrap().len() + 3,
+                ),
+        );
+        if let Some(path) = cwd {
+            write!(res, "[{}] ", relative_to_cwd(path).to_str().unwrap()).unwrap();
+        };
+        write!(res, "{} ", program.to_str().unwrap()).unwrap();
+        let mut args_iter = args.enumerate();
+        if let Some((_, first_arg)) = args_iter.next() {
+            write!(res, "{}", first_arg.to_str().unwrap()).unwrap();
+            for (_, arg) in args_iter {
+                write!(res, " {}", arg.to_str().unwrap()).unwrap();
+            }
+        }
+        res
+    }
+}
+
+impl Script for Command {
+    fn from_str(script: &str) -> Command {
+        let shell = env::var("SHELL").unwrap_or_else(|_| String::from("sh"));
+        let mut cmd = Command::new(shell);
+        cmd.args(["-c", script]);
+        cmd
+    }
+}
+
+/// Your local hometown one-eyed which.
+///
+/// stdin, stdout, and stderr are ignored.
+#[tracing::instrument]
+pub async fn which(prog: &str) -> Result<PathBuf> {
+    let output = Command::new("which").arg(prog).exec().await?;
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
+}
+
+#[tracing::instrument]
+pub async fn chmod_x(prog: &Path) -> Result<Output> {
+    Command::new("chmod").arg("+x").arg(prog).exec().await
+}
+
+#[tracing::instrument]
+pub async fn download(out: &Path, url: &str) -> Result<Output> {
+    let which_prog = match which("curl").await {
+        Ok(path) => Ok(path),
+        Err(_) => which("wget").await,
+    }?;
+    let prog = which_prog
+        .file_name()
+        .and_then(|p| p.to_str())
+        .ok_or(miette!("Could not find curl or wget"))?;
+    let out = out
+        .to_str()
+        .ok_or(miette!("Retrieving string from out path"))?;
+    match prog {
+        "curl" => Command::new(prog).args(["-o", out, "-L", url]).exec().await,
+        "wget" => Command::new(prog).args(["-O", out, url]).exec().await,
+        _ => unreachable!(),
+    }
+}
+
+#[tracing::instrument]
+pub async fn gunzip(gz: &Path) -> Result<Output> {
+    Command::new("gunzip").arg(gz).exec().await
+}

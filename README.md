@@ -1,0 +1,66 @@
+# TSDL
+
+A downloader/builder of many
+[tree-sitter](https://github.com/tree-sitter/tree-sitter) parsers
+
+## Why?
+
+To build parsers (`.so`/`.dylib`) and use them with your favourite bindings.
+
+I created it more specifically for the [ruby bindings](https://github.com/Faveod/ruby-tree-sitter).
+
+## Installation
+
+You can either grab the binary for your platform from
+[`tsdl`'s releases](https://github.com/stackmystack/tsdl/releases/latest)
+or install via cargo:
+
+```sh
+cargo install tsdl
+```
+
+## Usage
+
+To build a parser:
+
+```sh
+tsdl build rust
+```
+
+To build many parsers:
+
+```sh
+tsdl build rust ruby json
+```
+
+If a configuration file (`parsers.toml`) is provided, then simply running:
+
+```sh
+tsdl build
+```
+
+will download all the pinned parsers.
+
+## Configuration
+
+If no configuration is provided for the language you're asking for in `parsers.toml`,
+the latest parsers will be downloaded built.
+
+If you wish to pin parser versions:
+
+```toml
+[parsers]
+java = "v0.21.0"
+json = "0.21.0" # The leading v is not necessary
+python = "master"
+typescript = { ref = "0.21.0", cmd = "make" }
+cobol = { ref = "6a469068cacb5e3955bb16ad8dfff0dd792883c9", from = "https://github.com/yutaro-sakamoto/tree-sitter-cobol" }
+```
+
+Run:
+
+```sh
+tsdl config
+```
+
+for more info.
