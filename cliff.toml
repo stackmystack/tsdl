@@ -6,29 +6,45 @@ header = """
 # template for the changelog body
 # https://keats.github.io/tera/docs/#introduction
 body = """
+{%- macro remote_url() -%}
+  https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}
+{%- endmacro -%}
+
+{% macro print_commit(commit) -%}
+    - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+        {% if commit.breaking %}[*breaking*] {% endif %}\
+        {{ commit.message | upper_first }} - \
+        ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))\
+{% endmacro -%}
+
 {% if version -%}\
     ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else -%}\
     ## [unreleased]
 {% endif -%}\
 {% for group, commits in commits | group_by(attribute="group") %}
-    ### {{ group | striptags | upper_first }}
-    {% for commit in commits%}\
-        {% if not commit.scope %}\
-            - {{ commit.message | upper_first }}\
-              {% if commit.github.pr_number %} (<https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/pull/{{ commit.github.pr_number }}>){%- endif %}
-        {% endif %}\
-    {% endfor %}\
-    {% for group, commits in commits | group_by(attribute="scope") %}\
-        {% for commit in commits %}\
-            - **{{commit.scope}}**: {{ commit.message | upper_first }}\
-                {% if commit.github.pr_number %} (<https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/pull/{{ commit.github.pr_number }}>){%- endif %}
-        {% endfor %}\
-    {% endfor %}
+    ### {{ group | striptags | trim | upper_first }}
+    {% for commit in commits | filter(attribute="scope") | sort(attribute="scope") %}
+        {{ self::print_commit(commit=commit) }}
+    {%- endfor %}
+    {% for commit in commits %}
+        {%- if not commit.scope -%}
+            {{ self::print_commit(commit=commit) }}
+        {% endif -%}
+    {% endfor -%}
 {% endfor %}
+{%- if github -%}
+{% if github.contributors | filter(attribute="is_first_time", value=true) | length != 0 %}
+  ## New Contributors ❤️
+{% endif %}\
 {% for contributor in github.contributors | filter(attribute="is_first_time", value=true) %}
-  * @{{ contributor.username }} made their first contribution in #{{ contributor.pr_number }}
-{%- endfor -%}\n
+  * @{{ contributor.username }} made their first contribution
+    {%- if contributor.pr_number %} in \
+      [#{{ contributor.pr_number }}]({{ self::remote_url() }}/pull/{{ contributor.pr_number }}) \
+    {%- endif %}
+{%- endfor -%}
+{%- endif %}
+
 """
 # template for the changelog footer
 footer = """
@@ -63,11 +79,10 @@ commit_parsers = [
   { message = "^fix", group = "<!-- 2 -->Bug Fixes" },
   { message = "^perf", group = "<!-- 3 -->Performance" },
   { message = "^doc", group = "<!-- 4 -->Documentation" },
-  { message = "^refactor", group = "<!-- 5 -->Refactor" },
-  { message = "^test", group = "<!-- 6 -->Testing" },
-  { message = "^build", group = "<!-- 7 -->Build System and CI" },
-  { message = "^ci", group = "<!-- 7 -->Build System and CI" },
-  { message = ".*", group = "<!-- 8 -->Other" },
+  { message = "^refactor", skip = true },
+  { message = "^style", skip = true },
+  { message = "^chore", skip = true },
+  { message = ".*", group = "<!-- 5 -->Other" },
 ]
 # filter out the commits that are not matched by commit parsers
 filter_commits = true
@@ -75,3 +90,7 @@ filter_commits = true
 topo_order = false
 # sort the commits inside sections by oldest/newest order
 sort_commits = "oldest"
+
+[remote.github]
+owner = "stackmystack"
+repo = "tsdl"
