@@ -5,6 +5,18 @@
 ### Documentation
 
 - **changelog**: Simplify and skip chore, refactor, and style commits - ([6f120ba](https://github.com/stackmystack/tsdl/commit/6f120ba4045e1d61d359c81936484a5e9cfcc31d))
+- **contributing**: Init and insist on installing pre-commit hooks - ([248d9f7](https://github.com/stackmystack/tsdl/commit/248d9f7ecee79bd13ce9e490038aad43b87c4965))
+
+### Other
+
+- **pr template**: Remove the git-cliff message - ([302b66d](https://github.com/stackmystack/tsdl/commit/302b66d166ebf289b9c31536b0ab04b222734156))
+- Add post-commit hooks for continuous maintenance of CHANGELOG.md - ([3d4d899](https://github.com/stackmystack/tsdl/commit/3d4d899981c6d9205cbe2c0bca89647c097a2f3d))
+
+## [unreleased]
+
+### Documentation
+
+- **changelog**: Simplify and skip chore, refactor, and style commits - ([6f120ba](https://github.com/stackmystack/tsdl/commit/6f120ba4045e1d61d359c81936484a5e9cfcc31d))
 - **contributing**: Init and insist on installing pre-commit hooks - ([b9e1b08](https://github.com/stackmystack/tsdl/commit/b9e1b082df07cbfb76183fca6336846bbba55d26))
 
 ### Other
