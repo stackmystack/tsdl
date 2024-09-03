@@ -5,6 +5,17 @@
 ### Documentation
 
 - **changelog**: Simplify and skip chore, refactor, and style commits - ([6f120ba](https://github.com/stackmystack/tsdl/commit/6f120ba4045e1d61d359c81936484a5e9cfcc31d))
+- **contributing**: Init and insist on installing pre-commit hooks - ([b9e1b08](https://github.com/stackmystack/tsdl/commit/b9e1b082df07cbfb76183fca6336846bbba55d26))
+
+### Other
+
+- Add post-commit hooks for continuous maintenance of CHANGELOG.md - ([3d4d899](https://github.com/stackmystack/tsdl/commit/3d4d899981c6d9205cbe2c0bca89647c097a2f3d))
+
+## [unreleased]
+
+### Documentation
+
+- **changelog**: Simplify and skip chore, refactor, and style commits - ([6f120ba](https://github.com/stackmystack/tsdl/commit/6f120ba4045e1d61d359c81936484a5e9cfcc31d))
 
 ### Other
 
