@@ -1,5 +1,15 @@
 # Changelog
 
+## [unreleased]
+
+### Documentation
+
+- **changelog**: Simplify and skip chore, refactor, and style commits - ([6f120ba](https://github.com/stackmystack/tsdl/commit/6f120ba4045e1d61d359c81936484a5e9cfcc31d))
+
+### Other
+
+- Add post-commit hooks for continuous maintenance of CHANGELOG.md - ([e1c619c](https://github.com/stackmystack/tsdl/commit/e1c619cd64df80a76ef6997b4ee0e04661dabf0a))
+
 ## [1.0.0] - 2024-09-01
 
 ### Features

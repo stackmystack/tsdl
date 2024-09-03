@@ -17,8 +17,13 @@ fmt-check:
 
 lint: clippy fmt-check
 
-setup:
+setup: setup-hooks
   cargo install git-cliff nextest typos-cli
+
+setup-hooks:
+  @mkdir -p .git/hooks
+  @cp scripts/post-commit.sh .git/hooks/post-commit
+  @echo "Post-commit hook installed successfully."
 
 test *args:
   cargo nextest run {{args}}
