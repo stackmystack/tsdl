@@ -20,7 +20,6 @@ use crate::{
 
 pub const NUM_STEPS: usize = 3;
 
-#[tracing::instrument]
 pub async fn build_languages(languages: Vec<Language>) -> Result<()> {
     let buffer = if languages.is_empty() {
         64
@@ -88,7 +87,6 @@ impl Language {
         }
     }
 
-    #[tracing::instrument(skip(self))]
     async fn process(&mut self, tx: mpsc::Sender<Result<()>>) {
         let res = self.steps().await;
         if res.is_err() {
@@ -100,7 +98,6 @@ impl Language {
         }
     }
 
-    #[tracing::instrument(skip(self))]
     async fn steps(&mut self) -> Result<()> {
         self.handle.start(format!("Cloning {}", self.git_ref));
         self.clone().await?;
@@ -116,7 +113,6 @@ impl Language {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
     async fn build_grammar(&self, dir: PathBuf) -> Result<()> {
         if self.build_script.is_none() {
             self.generate(&dir).await?;
@@ -138,7 +134,6 @@ impl Language {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
     async fn build(&self, dir: &Path) -> Result<()> {
         self.build_script
             .as_ref()
@@ -263,7 +258,6 @@ impl Language {
             .and(Ok(()))
     }
 
-    #[tracing::instrument(skip(self))]
     async fn clone(&self) -> Result<()> {
         clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
             .await
@@ -279,7 +273,6 @@ impl Language {
             })
     }
 
-    #[tracing::instrument(skip(self))]
     async fn generate(&self, dir: &Path) -> Result<()> {
         Command::new(&*self.ts_cli)
             .current_dir(dir)

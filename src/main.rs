@@ -18,7 +18,7 @@ fn run(args: &args::Args) -> Result<()> {
     match &args.command {
         args::Command::Build(command) => build::run(
             &config::current(&args.config, Some(command))?,
-            display::current(&args.progress),
+            display::current(&args.progress, &args.verbose),
         ),
         args::Command::Config { command } => config::run(command, &args.config),
     }

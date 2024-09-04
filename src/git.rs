@@ -51,7 +51,6 @@ impl fmt::Display for Tag {
     }
 }
 
-#[tracing::instrument]
 pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
     if cwd.exists() {
         let head_sha1 = String::from_utf8(
@@ -88,7 +87,6 @@ pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument]
 async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
     Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -104,7 +102,6 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument]
 pub async fn fetch_tags(cwd: &Path) -> Result<()> {
     Command::new("git")
         .current_dir(cwd)
@@ -114,7 +111,6 @@ pub async fn fetch_tags(cwd: &Path) -> Result<()> {
         .and(Ok(()))
 }
 
-#[tracing::instrument]
 pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> Result<String> {
     let output = Command::new("git")
         .current_dir(cwd)
