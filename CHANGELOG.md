@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0] - 2024-09-04
+
+### Features
+
+- **logging**: Print to stderr and file when -v,-vv - ([181cf77](https://github.com/stackmystack/tsdl/commit/181cf77bc03da1cad46335246700c62d6d9cb036))
+
+### Documentation
+
+- **changelog**: Simplify and skip chore, refactor, and style commits - ([dccf215](https://github.com/stackmystack/tsdl/commit/dccf2156d4721d46dbdef904d783d95cbe4b069f))
+
+### Other
+
+- **pr template**: Remove the git-cliff message - ([1507e3e](https://github.com/stackmystack/tsdl/commit/1507e3ed6dbd2e12ed6081299091a343f14a5411))
+- **test**: Retry because some tests are flaky - ([c44183b](https://github.com/stackmystack/tsdl/commit/c44183b27832a1cd6ce39a7e7e1edf52a25162f3))
+
 ## [1.0.0] - 2024-09-01
 
 ### Features
