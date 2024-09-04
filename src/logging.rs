@@ -6,10 +6,8 @@ use std::{
 use miette::{Context, IntoDiagnostic as _, Result};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
-#[cfg(debug_assertions)]
-use tracing_error::ErrorLayer;
 use tracing_log::AsTrace;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, Layer};
 
 use crate::{
     args::{Args, LogColor},
@@ -26,16 +24,24 @@ pub fn init(args: &Args) -> Result<WorkerGuard> {
     };
     console::set_colors_enabled(color);
     let filter = args.verbose.log_level_filter().as_trace();
-    let without_time = std::env::var("TSDL_LOG_TIME")
-        .map(|v| !matches!(v.to_lowercase().as_str(), "1" | "y" | "yes"))
-        .unwrap_or(true);
     let file = init_log_file(args)?;
-    Ok(init_tracing(file, color, filter, without_time))
+    Ok(init_tracing(file, color, filter))
 }
 
-fn init_tracing(file: File, color: bool, filter: LevelFilter, without_time: bool) -> WorkerGuard {
+fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
     let (writer, guard) = tracing_appender::non_blocking(file);
-    let fmt_layer = tracing_subscriber::fmt::layer()
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(color)
+        .with_file(true)
+        .with_level(true)
+        .with_line_number(true)
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .with_filter(filter);
+    let file_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_ansi(color)
         .with_file(true)
@@ -43,29 +49,17 @@ fn init_tracing(file: File, color: bool, filter: LevelFilter, without_time: bool
         .with_line_number(true)
         .with_target(true)
         .with_thread_ids(true)
-        .with_writer(writer);
-    if without_time {
-        let fmt_layer = fmt_layer.without_time();
-        let registry = tracing_subscriber::registry().with(fmt_layer).with(filter);
-        #[cfg(debug_assertions)]
-        {
-            registry.with(ErrorLayer::default()).init();
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            registry.init();
-        }
+        .with_writer(writer)
+        .with_filter(filter);
+    if filter == LevelFilter::DEBUG || filter == LevelFilter::TRACE {
+        let subscriber = tracing_subscriber::registry()
+            .with(file_layer)
+            .with(stdout_layer);
+        tracing::subscriber::set_global_default(subscriber).unwrap();
     } else {
-        let registry = tracing_subscriber::registry().with(fmt_layer).with(filter);
-        #[cfg(debug_assertions)]
-        {
-            registry.with(ErrorLayer::default()).init();
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            registry.init();
-        }
-    };
+        let subscriber = tracing_subscriber::registry().with(file_layer);
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+    }
     guard
 }
 

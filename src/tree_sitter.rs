@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use miette::{miette, Context, IntoDiagnostic, Result};
 use tokio::process::Command;
-use tracing::debug;
+use tracing::trace;
 use url::Url;
 
 use crate::display::ProgressHandle;
@@ -20,7 +20,6 @@ use crate::{
 };
 
 #[allow(clippy::missing_panics_doc)]
-#[tracing::instrument]
 pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
     let output = Command::new("git")
         .args(["ls-remote", "--refs", "--tags", repo])
@@ -32,7 +31,7 @@ pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
         let ref_line = line.split('\t').map(str::trim).collect::<Vec<_>>();
         let (sha1, full_ref) = (ref_line[0], ref_line[1]);
         if let Some(tag) = full_ref.split('/').last() {
-            debug!("insert {tag} -> {sha1}");
+            trace!("insert {tag} -> {sha1}");
             refs.insert(tag.to_string(), sha1.to_string());
         }
     }
@@ -42,7 +41,7 @@ pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
         .map_or_else(
             || Tag::Ref(Ref::from_str(version).unwrap()),
             |(k, v)| {
-                debug!("Found! {k} -> {v}");
+                trace!("Found! {k} -> {v}");
                 Tag::Exact {
                     sha1: Ref::from_str(v).unwrap(),
                     label: k.to_string(),
@@ -51,7 +50,6 @@ pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
         ))
 }
 
-#[tracing::instrument]
 async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<PathBuf> {
     let build_dir = &args.build_dir;
     let platform = &args.tree_sitter.platform;
@@ -81,7 +79,6 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
     Ok(res)
 }
 
-#[tracing::instrument]
 pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Result<PathBuf> {
     let mut handle = {
         progress

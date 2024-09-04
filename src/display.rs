@@ -5,8 +5,10 @@ use std::{
     time,
 };
 
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 use console::style;
 use enum_dispatch::enum_dispatch;
+use log::Level;
 use miette::{Context, IntoDiagnostic, Result};
 
 use crate::{args::ProgressStyle, format_duration};
@@ -28,7 +30,17 @@ use crate::{args::ProgressStyle, format_duration};
 pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";
 
 #[must_use]
-pub fn current(progress: &ProgressStyle) -> Progress {
+pub fn current(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Progress {
+    verbose.log_level().map_or_else(
+        || current_style(progress),
+        |level| match level {
+            Level::Debug | Level::Trace => Progress::Plain(Plain::default()),
+            _ => current_style(progress),
+        },
+    )
+}
+
+fn current_style(progress: &ProgressStyle) -> Progress {
     if match progress {
         ProgressStyle::Auto => atty::is(atty::Stream::Stdout),
         ProgressStyle::Fancy => true,

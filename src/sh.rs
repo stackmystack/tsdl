@@ -8,7 +8,7 @@ use std::{
 
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::process::Command;
-use tracing::error;
+use tracing::{error, trace};
 
 use crate::{error, relative_to_cwd};
 
@@ -24,6 +24,7 @@ pub trait Script {
 impl Exec for Command {
     #[tracing::instrument(skip(self))]
     async fn exec(&mut self) -> Result<Output> {
+        trace!("{}", self.display());
         let output = self.output().await.into_diagnostic()?;
         if output.status.success() {
             Ok(output)
@@ -93,7 +94,6 @@ impl Script for Command {
 /// Your local hometown one-eyed which.
 ///
 /// stdin, stdout, and stderr are ignored.
-#[tracing::instrument]
 pub async fn which(prog: &str) -> Result<PathBuf> {
     let output = Command::new("which").arg(prog).exec().await?;
     Ok(PathBuf::from(
@@ -101,12 +101,10 @@ pub async fn which(prog: &str) -> Result<PathBuf> {
     ))
 }
 
-#[tracing::instrument]
 pub async fn chmod_x(prog: &Path) -> Result<Output> {
     Command::new("chmod").arg("+x").arg(prog).exec().await
 }
 
-#[tracing::instrument]
 pub async fn download(out: &Path, url: &str) -> Result<Output> {
     let which_prog = match which("curl").await {
         Ok(path) => Ok(path),
@@ -116,6 +114,7 @@ pub async fn download(out: &Path, url: &str) -> Result<Output> {
         .file_name()
         .and_then(|p| p.to_str())
         .ok_or(miette!("Could not find curl or wget"))?;
+    trace!("using {prog} as a downloader");
     let out = out
         .to_str()
         .ok_or(miette!("Retrieving string from out path"))?;
@@ -126,7 +125,6 @@ pub async fn download(out: &Path, url: &str) -> Result<Output> {
     }
 }
 
-#[tracing::instrument]
 pub async fn gunzip(gz: &Path) -> Result<Output> {
     Command::new("gunzip").arg(gz).exec().await
 }
