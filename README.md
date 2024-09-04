@@ -1,5 +1,13 @@
 # TSDL
 
+[![CI badge]][CI]
+[![crates.io badge]][crates.io]
+
+[CI]: https://github.com/stackmystack/tsdl/actions/workflows/ci.yml
+[CI badge]: https://github.com/stackmystack/tsdl/actions/workflows/ci.yml/badge.svg
+[crates.io]: https://crates.io/crates/tsdl
+[crates.io badge]: https://img.shields.io/crates/v/tsdl.svg
+
 A downloader/builder of many
 [tree-sitter](https://github.com/tree-sitter/tree-sitter) parsers
 
