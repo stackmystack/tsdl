@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use async_compression::tokio::bufread::GzipDecoder;
 use miette::{miette, Context, IntoDiagnostic, Result};
-use tokio::fs;
 use tokio::process::Command;
+use tokio::{fs, io};
 use tracing::trace;
 use url::Url;
 
@@ -18,7 +19,7 @@ use crate::{
     args::BuildCommand,
     display::{Handle, Progress, ProgressState},
     git::{clone_fast, Tag},
-    sh::{gunzip, Exec},
+    sh::Exec,
 };
 
 #[allow(clippy::missing_panics_doc)]
@@ -81,15 +82,6 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
     Ok(res)
 }
 
-async fn chmod_x(prog: &Path) -> Result<()> {
-    let metadata = fs::metadata(prog).await.into_diagnostic()?;
-    let mut permissions = metadata.permissions();
-    permissions.set_mode(permissions.mode() | 0o111);
-    fs::set_permissions(prog, permissions)
-        .await
-        .into_diagnostic()
-}
-
 async fn download(gz: &Path, url: &str) -> Result<()> {
     fs::write(
         gz,
@@ -102,6 +94,26 @@ async fn download(gz: &Path, url: &str) -> Result<()> {
     )
     .await
     .into_diagnostic()
+}
+
+async fn gunzip(gz: &Path) -> Result<()> {
+    let file = fs::File::open(gz).await.into_diagnostic()?;
+    let mut decompressor = GzipDecoder::new(tokio::io::BufReader::new(file));
+    let out_path = gz.with_extension("");
+    let mut out_file = tokio::fs::File::create(out_path).await.into_diagnostic()?;
+    io::copy(&mut decompressor, &mut out_file)
+        .await
+        .into_diagnostic()
+        .and(Ok(()))
+}
+
+async fn chmod_x(prog: &Path) -> Result<()> {
+    let metadata = fs::metadata(prog).await.into_diagnostic()?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(prog, permissions)
+        .await
+        .into_diagnostic()
 }
 
 pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Result<PathBuf> {

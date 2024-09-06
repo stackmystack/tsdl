@@ -1,10 +1,4 @@
-use std::{
-    env,
-    fmt::Write,
-    os::unix::process::ExitStatusExt,
-    path::{Path, PathBuf},
-    process::Output,
-};
+use std::{env, fmt::Write, os::unix::process::ExitStatusExt, path::PathBuf, process::Output};
 
 use miette::{IntoDiagnostic, Result};
 use tokio::process::Command;
@@ -99,8 +93,4 @@ pub async fn which(prog: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim(),
     ))
-}
-
-pub async fn gunzip(gz: &Path) -> Result<Output> {
-    Command::new("gunzip").arg(gz).exec().await
 }

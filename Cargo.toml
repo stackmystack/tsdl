@@ -31,6 +31,7 @@ repo = "https://github.com/tree-sitter/tree-sitter"
 version = "0.23.0"
 
 [dependencies]
+async-compression = { version = "0.4.12", features = ["tokio", "gzip"] }
 atty = "0.2"
 better-panic = "0.3.0"
 clap = { version = "4.5", features = ["derive", "cargo"] }
