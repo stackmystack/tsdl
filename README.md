@@ -68,7 +68,29 @@ cobol = { ref = "6a469068cacb5e3955bb16ad8dfff0dd792883c9", from = "https://gith
 Run:
 
 ```sh
-tsdl config
+tsdl config default
 ```
 
-for more info.
+to get the default config used by tsdl in TOML.
+
+> [!IMPORTANT]
+> All configuration you can pass to `tsd build` can be put in the `parsers.toml`,
+> like `tree-sitter-version`, `out-dir`, etc.
+>
+> ```toml
+> build-dir = "/tmp/tsdl"
+> out-dir = "/usr/local/lib"
+>
+> [parsers]
+> json = "0.21.0" # The leading v is not necessary
+> rust = "master"
+> ```
+
+> [!IMPORTANT]
+> All configuration specified in `parsers.toml` can be overriden with flags
+> passed to `tsdl`, i.e.: `tsdl build --build-dir "/tmp/tsdl"` will
+> override whatever value is the default of `tsdl` or in `parsers.toml`.
+
+> [!TIP]
+> Check out [Faveod/tree-sitter-parsers](Faveod/tree-sitter-parsers) for an
+> example configuration.
