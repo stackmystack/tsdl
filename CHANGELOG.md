@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] - 2024-09-06
+
+### Features
+
+- **selfupdate**: Add selfupdate command and fetch from github releases - ([a0832d8](https://github.com/stackmystack/tsdl/commit/a0832d86316e5af7c9c64230ff387e9fae01db48))
+
+### Bug Fixes
+
+- **chmod**: Use rust to set executable permissions - ([a36e1d9](https://github.com/stackmystack/tsdl/commit/a36e1d94b75e45887aeb87849789e7d7dec39be2))
+- **download**: Use reqwest instead of curl or wget - ([76ac6c9](https://github.com/stackmystack/tsdl/commit/76ac6c9a36e2737e626e01300269c5ff43437290))
+- **gunzip**: Use async-compression instead of the gunzip binary - ([de16590](https://github.com/stackmystack/tsdl/commit/de165904bea4adfd264a57aa6778c61437e9911d))
+- **release.sh**: Lint and test before releasing - ([bc5aa6c](https://github.com/stackmystack/tsdl/commit/bc5aa6ccb77dea9d784bacaad8642bc04ccb4f86))
+
+### Documentation
+
+- **readme**: More information on config file and overriding parser.toml - ([dcafb2c](https://github.com/stackmystack/tsdl/commit/dcafb2ccc26eac7d3716ee501bb71517eb55d23f))
+
 ## [1.1.0] - 2024-09-04
 
 ### Features
