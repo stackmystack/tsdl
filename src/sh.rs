@@ -6,7 +6,7 @@ use std::{
     process::Output,
 };
 
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result};
 use tokio::process::Command;
 use tracing::{error, trace};
 
@@ -103,26 +103,6 @@ pub async fn which(prog: &str) -> Result<PathBuf> {
 
 pub async fn chmod_x(prog: &Path) -> Result<Output> {
     Command::new("chmod").arg("+x").arg(prog).exec().await
-}
-
-pub async fn download(out: &Path, url: &str) -> Result<Output> {
-    let which_prog = match which("curl").await {
-        Ok(path) => Ok(path),
-        Err(_) => which("wget").await,
-    }?;
-    let prog = which_prog
-        .file_name()
-        .and_then(|p| p.to_str())
-        .ok_or(miette!("Could not find curl or wget"))?;
-    trace!("using {prog} as a downloader");
-    let out = out
-        .to_str()
-        .ok_or(miette!("Retrieving string from out path"))?;
-    match prog {
-        "curl" => Command::new(prog).args(["-o", out, "-L", url]).exec().await,
-        "wget" => Command::new(prog).args(["-O", out, url]).exec().await,
-        _ => unreachable!(),
-    }
 }
 
 pub async fn gunzip(gz: &Path) -> Result<Output> {

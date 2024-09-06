@@ -1,10 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use miette::{miette, Context, IntoDiagnostic, Result};
+use tokio::fs;
 use tokio::process::Command;
 use tracing::trace;
 use url::Url;
@@ -16,7 +17,7 @@ use crate::{
     args::BuildCommand,
     display::{Handle, Progress, ProgressState},
     git::{clone_fast, Tag},
-    sh::{chmod_x, download, gunzip, Exec},
+    sh::{chmod_x, gunzip, Exec},
 };
 
 #[allow(clippy::missing_panics_doc)]
@@ -77,6 +78,20 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
         chmod_x(&res).await?;
     }
     Ok(res)
+}
+
+async fn download(gz: &Path, url: &str) -> Result<()> {
+    fs::write(
+        gz,
+        reqwest::get(url)
+            .await
+            .into_diagnostic()?
+            .bytes()
+            .await
+            .into_diagnostic()?,
+    )
+    .await
+    .into_diagnostic()
 }
 
 pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Result<PathBuf> {
