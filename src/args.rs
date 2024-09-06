@@ -80,6 +80,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+
+    /// Update tsdl to its latest version.
+    #[serde(skip_serializing, skip_deserializing)]
+    #[command(visible_alias = "u")]
+    Selfupdate,
 }
 
 impl Command {

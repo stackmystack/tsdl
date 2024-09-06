@@ -1,8 +1,17 @@
+use std::{fs, path::PathBuf};
+
 use clap::Parser;
-use miette::Result;
+use miette::{bail, IntoDiagnostic, Result};
+use self_update::self_replace;
+use semver::Version;
 use tracing::{error, info};
 
-use tsdl::{args, build, config, display, logging};
+use tsdl::{
+    args, build, config,
+    consts::TREE_SITTER_PLATFORM,
+    display::{self, Handle, Progress, ProgressState},
+    logging,
+};
 
 fn main() -> Result<()> {
     set_panic_hook();
@@ -21,7 +30,64 @@ fn run(args: &args::Args) -> Result<()> {
             display::current(&args.progress, &args.verbose),
         ),
         args::Command::Config { command } => config::run(command, &args.config),
+        args::Command::Selfupdate => self_update(display::current(&args.progress, &args.verbose)),
     }
+}
+
+fn self_update(mut progress: Progress) -> Result<()> {
+    let tsdl = env!("CARGO_BIN_NAME");
+    let current_version = Version::parse(env!("CARGO_PKG_VERSION")).into_diagnostic()?;
+    let mut handle = progress.register("selfupdate", 4);
+
+    handle.start("fetching releases".to_string());
+    let releases = self_update::backends::github::ReleaseList::configure()
+        .repo_owner("stackmystack")
+        .repo_name(tsdl)
+        .build()
+        .into_diagnostic()?
+        .fetch()
+        .into_diagnostic()?;
+
+    let name = format!("{tsdl}-{TREE_SITTER_PLATFORM}.gz");
+    let asset = releases[0].assets.iter().find(|&asset| asset.name == name);
+    if asset.is_none() {
+        bail!("Could not find a suitable release for your platform");
+    }
+
+    let latest_version = Version::parse(&releases[0].version).into_diagnostic()?;
+    if latest_version <= current_version {
+        handle.msg("already at the latest version".to_string());
+        return Ok(());
+    }
+
+    handle.step(format!("downloading {latest_version}"));
+    let asset = asset.unwrap();
+    let tmp_dir = tempfile::tempdir().into_diagnostic()?;
+    let tmp_gz_path = tmp_dir.path().join(&asset.name);
+    let tmp_gz = fs::File::create_new(&tmp_gz_path).into_diagnostic()?;
+
+    self_update::Download::from_url(&asset.download_url)
+        .set_header(
+            reqwest::header::ACCEPT,
+            "application/octet-stream".parse().into_diagnostic()?,
+        )
+        .download_to(&tmp_gz)
+        .into_diagnostic()?;
+
+    handle.step(format!("extracting {latest_version}"));
+    let tsdl_bin = PathBuf::from(tsdl);
+    self_update::Extract::from_source(&tmp_gz_path)
+        .archive(self_update::ArchiveKind::Plain(Some(
+            self_update::Compression::Gz,
+        )))
+        .extract_file(tmp_dir.path(), &tsdl_bin)
+        .into_diagnostic()?;
+
+    let new_exe = tmp_dir.path().join(tsdl_bin);
+    self_replace::self_replace(new_exe).into_diagnostic()?;
+
+    handle.fin(format!("{latest_version}"));
+    Ok(())
 }
 
 pub fn set_panic_hook() {
