@@ -67,7 +67,6 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
     let tsdl_prefix = tsdl.get("prefix").unwrap().as_str().unwrap();
     let tsdl_ref = tsdl.get("ref").unwrap().as_str().unwrap();
     let tsdl_show_config = tsdl.get("show-config").unwrap().as_bool().unwrap();
-    let tsdl_sys = tsdl.get("sys").unwrap().as_bool().unwrap();
     let tsdl_consts = Path::new(&out_dir).join("tsdl_consts.rs");
     fs::write(
         tsdl_consts,
@@ -82,7 +81,6 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
               pub const TSDL_PREFIX: &str = "{tsdl_prefix}";
               pub const TSDL_REF: &str = "{tsdl_ref}";
               pub const TSDL_SHOW_CONFIG: bool = {tsdl_show_config};
-              pub const TSDL_SYS: bool = {tsdl_sys};
             "#
         ),
     )
