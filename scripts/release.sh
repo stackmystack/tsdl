@@ -5,6 +5,9 @@ set -e
 version=${1:-$(git cliff --bumped-version)}
 
 echo "Preparing $version..."
+# lint and test first
+just lint
+just test --retries 3
 # update the version
 msg="# managed by release.sh"
 sed -E -i "s/^version = .*\s+$msg$/version = \"${version#v}\" $msg/" Cargo.toml
@@ -24,4 +27,4 @@ changelog=$(git cliff --unreleased --strip all)
 # create a tag
 git tag -a "$version" -m "Release $version" -m "$changelog"
 echo "Done!"
-echo "Now push the commit (git push) and the tag (git push --tags)."
+echo "Now push the commit (git push origin master) and the tag (git push origin refs/tags/$version)."
