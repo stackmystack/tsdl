@@ -101,10 +101,6 @@ pub async fn which(prog: &str) -> Result<PathBuf> {
     ))
 }
 
-pub async fn chmod_x(prog: &Path) -> Result<Output> {
-    Command::new("chmod").arg("+x").arg(prog).exec().await
-}
-
 pub async fn gunzip(gz: &Path) -> Result<Output> {
     Command::new("gunzip").arg(gz).exec().await
 }

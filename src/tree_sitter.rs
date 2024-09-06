@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,7 @@ use crate::{
     args::BuildCommand,
     display::{Handle, Progress, ProgressState},
     git::{clone_fast, Tag},
-    sh::{chmod_x, gunzip, Exec},
+    sh::{gunzip, Exec},
 };
 
 #[allow(clippy::missing_panics_doc)]
@@ -78,6 +79,15 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
         chmod_x(&res).await?;
     }
     Ok(res)
+}
+
+async fn chmod_x(prog: &Path) -> Result<()> {
+    let metadata = fs::metadata(prog).await.into_diagnostic()?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(prog, permissions)
+        .await
+        .into_diagnostic()
 }
 
 async fn download(gz: &Path, url: &str) -> Result<()> {
