@@ -1,9 +1,5 @@
 # TODO
 
-## Commands
-
-- [ ] check command: check that all tools necessary are installed (gunzip, wget, curl, git)
-
 ## Configurtion
 
 - [ ] Investigate a figment replacement / custom impl to merge diferent configuration

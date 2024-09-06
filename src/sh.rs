@@ -1,4 +1,4 @@
-use std::{env, fmt::Write, os::unix::process::ExitStatusExt, path::PathBuf, process::Output};
+use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output};
 
 use miette::{IntoDiagnostic, Result};
 use tokio::process::Command;
@@ -83,14 +83,4 @@ impl Script for Command {
         cmd.args(["-c", script]);
         cmd
     }
-}
-
-/// Your local hometown one-eyed which.
-///
-/// stdin, stdout, and stderr are ignored.
-pub async fn which(prog: &str) -> Result<PathBuf> {
-    let output = Command::new("which").arg(prog).exec().await?;
-    Ok(PathBuf::from(
-        String::from_utf8_lossy(&output.stdout).trim(),
-    ))
 }
