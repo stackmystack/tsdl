@@ -18,7 +18,7 @@ use crate::SafeCanonicalize;
 use crate::{
     args::BuildCommand,
     display::{Handle, Progress, ProgressState},
-    git::{clone_fast, Tag},
+    git::Tag,
     sh::Exec,
 };
 
@@ -62,8 +62,7 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
         Tag::Ref(git_ref) => {
             handle.msg(format!("Figuring out the exact tag for {tag}",));
             let tree_sitter = PathBuf::new().join(build_dir).join("tree-sitter");
-            clone_fast(repo, tag.git_ref(), &tree_sitter).await?;
-            git::fetch_tags(&tree_sitter).await?;
+            git::clone(repo, &tree_sitter).await?;
             Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
         }
     };

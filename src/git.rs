@@ -51,6 +51,22 @@ impl fmt::Display for Tag {
     }
 }
 
+pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
+    if cwd.exists() {
+        Command::new("git")
+            .current_dir(cwd)
+            .args(["pull"])
+            .exec()
+            .await?;
+    } else {
+        Command::new("git")
+            .args(["clone", repo, &format!("{}", cwd.display())])
+            .exec()
+            .await?;
+    }
+    Ok(())
+}
+
 pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
     if cwd.exists() {
         let head_sha1 = String::from_utf8(
@@ -100,15 +116,6 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
         .exec()
         .await?;
     Ok(())
-}
-
-pub async fn fetch_tags(cwd: &Path) -> Result<()> {
-    Command::new("git")
-        .current_dir(cwd)
-        .args(["fetch", "--tags", "--all"])
-        .exec()
-        .await
-        .and(Ok(()))
 }
 
 pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> Result<String> {

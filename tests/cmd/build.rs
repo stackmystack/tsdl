@@ -41,7 +41,7 @@ fn no_args_should_download_tree_sitter_cli() {
 #[rstest]
 #[case::no_leading_v("0.22.0", "v0.22.0", "0.22.0")]
 #[case::leading_v("v0.22.0", "v0.22.0", "0.22.0")]
-// #[case::sha1("636801770eea172d140e64b691815ff11f6b556f", "6368017", "0.22.6")]
+#[case::sha1("636801770eea172d140e64b691815ff11f6b556f", "6368017", "0.22.6")]
 fn no_args_should_build_tree_sitter_with_specific_version(
     #[case] requested: &str,
     #[case] version: &str,
