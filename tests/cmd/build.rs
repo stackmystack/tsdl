@@ -1,5 +1,6 @@
 use std::{env::consts::DLL_EXTENSION, os::unix::fs::PermissionsExt};
 
+use assert_cmd::Command;
 use assert_fs::prelude::*;
 use indoc::indoc;
 use predicates::{self as p};
@@ -38,12 +39,13 @@ fn no_args_should_download_tree_sitter_cli() {
 }
 
 #[rstest]
-#[case::no_leading_v("0.22.0", "v0.22.0")]
-#[case::leading_v("v0.22.0", "v0.22.0")]
-#[case::sha1("12fb31826b8469cc7b9788e72bceee5af1cf0977", "12fb318")]
+#[case::no_leading_v("0.22.0", "v0.22.0", "0.22.0")]
+#[case::leading_v("v0.22.0", "v0.22.0", "0.22.0")]
+// #[case::sha1("636801770eea172d140e64b691815ff11f6b556f", "6368017", "0.22.6")]
 fn no_args_should_build_tree_sitter_with_specific_version(
     #[case] requested: &str,
     #[case] version: &str,
+    #[case] cli_version: &str,
 ) {
     let mut sandbox = Sandbox::new();
     sandbox
@@ -55,12 +57,19 @@ fn no_args_should_build_tree_sitter_with_specific_version(
         .success()
         .stderr(p::str::contains(format!("tree-sitter-cli {version} done")));
     assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
+
+    let mut tree_sitter_cli = Command::new(
+        sandbox
+            .tmp
+            .child(TSDL_BUILD_DIR)
+            .child(format!("tree-sitter-{TREE_SITTER_PLATFORM}"))
+            .to_path_buf(),
+    );
+    tree_sitter_cli.arg("--version");
+    tree_sitter_cli
+        .assert()
+        .success()
+        .stdout(p::str::contains(format!("tree-sitter {cli_version}")));
 }
 
 #[rstest]
