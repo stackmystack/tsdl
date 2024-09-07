@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.1] - 2024-09-07
+
+### Bug Fixes
+
+- **build**: --tree-sitter-version sha1 - ([a611f94](https://github.com/stackmystack/tsdl/commit/a611f94ed98bce297fd4af9fc5a2ccdb55925941))
+- **download**: Remove tree-sitter-cli gz - ([69af2a4](https://github.com/stackmystack/tsdl/commit/69af2a4d5b887fef7cc075bbb3603e2536a8b71a))
+- **log**: Create dir if --log specifies a path - ([1d88722](https://github.com/stackmystack/tsdl/commit/1d887223cd56a71ce5f00b798b5da3194cc192f2))
+
+### Documentation
+
+- **cli**: Remove wrong description for build command - ([c73f096](https://github.com/stackmystack/tsdl/commit/c73f096ca67149245d74d73e65731b9a2ae22a0a))
+
+### Other
+
+- **build**: Check that tree-sitter-cli exists and is executable - ([5abb1a5](https://github.com/stackmystack/tsdl/commit/5abb1a5fc941d4acd9f382481d38925e514cd66c))
+- **build**: Check downloaded tree-sitter-cli version - ([362dc5c](https://github.com/stackmystack/tsdl/commit/362dc5c5d6d9620487af38ec53b3b822bfebfda7))
+- **build**: Verify multiparser with cmd - ([35e8442](https://github.com/stackmystack/tsdl/commit/35e8442456c1d51af03eabb37b1dcd52e93c0023))
+- **lint**: Add typos checker - ([70cd5ce](https://github.com/stackmystack/tsdl/commit/70cd5ce8597816768658e6a7ba1e2fdd8880bf07))
+
 ## [1.2.0] - 2024-09-06
 
 ### Features
