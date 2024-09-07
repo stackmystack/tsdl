@@ -20,7 +20,7 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@v2
         with:
-          tool: just
+          tool: just,typos
 
       - run: just lint
 

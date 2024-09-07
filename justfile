@@ -15,10 +15,16 @@ fmt:
 fmt-check:
   cargo fmt --all -- --check
 
-lint: clippy fmt-check
+lint: clippy fmt-check typos
 
 setup:
   cargo install git-cliff nextest typos-cli
 
 test *args:
   cargo nextest run {{args}}
+
+typos:
+  typos --sort
+
+typos-fix:
+  typos --write-changes
