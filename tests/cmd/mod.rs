@@ -2,6 +2,8 @@
 mod build;
 #[cfg(test)]
 mod config;
+#[cfg(test)]
+mod log;
 
 use std::{env, fs, path::Path};
 

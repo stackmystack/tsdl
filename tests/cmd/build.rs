@@ -183,7 +183,7 @@ fn build_implicit_pinned_and_unpinned() {
     }
 }
 
-#[test]
+#[rstest]
 fn multi_parsers_no_cmd() {
     let php = "php";
     let version = "HEAD";
@@ -204,7 +204,7 @@ fn multi_parsers_no_cmd() {
     }
 }
 
-#[test]
+#[rstest]
 fn multi_parsers_cmd() {
     let typescript = "typescript";
     let version = "0.21.0";

@@ -13,7 +13,6 @@ use crate::{
     args::{Args, LogColor},
     config::current,
     consts::TSDL_BUILD_DIR,
-    SafeCanonicalize,
 };
 
 pub fn init(args: &Args) -> Result<WorkerGuard> {
@@ -64,22 +63,15 @@ fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
 }
 
 fn init_log_file(args: &Args) -> Result<File> {
-    let log = args
-        .log
-        .as_ref()
-        .filter(|l| {
-            l.canon()
-                .ok()
-                .and_then(|p| p.parent().map(Path::exists))
-                .unwrap_or_default()
-        })
-        .cloned()
-        .or_else(|| {
-            current(&args.config, args.command.as_build())
-                .map(|c| Some(c.build_dir.clone().join("log")))
-                .unwrap_or_default()
-        })
-        .unwrap_or(PathBuf::from(TSDL_BUILD_DIR).join("log"));
+    let log = args.log.as_ref().map_or_else(
+        || {
+            current(&args.config, args.command.as_build()).map_or_else(
+                |_| PathBuf::from(TSDL_BUILD_DIR).join("log"),
+                |c| c.build_dir.clone().join("log"),
+            )
+        },
+        std::clone::Clone::clone,
+    );
     let parent = log.parent().unwrap_or(Path::new("."));
     if !parent.exists() {
         fs::create_dir_all(parent)
