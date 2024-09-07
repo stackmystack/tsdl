@@ -1,6 +1,7 @@
 #!/usr/bin/env -S just --justfile
 
 alias c := clean
+alias d := doc
 alias l := lint
 alias t := test
 
@@ -15,6 +16,9 @@ clippy-fix *args:
 
 clippy-fix-now:
   @just clippy-fix --allow-dirty --allow-staged
+
+doc:
+  cargo doc --no-deps --open
 
 fmt:
   cargo fmt --all
