@@ -1,5 +1,8 @@
 #!/usr/bin/env -S just --justfile
 
+alias l := lint
+alias t := test
+
 clippy:
   cargo clippy --all --all-targets -- --deny warnings
 
