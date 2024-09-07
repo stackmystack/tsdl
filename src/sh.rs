@@ -46,7 +46,7 @@ impl Exec for Command {
     }
 
     // This is needlessly complicated, trying to minimize allocations, like grown-ups,
-    // not because it's needed —I didn't even measure anything— but becauase I'm exercising my rust.
+    // not because it's needed —I didn't even measure anything— but because I'm exercising my rust.
     fn display(&self) -> String {
         let program = self.as_std().get_program();
         let args = self.as_std().get_args();

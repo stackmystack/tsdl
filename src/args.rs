@@ -210,7 +210,7 @@ pub struct TreeSitter {
     #[arg(short = 'R', long = "tree-sitter-repo", default_value = TREE_SITTER_REPO)]
     pub repo: String,
 
-    /// Tree-sitter plarform to build. Change at your own risk.
+    /// Tree-sitter platform to build. Change at your own risk.
     #[clap(long = "tree-sitter-platform", default_value = TREE_SITTER_PLATFORM)]
     pub platform: String,
 }

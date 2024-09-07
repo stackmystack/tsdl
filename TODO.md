@@ -1,8 +1,8 @@
 # TODO
 
-## Configurtion
+## Configuration
 
-- [ ] Investigate a figment replacement / custom impl to merge diferent configuration
+- [ ] Investigate a figment replacement / custom impl to merge different configuration
     sources.
 
 ## Tests

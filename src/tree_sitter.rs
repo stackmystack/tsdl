@@ -121,7 +121,7 @@ pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Res
         progress
             .lock()
             .map(|mut lock| lock.register("tree-sitter-cli", 3))
-            .or(Err(miette!("Aquiring progress lock")))?
+            .or(Err(miette!("Acquiring progress lock")))?
     };
 
     let repo = Url::parse(&args.tree_sitter.repo)

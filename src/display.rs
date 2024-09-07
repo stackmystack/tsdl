@@ -24,7 +24,7 @@ use crate::{args::ProgressStyle, format_duration};
 /// instead of having to handle them with static dispatch via `enum_dispatch`.
 ///
 /// PS: What' _"bad"_ about working with `enum_dispatch` is the language server.
-/// Any modificaiton to the trait you're dispatching will not properly propagate
+/// Any modification to the trait you're dispatching will not properly propagate
 /// and your diagnostics will be behind reality.
 
 pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";

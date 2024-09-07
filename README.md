@@ -87,7 +87,7 @@ to get the default config used by tsdl in TOML.
 > ```
 
 > [!IMPORTANT]
-> All configuration specified in `parsers.toml` can be overriden with flags
+> All configuration specified in `parsers.toml` can be overridden with flags
 > passed to `tsdl`, i.e.: `tsdl build --build-dir "/tmp/tsdl"` will
 > override whatever value is the default of `tsdl` or in `parsers.toml`.
 
