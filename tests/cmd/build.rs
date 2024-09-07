@@ -2,7 +2,7 @@ use std::{env::consts::DLL_EXTENSION, os::unix::fs::PermissionsExt};
 
 use assert_cmd::Command;
 use assert_fs::prelude::*;
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use predicates::{self as p};
 use rstest::*;
 
@@ -187,9 +187,9 @@ fn build_implicit_pinned_and_unpinned() {
 fn multi_parsers_no_cmd() {
     let php = "php";
     let version = "HEAD";
-    let languages = ["php", "php_only"];
+    let languages = [php, "php_only"];
     let mut sandbox = Sandbox::new();
-    let mut assert = sandbox.cmd.args(["build", "php"]).assert().success();
+    let mut assert = sandbox.cmd.args(["build", php]).assert().success();
     for language in languages {
         assert = assert.stderr(p::str::contains(format!(
             "{php}: Building {version} parser: {language}"
@@ -204,6 +204,34 @@ fn multi_parsers_no_cmd() {
     }
 }
 
-// TODO:
-// #[case::pinned::cmd::typescript("typescript", "v0.21.0")]
-// multi_parsers_cmd
+#[test]
+fn multi_parsers_cmd() {
+    let typescript = "typescript";
+    let version = "0.21.0";
+    let languages = [typescript, "tsx"];
+    let mut sandbox = Sandbox::new();
+    let config = formatdoc! {
+      r#"
+        [parsers]
+        typescript = {{ ref = "{version}", cmd = "make" }}
+      "#
+    };
+    sandbox
+        .tmp
+        .child(TSDL_CONFIG_FILE)
+        .write_str(&config)
+        .unwrap();
+    let mut assert = sandbox.cmd.args(["build", typescript]).assert().success();
+    for language in languages {
+        assert = assert.stderr(p::str::contains(format!(
+            "{typescript}: Copying v{version} parser: {language}"
+        )));
+    }
+    for language in languages {
+        let dylib = sandbox
+            .tmp
+            .child(TSDL_OUT_DIR)
+            .child(format!("{TSDL_PREFIX}{language}.{DLL_EXTENSION}"));
+        dylib.assert(p::path::exists()).assert(p::path::is_file());
+    }
+}
