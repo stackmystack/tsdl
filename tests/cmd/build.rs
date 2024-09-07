@@ -1,4 +1,4 @@
-use std::env::consts::DLL_EXTENSION;
+use std::{env::consts::DLL_EXTENSION, os::unix::fs::PermissionsExt};
 
 use assert_fs::prelude::*;
 use indoc::indoc;
@@ -6,13 +6,14 @@ use predicates::{self as p};
 use rstest::*;
 
 use tsdl::consts::{
-    TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR, TSDL_PREFIX,
+    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
+    TSDL_PREFIX,
 };
 
 use crate::cmd::Sandbox;
 
 #[rstest]
-fn no_args_should_build_tree_sitter() {
+fn no_args_should_download_tree_sitter_cli() {
     let mut sandbox = Sandbox::new();
     sandbox.cmd.arg("build");
     sandbox
@@ -23,12 +24,17 @@ fn no_args_should_build_tree_sitter() {
             "tree-sitter-cli v{TREE_SITTER_VERSION} done"
         )));
     assert!(!sandbox.is_empty());
-    sandbox
+    let tree_sitter_cli = sandbox
         .tmp
         .child(TSDL_BUILD_DIR)
-        .child("log")
+        .child(format!("tree-sitter-{TREE_SITTER_PLATFORM}"));
+
+    tree_sitter_cli
         .assert(p::path::exists())
         .assert(p::path::is_file());
+
+    let tree_sitter_cli = tree_sitter_cli.to_path_buf();
+    assert!(tree_sitter_cli.metadata().unwrap().permissions().mode() & 0o111 != 0);
 }
 
 #[rstest]
