@@ -1,4 +1,5 @@
-#![doc = include_str!("../README.md")]
+#![doc = markdown_to_docs::include!("README.md")]
+
 use std::{
     env,
     path::{Path, PathBuf},
