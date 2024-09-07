@@ -1,7 +1,11 @@
 #!/usr/bin/env -S just --justfile
 
+alias c := clean
 alias l := lint
 alias t := test
+
+clean:
+  rm -rf tmp parsers parsers.toml
 
 clippy:
   cargo clippy --all --all-targets -- --deny warnings
