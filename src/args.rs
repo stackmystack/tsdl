@@ -114,11 +114,7 @@ impl Command {
 ))]
 #[serde(rename_all = "kebab-case")]
 pub struct BuildCommand {
-    /// Parsers to compile as key=value pairs.
-    /// values can be either:
-    ///   1. a simple value denoting the ref of the parser from the default remote.
-    ///   2. of the format `ref:remote-ref,from:remote-url`.
-    ///      `ref` and `from` are both optional, and will use defualts.
+    /// Parsers to compile.
     #[serde(skip_serializing, skip_deserializing)]
     #[arg(verbatim_doc_comment)]
     pub languages: Option<Vec<String>>,
