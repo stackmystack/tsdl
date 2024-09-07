@@ -33,7 +33,7 @@ pub struct Args {
     #[arg(short, long, default_value = TSDL_CONFIG_FILE, global = true)]
     pub config: PathBuf,
 
-    /// Path to the logging file. If unspecified, it will go to `build_dir/log`.
+    /// Path to the logging file. If unspecified, it will go to `build-dir/log`.
     #[arg(short, long, global = true)]
     pub log: Option<PathBuf>,
 
@@ -133,7 +133,7 @@ pub struct BuildCommand {
     #[serde(default)]
     pub ncpus: usize,
 
-    /// Clears the `build_dir` and starts a fresh build.
+    /// Clears the `build-dir` and starts a fresh build.
     #[arg(short, long, default_value_t = TSDL_FRESH)]
     #[serde(default)]
     pub fresh: bool,
