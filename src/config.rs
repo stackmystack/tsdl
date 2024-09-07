@@ -44,14 +44,14 @@ pub fn current(config: &Path, command: Option<&BuildCommand>) -> Result<BuildCom
         Some(from_command) => {
             debug!("Merging cli args + config files");
             let diff = from_default.diff(from_command);
-            log::debug!("diff default command = {:?}", diff);
+            debug!("diff default command = {:?}", diff);
             from_file.apply(&diff);
         }
         None => {
             debug!("Skipping cli args + config file merger.");
         }
     };
-    log::debug!("from_both = {:?}", from_file);
+    debug!("from_both = {:?}", from_file);
     // TODO: read from env vars.
     // Figment is screwing with me, and it's overrinding config coming
     // from Env::prefixed("TSDL_").
