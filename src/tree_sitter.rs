@@ -77,6 +77,7 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
         download(&gz, &url).await?;
         gunzip(&gz).await?;
         chmod_x(&res).await?;
+        fs::remove_file(gz).await.into_diagnostic()?;
     }
     Ok(res)
 }

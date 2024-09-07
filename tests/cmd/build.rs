@@ -36,6 +36,9 @@ fn no_args_should_download_tree_sitter_cli() {
 
     let tree_sitter_cli = tree_sitter_cli.to_path_buf();
     assert!(tree_sitter_cli.metadata().unwrap().permissions().mode() & 0o111 != 0);
+
+    let gz = tree_sitter_cli.with_extension("gz");
+    assert!(!gz.exists());
 }
 
 #[rstest]
