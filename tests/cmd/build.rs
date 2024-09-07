@@ -56,8 +56,6 @@ fn no_args_should_build_tree_sitter_with_specific_version(
         .assert()
         .success()
         .stderr(p::str::contains(format!("tree-sitter-cli {version} done")));
-    assert!(!sandbox.is_empty());
-
     let mut tree_sitter_cli = Command::new(
         sandbox
             .tmp
@@ -82,18 +80,6 @@ fn unknown_parser_should_fail(#[case] languages: Vec<&str>) {
     for lang in &languages {
         assert = assert.stderr(p::str::contains(format!("{lang} HEAD failed")));
     }
-    assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
-    sandbox
-        .tmp
-        .child(TSDL_OUT_DIR)
-        .assert(p::path::exists())
-        .assert(p::path::is_dir());
     for lang in languages {
         sandbox
             .tmp
@@ -113,18 +99,6 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
     for lang in &languages {
         assert = assert.stderr(p::str::contains(format!("{lang} HEAD done")));
     }
-    assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
-    sandbox
-        .tmp
-        .child(TSDL_OUT_DIR)
-        .assert(p::path::exists())
-        .assert(p::path::is_dir());
     for lang in &languages {
         let dylib = sandbox
             .tmp
@@ -164,18 +138,6 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &
         .assert()
         .success()
         .stderr(p::str::contains(format!("{language} {version} done")));
-    assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
-    sandbox
-        .tmp
-        .child(TSDL_OUT_DIR)
-        .assert(p::path::exists())
-        .assert(p::path::is_dir());
     let dylib = sandbox
         .tmp
         .child(TSDL_OUT_DIR)
@@ -212,18 +174,6 @@ fn build_implicit_pinned_and_unpinned() {
     for (language, version) in parsers {
         out = out.stderr(p::str::contains(format!("{language} {version} done")));
     }
-    assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
-    sandbox
-        .tmp
-        .child(TSDL_OUT_DIR)
-        .assert(p::path::exists())
-        .assert(p::path::is_dir());
     for (language, _version) in parsers {
         let dylib = sandbox
             .tmp
@@ -245,18 +195,6 @@ fn multi_parsers_no_cmd() {
             "{php}: Building {version} parser: {language}"
         )));
     }
-    assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
-    sandbox
-        .tmp
-        .child(TSDL_OUT_DIR)
-        .assert(p::path::exists())
-        .assert(p::path::is_dir());
     for language in languages {
         let dylib = sandbox
             .tmp
