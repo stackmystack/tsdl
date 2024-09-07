@@ -7,7 +7,7 @@ version=${1:-$(git cliff --bumped-version)}
 echo "Preparing $version..."
 # lint and test first
 just lint
-just test --retries 3
+just test
 # update the version
 msg="# managed by release.sh"
 sed -E -i "s/^version = .*\s+$msg$/version = \"${version#v}\" $msg/" Cargo.toml

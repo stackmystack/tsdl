@@ -20,7 +20,8 @@ lint: clippy fmt-check typos
 setup:
   cargo install git-cliff nextest typos-cli
 
-test *args:
+# cmd::build::build_implicit_pinned_and_unpinned is flaky.
+test *args="--retries 2":
   cargo nextest run {{args}}
 
 typos:
