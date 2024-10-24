@@ -5,7 +5,7 @@ description = "A downloader/builder of many tree-sitter parsers"
 edition = "2021"
 name = "tsdl"
 version = "1.2.1" # managed by release.sh
-license =  "MIT"
+license = "MIT"
 
 [lib]
 name = "tsdl"
@@ -34,7 +34,7 @@ version = "0.23.0"
 async-compression = { version = "0.4.12", features = ["tokio", "gzip"] }
 atty = "0.2"
 better-panic = "0.3.0"
-clap = { version = "4.5", features = ["derive", "cargo"] }
+clap = { version = "4.5", features = ["cargo", "derive", "env"] }
 clap-verbosity-flag = "2.2"
 console = "0.15"
 derive_more = { version = "1.0", features = [
