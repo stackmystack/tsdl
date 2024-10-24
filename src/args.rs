@@ -30,11 +30,11 @@ pub struct Args {
     pub command: Command,
 
     /// Path to the config file (TOML).
-    #[arg(short, long, default_value = TSDL_CONFIG_FILE, global = true)]
+    #[arg(short, long, env = "TSDL_CONFIG", default_value = TSDL_CONFIG_FILE, global = true)]
     pub config: PathBuf,
 
     /// Path to the logging file. If unspecified, it will go to `build-dir/log`.
-    #[arg(short, long, global = true)]
+    #[arg(short, long, env = "TSDL_LOG", global = true)]
     pub log: Option<PathBuf>,
 
     /// Whether to emit colored logs.
@@ -125,11 +125,11 @@ pub struct BuildCommand {
 
     /// Build Directory.
     #[serde(default)]
-    #[arg(short, long, default_value = TSDL_BUILD_DIR)]
+    #[arg(short, long, env = "TSDL_BUILD_DIR", default_value = TSDL_BUILD_DIR)]
     pub build_dir: PathBuf,
 
     /// Number of threads; defaults to the number of available CPUs.
-    #[arg(short, long, default_value_t = num_cpus::get())]
+    #[arg(short, long, env = "TSDL_NCPUS", default_value_t = num_cpus::get())]
     #[serde(default)]
     pub ncpus: usize,
 
@@ -139,12 +139,12 @@ pub struct BuildCommand {
     pub fresh: bool,
 
     /// Output Directory.
-    #[arg(short, long, default_value = TSDL_OUT_DIR)]
+    #[arg(short, long, env = "TSDL_OUT_DIR", default_value = TSDL_OUT_DIR)]
     #[serde(default)]
     pub out_dir: PathBuf,
 
     /// Prefix parser names.
-    #[arg(short, long, default_value = TSDL_PREFIX)]
+    #[arg(short, long, env = "TSDL_PREFIX", default_value = TSDL_PREFIX)]
     #[serde(default)]
     pub prefix: String,
 
