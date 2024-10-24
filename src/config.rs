@@ -52,7 +52,6 @@ pub fn current(config: &Path, command: Option<&BuildCommand>) -> Result<BuildCom
         }
     };
     debug!("from_both = {:?}", from_file);
-    // TODO: read from env vars.
     // Figment is screwing with me, and it's overrinding config coming
     // from Env::prefixed("TSDL_").
     // The scary thing is that I might have to write my own config
