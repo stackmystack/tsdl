@@ -11,6 +11,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
+    args::Target,
     display::{Handle, ProgressHandle},
     error,
     git::{clone_fast, Ref},
@@ -57,6 +58,8 @@ pub struct Language {
     out_dir: PathBuf,
     prefix: String,
     repo: Url,
+    #[allow(dead_code)]
+    target: Target,
     ts_cli: Arc<PathBuf>,
 }
 
@@ -72,6 +75,7 @@ impl Language {
         out_dir: PathBuf,
         prefix: String,
         repo: Url,
+        target: Target,
         ts_cli: Arc<PathBuf>,
     ) -> Self {
         Language {
@@ -83,6 +87,7 @@ impl Language {
             out_dir,
             prefix,
             repo,
+            target,
             ts_cli,
         }
     }
