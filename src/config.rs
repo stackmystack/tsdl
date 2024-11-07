@@ -67,25 +67,22 @@ pub fn print_indent(s: &str, indent: &str) {
 }
 
 pub fn show(command: &BuildCommand) -> Result<()> {
-    match &command.languages {
-        Some(langs) => {
-            println!("Building the following languages:");
-            println!();
-            println!(
-                "{}",
-                String::from_utf8(
-                    git::column(&langs.join(" "), "  ", 80)
-                        .wrap_err("Printing requested languages")?
-                        .stdout
-                )
-                .into_diagnostic()
-                .wrap_err("Converting column-formatted languages to a string for printing")?
-            );
-        }
-        None => {
-            println!("Building all languages.");
-            println!();
-        }
+    if let Some(langs) = &command.languages {
+        println!("Building the following languages:");
+        println!();
+        println!(
+            "{}",
+            String::from_utf8(
+                git::column(&langs.join(" "), "  ", 80)
+                    .wrap_err("Printing requested languages")?
+                    .stdout
+            )
+            .into_diagnostic()
+            .wrap_err("Converting column-formatted languages to a string for printing")?
+        );
+    } else {
+        println!("Building all languages.");
+        println!();
     }
     println!("Running with the following configuration:");
     println!();
