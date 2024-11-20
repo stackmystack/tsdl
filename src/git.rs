@@ -68,7 +68,7 @@ pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
 }
 
 pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
-    if cwd.exists() {
+    if is_valid_git_dir(cwd).await {
         let head_sha1 = String::from_utf8(
             Command::new("git")
                 .current_dir(cwd)
@@ -87,6 +87,14 @@ pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
             fetch_and_checkout(cwd, git_ref).await?;
         }
     } else {
+        if cwd.exists() {
+            if cwd.is_dir() {
+                fs::remove_dir(cwd).await
+            } else {
+                fs::remove_file(cwd).await
+            }
+            .into_diagnostic()?;
+        }
         fs::create_dir_all(cwd).await.into_diagnostic()?;
         Command::new("git")
             .current_dir(cwd)
@@ -101,6 +109,13 @@ pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
         fetch_and_checkout(cwd, git_ref).await?;
     }
     Ok(())
+}
+
+async fn is_valid_git_dir(cwd: &Path) -> bool {
+    let mut git_check = Command::new("git");
+    git_check.current_dir(cwd);
+    git_check.args(["rev-parse", "--is-inside-work-tree"]);
+    git_check.exec().await.is_ok()
 }
 
 async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
