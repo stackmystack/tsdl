@@ -1,10 +1,14 @@
+[workspace]
+
+members = ["crates/markdown_to_docs"]
+
 [package]
 authors = ["Firas al-Khalil <firasalkhalil@gmail.com>"]
 build = "build.rs"
 description = "A downloader/builder of many tree-sitter parsers"
 edition = "2021"
 name = "tsdl"
-version = "1.2.1" # managed by release.sh
+version = "1.2.1"                                                # managed by release.sh
 license = "MIT"
 
 [lib]
@@ -55,13 +59,25 @@ log = "0.4"
 markdown_to_docs = { path = "crates/markdown_to_docs" }
 miette = { version = "7.2.0", features = ["fancy"] }
 num_cpus = "1.16"
-reqwest = { version = "0.12.7", default-features = false, features = ["http2", "rustls-tls"] }
-self_update = { version = "0.41.0", default-features = false, features = ["compression-flate2", "rustls"] }
+reqwest = { version = "0.12.7", default-features = false, features = [
+  "http2",
+  "rustls-tls",
+] }
+self_update = { version = "0.41.0", default-features = false, features = [
+  "compression-flate2",
+  "rustls",
+] }
 semver = "1.0.23"
 serde = { version = "1.0", features = ["derive"] }
 tempfile = "3.12.0"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = [
+  "fs",
+  "process",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
 toml = "0.8"
 tracing = "0.1"
 tracing-appender = "0.2"
