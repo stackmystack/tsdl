@@ -56,7 +56,7 @@ human-panic = "2.0.1"
 ignore = "0.4"
 indicatif = "0.17"
 log = "0.4"
-markdown_to_docs = { path = "crates/markdown_to_docs" }
+markdown_to_docs = { version = "1.0.0", path = "crates/markdown_to_docs" }
 miette = { version = "7.2.0", features = ["fancy"] }
 num_cpus = "1.16"
 reqwest = { version = "0.12.7", default-features = false, features = [
