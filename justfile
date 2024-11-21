@@ -1,9 +1,13 @@
 #!/usr/bin/env -S just --justfile
 
+alias b := build
 alias c := clean
 alias d := doc
 alias l := lint
 alias t := test
+
+build:
+  cargo build
 
 clean:
   cargo clean
