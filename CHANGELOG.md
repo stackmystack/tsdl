@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.3.0] - 2024-11-21
+
+### Features
+
+- **config**: From env vars if cmd args are not present - ([b693719](https://github.com/stackmystack/tsdl/commit/b6937196d4b9c5c3e61b462fdc7742b10efa98fa))
+
+### Bug Fixes
+
+- **build**: Clean, clone, then build if remote definition changes - ([62375ae](https://github.com/stackmystack/tsdl/commit/62375ae753b3749fd0605c45c344d115e116c6e3))
+- **clone**: When a parser was not correctly cloned in a previous run - ([b976d87](https://github.com/stackmystack/tsdl/commit/b976d8762d4e540d274366ba16cf918f9b2706e3))
+
+### Documentation
+
+- **crate**: Add README.md to the crate's documentation - ([8d25198](https://github.com/stackmystack/tsdl/commit/8d251987413c8e8c6481831525a0d5b893021ef7))
+- **tsdl**: Use markdown_to_docs to properly display in docs.rs - ([e980e99](https://github.com/stackmystack/tsdl/commit/e980e9959dfdfc2c76cb5407fe71c18e099e460a))
+
+### Other
+
+- **markdown_to_docs**: Remove unnecessary reference - ([1e5f8d1](https://github.com/stackmystack/tsdl/commit/1e5f8d1d64949e71f7b1c88dcdcff61f86025886))
+- Style - ([8bfc86b](https://github.com/stackmystack/tsdl/commit/8bfc86bfa3d3489adb197f69d7d247af2a5aebd1))
+
+## New Contributors ❤️
+
+* @dependabot[bot] made their first contribution in [#11](https://github.com/stackmystack/tsdl/pull/11)
 ## [1.2.1] - 2024-09-07
 
 ### Bug Fixes
