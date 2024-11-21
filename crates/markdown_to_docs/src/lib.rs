@@ -6,7 +6,7 @@ use regex::Regex;
 pub fn include(input: TokenStream) -> TokenStream {
     let input_str = input.to_string();
 
-    let ghf_markdown = std::fs::read_to_string(&input_str.trim_matches('"')).unwrap();
+    let ghf_markdown = std::fs::read_to_string(input_str.trim_matches('"')).unwrap();
 
     let re = Regex::new(r"> \[!(CAUTION|IMPORTANT|NOTE|TIP|WARNING)\]").unwrap();
     let transformed_content = re
