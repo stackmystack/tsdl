@@ -68,42 +68,50 @@ pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
 }
 
 pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
+    if !is_same_remote(cwd, repo).await {
+        clean_anyway(cwd).await?;
+    }
     if is_valid_git_dir(cwd).await {
-        let head_sha1 = String::from_utf8(
-            Command::new("git")
-                .current_dir(cwd)
-                .args(["rev-parse", "HEAD"])
-                .exec()
-                .await?
-                .stdout,
-        )
-        .into_diagnostic()?;
-        if head_sha1.trim() != git_ref {
-            Command::new("git")
-                .current_dir(cwd)
-                .args(["reset", "--hard", "HEAD"])
-                .exec()
-                .await?;
-            fetch_and_checkout(cwd, git_ref).await?;
-        }
+        reset_head_hard(cwd, git_ref).await?;
     } else {
-        if cwd.exists() {
-            if cwd.is_dir() {
-                fs::remove_dir(cwd).await
-            } else {
-                fs::remove_file(cwd).await
-            }
-            .into_diagnostic()?;
-        }
-        fs::create_dir_all(cwd).await.into_diagnostic()?;
+        init_fetch_and_checkout(cwd, repo, git_ref).await?;
+    }
+    Ok(())
+}
+
+async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> Result<()> {
+    clean_anyway(cwd).await?;
+    fs::create_dir_all(cwd).await.into_diagnostic()?;
+
+    Command::new("git")
+        .current_dir(cwd)
+        .arg("init")
+        .exec()
+        .await?;
+    Command::new("git")
+        .current_dir(cwd)
+        .args(["remote", "add", "origin", repo])
+        .exec()
+        .await?;
+    fetch_and_checkout(cwd, git_ref).await?;
+
+    Ok(())
+}
+
+async fn reset_head_hard(cwd: &Path, git_ref: &str) -> Result<()> {
+    let head_sha1 = String::from_utf8(
         Command::new("git")
             .current_dir(cwd)
-            .arg("init")
+            .args(["rev-parse", "HEAD"])
             .exec()
-            .await?;
+            .await?
+            .stdout,
+    )
+    .into_diagnostic()?;
+    if head_sha1.trim() != git_ref {
         Command::new("git")
             .current_dir(cwd)
-            .args(["remote", "add", "origin", repo])
+            .args(["reset", "--hard", "HEAD"])
             .exec()
             .await?;
         fetch_and_checkout(cwd, git_ref).await?;
@@ -111,11 +119,43 @@ pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+async fn clean_anyway(cwd: &Path) -> Result<()> {
+    if cwd.exists() {
+        if cwd.is_dir() {
+            fs::remove_dir(cwd).await
+        } else {
+            fs::remove_file(cwd).await
+        }
+        .into_diagnostic()?;
+    };
+    Ok(())
+}
+
+async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
+    let mut git_remote = Command::new("git");
+    git_remote.current_dir(cwd);
+    git_remote.args(["remote", "get-url", "origin"]);
+    let current_remote = git_remote
+        .exec()
+        .await
+        .map(|f| String::from_utf8(f.stdout).unwrap_or_default())
+        .unwrap_or_default();
+    current_remote.trim() == remote
+}
+
 async fn is_valid_git_dir(cwd: &Path) -> bool {
     let mut git_check = Command::new("git");
     git_check.current_dir(cwd);
     git_check.args(["rev-parse", "--is-inside-work-tree"]);
-    git_check.exec().await.is_ok()
+    let is_inside_work_tree = git_check.exec().await.is_ok();
+    let can_parse_head = Command::new("git")
+        .current_dir(cwd)
+        .args(["rev-parse", "HEAD"])
+        .exec()
+        .await
+        .is_ok();
+
+    is_inside_work_tree && can_parse_head
 }
 
 async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
