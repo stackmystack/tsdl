@@ -6,6 +6,7 @@ alias l := lint
 alias t := test
 
 clean:
+  cargo clean
   rm -rf tmp parsers parsers.toml
 
 clippy:
