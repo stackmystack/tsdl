@@ -11,7 +11,7 @@ use tracing::error;
 use url::Url;
 
 use crate::{
-    args::{BuildCommand, ParserConfig},
+    args::{BuildCommand, ParserConfig, Target},
     config,
     consts::TSDL_FROM,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
@@ -70,6 +70,7 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
         command.build_dir.clone(),
         command.out_dir.clone(),
         &command.prefix,
+        &command.target,
     )
     .unwrap();
     create_dir_all(&command.out_dir)
@@ -102,6 +103,7 @@ fn languages(
     build_dir: PathBuf,
     out_dir: PathBuf,
     prefix: &str,
+    target: &Target,
 ) -> Result<Vec<Language>, error::LanguageCollection> {
     let (res, errs) = unique_languages(
         ts_cli,
@@ -111,6 +113,7 @@ fn languages(
         requested_languages,
         defined_parsers,
         progress,
+        target,
     );
     if errs.is_empty() {
         Ok(res.into_iter().map(Result::unwrap).collect())
@@ -135,6 +138,7 @@ fn unique_languages(
     requested_languages: &Option<Vec<String>>,
     defined_parsers: &Option<BTreeMap<String, ParserConfig>>,
     progress: Arc<Mutex<Progress>>,
+    target: &Target,
 ) -> Languages {
     let ts_cli = Arc::new(ts_cli);
     let final_languages = requested_languages
@@ -162,6 +166,7 @@ fn unique_languages(
                     out_dir.canon().unwrap(),
                     prefix.into(),
                     repo,
+                    target.clone(),
                     ts_cli.clone(),
                 )
             })

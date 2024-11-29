@@ -153,6 +153,10 @@ pub struct BuildCommand {
     #[serde(default)]
     pub show_config: bool,
 
+    /// Build target.
+    #[arg(short, long, value_enum, default_value_t = Target::Native)]
+    pub target: Target,
+
     #[command(flatten)]
     #[serde(default)]
     pub tree_sitter: TreeSitter,
@@ -169,6 +173,7 @@ impl Default for BuildCommand {
             out_dir: PathBuf::from(TSDL_OUT_DIR),
             prefix: String::from(TSDL_PREFIX),
             show_config: TSDL_SHOW_CONFIG,
+            target: Target::Native,
             tree_sitter: TreeSitter::default(),
         }
     }
@@ -195,6 +200,16 @@ pub enum ParserConfig {
         from: Option<String>,
     },
     Ref(String),
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Deserialize, Diff, Serialize, PartialEq, Eq)]
+#[diff(attr(
+    #[derive(Debug, PartialEq)]
+))]
+pub enum Target {
+    All,
+    Native,
+    Wasm,
 }
 
 #[derive(clap::Args, Clone, Debug, Diff, Deserialize, PartialEq, Eq, Serialize)]
