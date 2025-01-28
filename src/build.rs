@@ -65,8 +65,8 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
     let languages = languages(
         ts_cli,
         screen,
-        &command.languages,
-        &command.parsers,
+        command.languages.as_ref(),
+        command.parsers.as_ref(),
         command.build_dir.clone(),
         command.out_dir.clone(),
         &command.prefix,
@@ -97,8 +97,8 @@ async fn update_screen(progress: Arc<Mutex<Progress>>) {
 fn languages(
     ts_cli: PathBuf,
     progress: Arc<Mutex<Progress>>,
-    requested_languages: &Option<Vec<String>>,
-    defined_parsers: &Option<BTreeMap<String, ParserConfig>>,
+    requested_languages: Option<&Vec<String>>,
+    defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
     build_dir: PathBuf,
     out_dir: PathBuf,
     prefix: &str,
@@ -132,20 +132,17 @@ fn unique_languages(
     build_dir: PathBuf,
     out_dir: PathBuf,
     prefix: &str,
-    requested_languages: &Option<Vec<String>>,
-    defined_parsers: &Option<BTreeMap<String, ParserConfig>>,
+    requested_languages: Option<&Vec<String>>,
+    defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
     progress: Arc<Mutex<Progress>>,
 ) -> Languages {
     let ts_cli = Arc::new(ts_cli);
-    let final_languages = requested_languages
-        .clone()
-        .filter(|arr| !arr.is_empty())
-        .or_else(|| {
-            defined_parsers
-                .as_ref()
-                .map(|map| map.keys().cloned().collect())
-        })
-        .unwrap_or_default();
+    let final_languages = match requested_languages {
+        Some(langs) if !langs.is_empty() => langs.clone(),
+        _ => defined_parsers
+            .map(|parsers| parsers.keys().cloned().collect())
+            .unwrap_or_default(),
+    };
     final_languages
         .into_iter()
         .collect::<HashSet<_>>()
@@ -175,7 +172,7 @@ fn unique_languages(
 
 fn coords(
     language: &str,
-    defined_parsers: &Option<BTreeMap<String, ParserConfig>>,
+    defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
 ) -> (Option<String>, Ref, Result<Url>) {
     match defined_parsers.as_ref().and_then(|p| p.get(language)) {
         Some(ParserConfig::Ref(git_ref)) => {
