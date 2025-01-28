@@ -52,7 +52,7 @@ pub fn current(config: &Path, command: Option<&BuildCommand>) -> Result<BuildCom
         }
     };
     debug!("from_both = {:?}", from_file);
-    // Figment is screwing with me, and it's overrinding config coming
+    // Figment is screwing with me, and it's overriding config coming
     // from Env::prefixed("TSDL_").
     // The scary thing is that I might have to write my own config
     // joiner, where I need to track provenance of the config, and also
