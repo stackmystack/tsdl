@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1] - 2025-01-28
+
+### Bug Fixes
+
+- **cargo.toml**: Specify markdown_to_docs version for proper publishing - ([0b9d96a](https://github.com/stackmystack/tsdl/commit/0b9d96aee3f8cf0f5051b2f84a2178b9c77c00a8))
+
 ## [1.3.0] - 2024-11-21
 
 ### Features
