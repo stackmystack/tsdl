@@ -1,3 +1,16 @@
+//! The API is not nice, and I can't change the number of steps on the fly.
+//! Which I need for repos declaring multiple parsers like php. I can't
+//! change what's in the tick position easily too. And let's not mention
+//! code duplication …
+//!
+//! What Ineed is a single class that handles plain and fancy progress strategies,
+//! instead of having to handle them with static dispatch via `enum_dispatch`.
+//!
+//! PS: What' _"bad"_ about working with `enum_dispatch` is the language server.
+//! Any modification to the trait you're dispatching will not properly propagate
+//! and your diagnostics will be behind reality.
+//!
+//! TODO: Get rid of the stupid progress bar crate.
 use std::{
     borrow::Cow,
     fmt::Display,
@@ -13,20 +26,7 @@ use miette::{Context, IntoDiagnostic, Result};
 
 use crate::{args::ProgressStyle, format_duration};
 
-/// TODO: Get rid of the stupid progress bar crate.
-///
-/// The API is not nice, and I can't change the number of steps on the fly.
-/// Which I need for repos declaring multiple parsers like php. I can't
-/// change what's in the tick position easily too. And let's not mention
-/// code duplication …
-///
-/// What Ineed is a single class that handles plain and fancy progress strategies,
-/// instead of having to handle them with static dispatch via `enum_dispatch`.
-///
-/// PS: What' _"bad"_ about working with `enum_dispatch` is the language server.
-/// Any modification to the trait you're dispatching will not properly propagate
-/// and your diagnostics will be behind reality.
-
+/// Spinning sprite.
 pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";
 
 #[must_use]
