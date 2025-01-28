@@ -2,7 +2,7 @@
 authors = ["Firas al-Khalil <firasalkhalil@gmail.com>"]
 description = "Transforms github flavored markdown to markdown suitable for docs.rs"
 edition = "2021"
-license =  "MIT"
+license = "MIT"
 name = "markdown_to_docs"
 version = "1.0.0"
 
