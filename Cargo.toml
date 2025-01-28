@@ -63,7 +63,7 @@ reqwest = { version = "0.12.7", default-features = false, features = [
   "http2",
   "rustls-tls",
 ] }
-self_update = { version = "0.41.0", default-features = false, features = [
+self_update = { version = "0.42.0", default-features = false, features = [
   "compression-flate2",
   "rustls",
 ] }
