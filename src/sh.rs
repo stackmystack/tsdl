@@ -8,7 +8,7 @@ use crate::{error, relative_to_cwd};
 
 pub trait Exec {
     fn exec(&mut self) -> impl std::future::Future<Output = Result<Output>>;
-    fn display(&self) -> String;
+    fn display(&self) -> Result<String>;
 }
 
 pub trait Script {
@@ -18,61 +18,53 @@ pub trait Script {
 impl Exec for Command {
     #[tracing::instrument(skip(self))]
     async fn exec(&mut self) -> Result<Output> {
-        trace!("{}", self.display());
+        let cmd = self.display()?;
+        trace!("{}", cmd);
+
         let output = self.output().await.into_diagnostic()?;
         if output.status.success() {
-            Ok(output)
-        } else {
-            let program = self.as_std().get_program().to_str().unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let msg = if let Some(code) = output.status.code() {
-                format!("{} failed with exit status {}.", self.display(), code)
-            } else {
-                format!(
-                    "{} interrupted by signal {}.",
-                    program,
-                    output.status.signal().unwrap()
-                )
-            };
-            error!("{msg}\nStdOut:\n{stdout}\nStdErr\n{stderr}");
-            Err(error::Command {
-                msg,
-                stderr,
-                stdout,
-            }
-            .into())
+            return Ok(output);
         }
+
+        let program = self.as_std().get_program().to_string_lossy();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let msg = match output.status.code() {
+            Some(code) => format!("{cmd} failed with exit status {code}."),
+            None => format!(
+                "{} interrupted by signal {}.",
+                program,
+                output.status.signal().unwrap()
+            ),
+        };
+
+        error!("{msg}\nStdOut:\n{stdout}\nStdErr\n{stderr}");
+
+        Err(error::Command {
+            msg,
+            stderr,
+            stdout,
+        }
+        .into())
     }
 
-    // This is needlessly complicated, trying to minimize allocations, like grown-ups,
-    // not because it's needed —I didn't even measure anything— but because I'm exercising my rust.
-    fn display(&self) -> String {
-        let program = self.as_std().get_program();
+    fn display(&self) -> Result<String> {
+        let program = self.as_std().get_program().to_string_lossy();
         let args = self.as_std().get_args();
         let cwd = self.as_std().get_current_dir();
-        let capacity = program.len() + 1 + args.len() + 1; // + 1 for spaces
-        let mut res = String::with_capacity(
-            capacity
-                + cwd.map_or(
-                    0,
-                    // + 3 = 2 brackets and a space.
-                    // we always overallocate by 1 (alignment aside); see the formatting of args.
-                    |a| a.to_str().unwrap().len() + 3,
-                ),
-        );
+        let mut res = String::new();
+
         if let Some(path) = cwd {
-            write!(res, "[{}] ", relative_to_cwd(path).to_str().unwrap()).unwrap();
-        };
-        write!(res, "{} ", program.to_str().unwrap()).unwrap();
-        let mut args_iter = args.enumerate();
-        if let Some((_, first_arg)) = args_iter.next() {
-            write!(res, "{}", first_arg.to_str().unwrap()).unwrap();
-            for (_, arg) in args_iter {
-                write!(res, " {}", arg.to_str().unwrap()).unwrap();
-            }
+            write!(res, "[{}] ", relative_to_cwd(path).to_string_lossy()).into_diagnostic()?;
         }
-        res
+
+        write!(res, "{program} ").into_diagnostic()?;
+
+        for arg in args {
+            write!(res, "{} ", arg.to_string_lossy()).into_diagnostic()?;
+        }
+
+        Ok(res.trim_end().to_string())
     }
 }
 
