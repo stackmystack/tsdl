@@ -148,3 +148,51 @@ pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Res
     handle.fin(format!("{tag}"));
     Ok(cli)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_refs_empty() {
+        let stdout = "";
+        let refs = parse_refs(stdout);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_refs() {
+        let stdout =
+            "abc123\trefs/tags/v1.0.0\nuwu456\trefs/tags/release\nxyz789\trefs/tags/v2.0.0";
+        let refs = parse_refs(stdout);
+        assert_eq!(refs.get("v1.0.0"), Some(&"abc123".to_string()));
+        assert_eq!(refs.get("release"), Some(&"uwu456".to_string()));
+        assert_eq!(refs.get("v2.0.0"), Some(&"xyz789".to_string()));
+    }
+
+    #[test]
+    fn test_find_tag_exact() {
+        let mut refs = HashMap::new();
+        refs.insert("v1.0.0".to_string(), "abc123".to_string());
+        let tag = find_tag(&refs, "1.0.0");
+        match tag {
+            Tag::Exact { sha1, label } => {
+                assert_eq!(sha1.to_string(), "abc123");
+                assert_eq!(label, "v1.0.0");
+            }
+            Tag::Ref(_) => panic!("Expected Tag::Exact"),
+        }
+    }
+
+    #[test]
+    fn test_find_tag_ref() {
+        let refs = HashMap::new();
+        let tag = find_tag(&refs, "1.0.0");
+        match tag {
+            Tag::Ref(git_ref) => {
+                assert_eq!(git_ref.to_string(), "1.0.0");
+            }
+            Tag::Exact { .. } => panic!("Expected Tag::Ref"),
+        }
+    }
+}
