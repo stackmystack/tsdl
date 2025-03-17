@@ -199,13 +199,7 @@ impl Language {
 
     async fn copy(&self, dir: impl Into<PathBuf>) -> Result<()> {
         let dir = dir.into();
-        let name = dir.file_name().unwrap().to_str().unwrap();
         let prefix = &self.prefix;
-        let dst = self
-            .out_dir
-            .clone()
-            .join(format!("{prefix}{name}.{DLL_EXTENSION}"));
-
         let mut files = fs::read_dir(&dir).await.unwrap();
         let mut dlls = Vec::with_capacity(1);
         while let Ok(Some(entry)) = files.next_entry().await {
@@ -223,7 +217,7 @@ impl Language {
                 name: self.name.clone(),
                 kind: error::ParserOp::Copy {
                     src: self.out_dir.clone(),
-                    dst,
+                    dst: dir,
                 },
                 source: miette!("Couldn't find any {DLL_EXTENSION} file").into(),
             }
@@ -233,14 +227,21 @@ impl Language {
                 name: self.name.clone(),
                 kind: error::ParserOp::Copy {
                     src: self.out_dir.clone(),
-                    dst,
+                    dst: dir,
                 },
                 source: miette!("Found many {DLL_EXTENSION} files: {dlls:?}").into(),
             }
             .into());
         }
 
-        fs::copy(&dlls[0], &dst)
+        let dll = &dlls[0];
+        let name = Self::extract_parser_name(dll);
+        let dst = self
+            .out_dir
+            .clone()
+            .join(format!("{prefix}{name}.{DLL_EXTENSION}"));
+
+        fs::copy(dll, &dst)
             .await
             .into_diagnostic()
             .wrap_err_with(|| format!("cp {} {}", dlls[0].display(), dst.display()))
@@ -290,5 +291,30 @@ impl Language {
                 .into()
             })
             .and(Ok(()))
+    }
+
+    fn extract_parser_name(dll_path: &Path) -> String {
+        let mut name = dll_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from)
+            .unwrap();
+        if name == format!("parser.{DLL_EXTENSION}") {
+            name = dll_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .map(String::from)
+                .unwrap();
+        }
+        if name.starts_with("libtree-sitter-") {
+            name = name.trim_start_matches("libtree-sitter-").to_string();
+        }
+        if name.ends_with(&format!(".{DLL_EXTENSION}")) {
+            name = name
+                .trim_end_matches(&format!(".{DLL_EXTENSION}"))
+                .to_string();
+        }
+        name
     }
 }

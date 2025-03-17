@@ -151,7 +151,10 @@ fn unique_languages(
             let (build_script, git_ref, url) = coords(&language, defined_parsers);
             url.map(|repo| {
                 Language::new(
-                    build_dir.join(&language).canon().unwrap(),
+                    build_dir
+                        .join(format!("tree-sitter-{}", &language)) // make sure it follows this format because the cli takes advantage of that.
+                        .canon()
+                        .unwrap(),
                     build_script,
                     git_ref,
                     progress.lock().unwrap().register(&language, NUM_STEPS),
