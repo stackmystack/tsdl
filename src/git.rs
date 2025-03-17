@@ -88,6 +88,7 @@ async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> Resul
         .arg("init")
         .exec()
         .await?;
+
     Command::new("git")
         .current_dir(cwd)
         .args(["remote", "add", "origin", repo])
@@ -99,16 +100,7 @@ async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> Resul
 }
 
 async fn reset_head_hard(cwd: &Path, git_ref: &str) -> Result<()> {
-    let head_sha1 = String::from_utf8(
-        Command::new("git")
-            .current_dir(cwd)
-            .args(["rev-parse", "HEAD"])
-            .exec()
-            .await?
-            .stdout,
-    )
-    .into_diagnostic()?;
-    if head_sha1.trim() != git_ref {
+    if git_ref != get_head_sha1(cwd).await?.trim() {
         Command::new("git")
             .current_dir(cwd)
             .args(["reset", "--hard", "HEAD"])
@@ -119,35 +111,53 @@ async fn reset_head_hard(cwd: &Path, git_ref: &str) -> Result<()> {
     Ok(())
 }
 
+async fn get_head_sha1(cwd: &Path) -> Result<String> {
+    String::from_utf8(
+        Command::new("git")
+            .current_dir(cwd)
+            .args(["rev-parse", "HEAD"])
+            .exec()
+            .await?
+            .stdout,
+    )
+    .into_diagnostic()
+}
+
 async fn clean_anyway(cwd: &Path) -> Result<()> {
     if cwd.exists() {
         if cwd.is_dir() {
-            fs::remove_dir(cwd).await
+            fs::remove_dir_all(cwd).await
         } else {
             fs::remove_file(cwd).await
         }
         .into_diagnostic()?;
-    };
+    }
     Ok(())
 }
 
 async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
-    let mut git_remote = Command::new("git");
-    git_remote.current_dir(cwd);
-    git_remote.args(["remote", "get-url", "origin"]);
-    let current_remote = git_remote
-        .exec()
-        .await
-        .map(|f| String::from_utf8(f.stdout).unwrap_or_default())
-        .unwrap_or_default();
-    current_remote.trim() == remote
+    remote == get_remote_url(cwd).await.unwrap_or_default().trim()
+}
+
+async fn get_remote_url(cwd: &Path) -> Result<String> {
+    String::from_utf8(
+        Command::new("git")
+            .current_dir(cwd)
+            .args(["remote", "get-url", "origin"])
+            .exec()
+            .await?
+            .stdout,
+    )
+    .into_diagnostic()
 }
 
 async fn is_valid_git_dir(cwd: &Path) -> bool {
-    let mut git_check = Command::new("git");
-    git_check.current_dir(cwd);
-    git_check.args(["rev-parse", "--is-inside-work-tree"]);
-    let is_inside_work_tree = git_check.exec().await.is_ok();
+    let is_inside_work_tree = Command::new("git")
+        .current_dir(cwd)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .exec()
+        .await
+        .is_ok();
     let can_parse_head = Command::new("git")
         .current_dir(cwd)
         .args(["rev-parse", "HEAD"])
@@ -174,15 +184,17 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
 }
 
 pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> Result<String> {
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(["describe", "--abbrev=0", "--tags", git_ref])
-        .exec()
-        .await?;
-    Ok(String::from_utf8(output.stdout)
-        .into_diagnostic()?
-        .trim()
-        .to_string())
+    Ok(String::from_utf8(
+        Command::new("git")
+            .current_dir(cwd)
+            .args(["describe", "--abbrev=0", "--tags", git_ref])
+            .exec()
+            .await?
+            .stdout,
+    )
+    .into_diagnostic()?
+    .trim()
+    .to_string())
 }
 
 pub fn column(input: &str, indent: &str, width: usize) -> Result<Output> {
