@@ -5,9 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use miette::{miette, Context, IntoDiagnostic, Result};
+use miette::{Context, IntoDiagnostic, Result};
 use tokio::time;
-use tracing::error;
 use url::Url;
 
 use crate::{
@@ -49,20 +48,16 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(command.ncpus)
-        .build();
-    if let Err(ref err) = rt {
-        error!("Failed to initialize tokio.");
-        error!("{err}");
-        return Err(miette!("Failed to spawn the tokio runtime"));
-    }
-    let rt = rt.unwrap();
+        .build()
+        .into_diagnostic()
+        .wrap_err("Failed to initialize tokio runtime")?;
     let _guard = rt.enter();
     let screen = Arc::new(Mutex::new(progress));
     rt.spawn(update_screen(screen.clone()));
     let ts_cli = rt
         .block_on(tree_sitter::prepare(command, screen.clone()))
         .wrap_err("Preparing tree-sitter")?;
-    let languages = languages(
+    let languages = collect_languages(
         ts_cli,
         screen,
         command.languages.as_ref(),
@@ -70,15 +65,13 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
         command.build_dir.clone(),
         command.out_dir.clone(),
         &command.prefix,
-    )
-    .unwrap();
+    )?;
     create_dir_all(&command.out_dir)
         .into_diagnostic()
         .wrap_err(format!(
             "Creating output dir {}",
             &command.out_dir.display()
-        ))
-        .unwrap();
+        ))?;
     rt.block_on(build_languages(languages))
 }
 
@@ -94,7 +87,7 @@ async fn update_screen(progress: Arc<Mutex<Progress>>) {
     }
 }
 
-fn languages(
+fn collect_languages(
     ts_cli: PathBuf,
     progress: Arc<Mutex<Progress>>,
     requested_languages: Option<&Vec<String>>,
@@ -148,7 +141,7 @@ fn unique_languages(
         .collect::<HashSet<_>>()
         .into_iter()
         .map(|language| {
-            let (build_script, git_ref, url) = coords(&language, defined_parsers);
+            let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
             url.map(|repo| {
                 Language::new(
                     build_dir
@@ -173,7 +166,7 @@ fn unique_languages(
         .partition(Result::is_ok)
 }
 
-fn coords(
+fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
 ) -> (Option<String>, Ref, Result<Url>) {
