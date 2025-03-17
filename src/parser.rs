@@ -200,62 +200,18 @@ impl Language {
     async fn copy(&self, dir: impl Into<PathBuf>) -> Result<()> {
         let dir = dir.into();
         let prefix = &self.prefix;
-        let mut files = fs::read_dir(&dir).await.unwrap();
-        let mut dlls = Vec::with_capacity(1);
-        while let Ok(Some(entry)) = files.next_entry().await {
-            let file_name = entry.file_name();
-            let name = file_name.as_os_str().to_str().unwrap();
-            if entry.file_type().await.unwrap().is_file()
-                && name.ends_with(&format!(".{DLL_EXTENSION}"))
-            {
-                dlls.push(dir.clone().join(name));
-            }
-        }
-
-        if dlls.is_empty() {
-            return Err(error::Step {
-                name: self.name.clone(),
-                kind: error::ParserOp::Copy {
-                    src: self.out_dir.clone(),
-                    dst: dir,
-                },
-                source: miette!("Couldn't find any {DLL_EXTENSION} file").into(),
-            }
-            .into());
-        } else if dlls.len() > 1 {
-            return Err(error::Step {
-                name: self.name.clone(),
-                kind: error::ParserOp::Copy {
-                    src: self.out_dir.clone(),
-                    dst: dir,
-                },
-                source: miette!("Found many {DLL_EXTENSION} files: {dlls:?}").into(),
-            }
-            .into());
-        }
-
-        let dll = &dlls[0];
-        let name = Self::extract_parser_name(dll);
+        let dll = self.find_dll_files(&dir).await?;
+        let name = Self::extract_parser_name(&dll);
         let dst = self
             .out_dir
             .clone()
             .join(format!("{prefix}{name}.{DLL_EXTENSION}"));
 
-        fs::copy(dll, &dst)
+        fs::copy(&dll, &dst)
             .await
             .into_diagnostic()
-            .wrap_err_with(|| format!("cp {} {}", dlls[0].display(), dst.display()))
-            .map_err(|err| {
-                error::Step {
-                    name: self.name.clone(),
-                    kind: error::ParserOp::Copy {
-                        src: dlls.pop().unwrap(),
-                        dst,
-                    },
-                    source: err.into(),
-                }
-                .into()
-            })
+            .wrap_err_with(|| format!("cp {} {}", &dll.display(), dst.display()))
+            .map_err(|err| self.create_copy_error(&dll, err.to_string()).into())
             .and(Ok(()))
     }
 
@@ -293,6 +249,30 @@ impl Language {
             .and(Ok(()))
     }
 
+    async fn find_dll_files(&self, dir: &Path) -> Result<PathBuf> {
+        let mut files = fs::read_dir(&dir).await.unwrap();
+        let mut dlls = Vec::with_capacity(1);
+        while let Ok(Some(entry)) = files.next_entry().await {
+            let file_name = entry.file_name();
+            let name = file_name.as_os_str().to_str().unwrap();
+            if entry.file_type().await.unwrap().is_file()
+                && name.ends_with(&format!(".{DLL_EXTENSION}"))
+            {
+                dlls.push(dir.join(name));
+            }
+        }
+        // Error handling for no DLLs or too many DLLs
+        match dlls.len() {
+            0 => Err(self
+                .create_copy_error(dir, format!("Couldn't find any {DLL_EXTENSION} file"))
+                .into()),
+            n if n > 1 => Err(self
+                .create_copy_error(dir, format!("Found many {DLL_EXTENSION} files: {dlls:?}"))
+                .into()),
+            _ => Ok(dlls[0].clone()),
+        }
+    }
+
     fn extract_parser_name(dll_path: &Path) -> String {
         let mut name = dll_path
             .file_name()
@@ -316,5 +296,16 @@ impl Language {
                 .to_string();
         }
         name
+    }
+
+    fn create_copy_error(&self, dir: &Path, message: String) -> error::Step {
+        error::Step {
+            name: self.name.clone(),
+            kind: error::ParserOp::Copy {
+                src: self.out_dir.clone(),
+                dst: dir.to_path_buf(),
+            },
+            source: miette!(message).into(),
+        }
     }
 }
