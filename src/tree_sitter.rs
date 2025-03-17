@@ -28,7 +28,12 @@ pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
         .args(["ls-remote", "--refs", "--tags", repo])
         .exec()
         .await?;
-    let stdout = String::from_utf8(output.stdout).into_diagnostic()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let refs = parse_refs(&stdout);
+    Ok(find_tag(&refs, version))
+}
+
+fn parse_refs(stdout: &str) -> HashMap<String, String> {
     let mut refs = HashMap::new();
     for line in stdout.lines() {
         let ref_line = line.split('\t').map(str::trim).collect::<Vec<_>>();
@@ -38,8 +43,11 @@ pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
             refs.insert(tag.to_string(), sha1.to_string());
         }
     }
-    Ok(refs
-        .get_key_value(&format!("v{version}"))
+    refs
+}
+
+fn find_tag(refs: &HashMap<String, String>, version: &str) -> Tag {
+    refs.get_key_value(&format!("v{version}"))
         .or_else(|| refs.get_key_value(version))
         .map_or_else(
             || Tag::Ref(Ref::from_str(version).unwrap()),
@@ -50,7 +58,7 @@ pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
                     label: k.to_string(),
                 }
             },
-        ))
+        )
 }
 
 async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<PathBuf> {
@@ -74,12 +82,17 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
         let url = format!("{repo}/releases/download/{tag}/{gz_basename}");
         let gz = PathBuf::new().join(build_dir).join(gz_basename);
 
-        download(&gz, &url).await?;
-        gunzip(&gz).await?;
-        chmod_x(&res).await?;
-        fs::remove_file(gz).await.into_diagnostic()?;
+        download_and_extract(&gz, &url, &res).await?;
     }
     Ok(res)
+}
+
+async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> Result<()> {
+    download(gz, url).await?;
+    gunzip(gz).await?;
+    chmod_x(res).await?;
+    fs::remove_file(gz).await.into_diagnostic()?;
+    Ok(())
 }
 
 async fn download(gz: &Path, url: &str) -> Result<()> {
