@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0] - 2025-03-22
+
+### Features
+
+- **clone**: Always clone to tree-sitter-{language} dir - ([daf6e36](https://github.com/stackmystack/tsdl/commit/daf6e3683117354d7dfacd7c9d4807ab33955737))
+
+### Other
+
+- **tree_sitter**: Init - ([160d832](https://github.com/stackmystack/tsdl/commit/160d8325cf689b7947823a7fba099b0390d0166b))
+
+## New Contributors ❤️
+
+* @stackmystack made their first contribution in [#19](https://github.com/stackmystack/tsdl/pull/19)
+* @dependabot[bot] made their first contribution in [#18](https://github.com/stackmystack/tsdl/pull/18)
 ## [1.3.1] - 2025-01-28
 
 ### Bug Fixes
