@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use anyhow::{anyhow, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
-use miette::{miette, Context, IntoDiagnostic, Result};
 use tokio::process::Command;
 use tokio::{fs, io};
 use tracing::trace;
@@ -91,42 +91,34 @@ async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> Result<()> {
     download(gz, url).await?;
     gunzip(gz).await?;
     chmod_x(res).await?;
-    fs::remove_file(gz).await.into_diagnostic()?;
+    fs::remove_file(gz).await?;
     Ok(())
 }
 
 async fn download(gz: &Path, url: &str) -> Result<()> {
-    fs::write(
-        gz,
-        reqwest::get(url)
-            .await
-            .into_diagnostic()?
-            .bytes()
-            .await
-            .into_diagnostic()?,
-    )
-    .await
-    .into_diagnostic()
+    fs::write(gz, reqwest::get(url).await.context("fetch")?.bytes().await?)
+        .await
+        .with_context(|| format!("downloading {url} to {}", gz.display()))
 }
 
 async fn gunzip(gz: &Path) -> Result<()> {
-    let file = fs::File::open(gz).await.into_diagnostic()?;
+    let file = fs::File::open(gz).await?;
     let mut decompressor = GzipDecoder::new(tokio::io::BufReader::new(file));
     let out_path = gz.with_extension("");
-    let mut out_file = tokio::fs::File::create(out_path).await.into_diagnostic()?;
+    let mut out_file = tokio::fs::File::create(out_path).await?;
     io::copy(&mut decompressor, &mut out_file)
         .await
-        .into_diagnostic()
         .and(Ok(()))
+        .with_context(|| format!("decompressing {}", gz.display()))
 }
 
 async fn chmod_x(prog: &Path) -> Result<()> {
-    let metadata = fs::metadata(prog).await.into_diagnostic()?;
+    let metadata = fs::metadata(prog).await?;
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(prog, permissions)
         .await
-        .into_diagnostic()
+        .with_context(|| format!("chmod +x {}", prog.display()))
 }
 
 pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Result<PathBuf> {
@@ -134,12 +126,10 @@ pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Res
         progress
             .lock()
             .map(|mut lock| lock.register("tree-sitter-cli", 3))
-            .or(Err(miette!("Acquiring progress lock")))?
+            .or(Err(anyhow!("Acquiring progress lock")))?
     };
 
-    let repo = Url::parse(&args.tree_sitter.repo)
-        .into_diagnostic()
-        .wrap_err("Parsing the tree-sitter URL")?;
+    let repo = Url::parse(&args.tree_sitter.repo).context("Parsing the tree-sitter URL")?;
     let version = &args.tree_sitter.version;
     handle.start(format!("Figuring out tag from version {version}"));
     let tag = tag(repo.as_str(), version).await?;

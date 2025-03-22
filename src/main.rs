@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
+use anyhow::{bail, Result};
 use clap::Parser;
-use miette::{bail, IntoDiagnostic, Result};
 use self_update::self_replace;
 use semver::Version;
 use tracing::{error, info};
@@ -36,17 +36,15 @@ fn run(args: &args::Args) -> Result<()> {
 
 fn self_update(mut progress: Progress) -> Result<()> {
     let tsdl = env!("CARGO_BIN_NAME");
-    let current_version = Version::parse(env!("CARGO_PKG_VERSION")).into_diagnostic()?;
+    let current_version = Version::parse(env!("CARGO_PKG_VERSION"))?;
     let mut handle = progress.register("selfupdate", 4);
 
     handle.start("fetching releases".to_string());
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
-        .build()
-        .into_diagnostic()?
-        .fetch()
-        .into_diagnostic()?;
+        .build()?
+        .fetch()?;
 
     let name = format!("{tsdl}-{TREE_SITTER_PLATFORM}.gz");
     let asset = releases[0].assets.iter().find(|&asset| asset.name == name);
@@ -54,7 +52,7 @@ fn self_update(mut progress: Progress) -> Result<()> {
         bail!("Could not find a suitable release for your platform");
     }
 
-    let latest_version = Version::parse(&releases[0].version).into_diagnostic()?;
+    let latest_version = Version::parse(&releases[0].version)?;
     if latest_version <= current_version {
         handle.msg("already at the latest version".to_string());
         return Ok(());
@@ -62,17 +60,13 @@ fn self_update(mut progress: Progress) -> Result<()> {
 
     handle.step(format!("downloading {latest_version}"));
     let asset = asset.unwrap();
-    let tmp_dir = tempfile::tempdir().into_diagnostic()?;
+    let tmp_dir = tempfile::tempdir()?;
     let tmp_gz_path = tmp_dir.path().join(&asset.name);
-    let tmp_gz = fs::File::create_new(&tmp_gz_path).into_diagnostic()?;
+    let tmp_gz = fs::File::create_new(&tmp_gz_path)?;
 
     self_update::Download::from_url(&asset.download_url)
-        .set_header(
-            reqwest::header::ACCEPT,
-            "application/octet-stream".parse().into_diagnostic()?,
-        )
-        .download_to(&tmp_gz)
-        .into_diagnostic()?;
+        .set_header(reqwest::header::ACCEPT, "application/octet-stream".parse()?)
+        .download_to(&tmp_gz)?;
 
     handle.step(format!("extracting {latest_version}"));
     let tsdl_bin = PathBuf::from(tsdl);
@@ -80,11 +74,10 @@ fn self_update(mut progress: Progress) -> Result<()> {
         .archive(self_update::ArchiveKind::Plain(Some(
             self_update::Compression::Gz,
         )))
-        .extract_file(tmp_dir.path(), &tsdl_bin)
-        .into_diagnostic()?;
+        .extract_file(tmp_dir.path(), &tsdl_bin)?;
 
     let new_exe = tmp_dir.path().join(tsdl_bin);
-    self_replace::self_replace(new_exe).into_diagnostic()?;
+    self_replace::self_replace(new_exe)?;
 
     handle.fin(format!("{latest_version}"));
     Ok(())

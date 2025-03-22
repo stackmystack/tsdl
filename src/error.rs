@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
 use derive_more::derive::Display;
-use miette::Diagnostic;
 use thiserror::Error;
 
-#[derive(Debug, Diagnostic, Error)]
+#[derive(Debug, Error)]
 #[error("{msg}\nStdOut:\n{stdout}\nStdErr:\n{stderr}")]
 pub struct Command {
     pub msg: String,
@@ -12,37 +11,31 @@ pub struct Command {
     pub stdout: String,
 }
 
-#[derive(Debug, Diagnostic, Error)]
-#[error("Could not figure out all languages")]
+#[derive(Debug, Error)]
+#[error("Could not figure out all languages:\n{}", format_languages(.related))]
 pub struct LanguageCollection {
-    #[related]
     pub related: Vec<Language>,
 }
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("{name}")]
+#[derive(Debug, Error)]
+#[error("{name}.\n{source:?}")]
 pub struct Language {
     pub name: String,
-    #[source]
-    #[diagnostic_source]
-    pub source: Box<dyn Diagnostic + Send + Sync + 'static>,
+    pub source: Box<dyn std::error::Error + Send + Sync + 'static>,
 }
 
-#[derive(Debug, Diagnostic, Error)]
-#[error("Could not build all parsers")]
+#[derive(Debug, Error)]
+#[error("Could not build all parsers.\n{}", format_errors(.related))]
 pub struct Parser {
-    #[related]
-    pub related: Vec<Box<dyn Diagnostic + Send + Sync + 'static>>,
+    pub related: Vec<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("{name}: {kind}")]
+#[derive(Debug, Error)]
+#[error("{name}: {kind}.\n{source:?}")]
 pub struct Step {
     pub name: String,
     pub kind: ParserOp,
-    #[source]
-    #[diagnostic_source]
-    pub source: Box<dyn Diagnostic + Send + Sync + 'static>,
+    pub source: Box<dyn std::error::Error + Send + Sync + 'static>,
 }
 
 #[derive(Debug, Display)]
@@ -55,4 +48,19 @@ pub enum ParserOp {
     Copy { src: PathBuf, dst: PathBuf },
     #[display("Could not generate in {}", dir.display())]
     Generate { dir: PathBuf },
+}
+
+fn format_languages(langs: &[Language]) -> String {
+    langs
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_errors(errs: &Vec<Box<dyn std::error::Error + Send + Sync + 'static>>) -> String {
+    errs.iter()
+        .map(|e| format!("{e:?}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

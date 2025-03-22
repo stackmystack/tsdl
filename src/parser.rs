@@ -4,8 +4,8 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::{anyhow, Context, Result};
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
-use miette::{miette, Context, IntoDiagnostic, Result};
 use tokio::{fs, process::Command, sync::mpsc};
 use tracing::warn;
 use url::Url;
@@ -209,8 +209,7 @@ impl Language {
 
         fs::copy(&dll, &dst)
             .await
-            .into_diagnostic()
-            .wrap_err_with(|| format!("cp {} {}", &dll.display(), dst.display()))
+            .with_context(|| format!("cp {} {}", &dll.display(), dst.display()))
             .map_err(|err| self.create_copy_error(&dll, err.to_string()).into())
             .and(Ok(()))
     }
@@ -305,7 +304,7 @@ impl Language {
                 src: self.out_dir.clone(),
                 dst: dir.to_path_buf(),
             },
-            source: miette!(message).into(),
+            source: anyhow!(message).into(),
         }
     }
 }

@@ -35,6 +35,7 @@ repo = "https://github.com/tree-sitter/tree-sitter"
 version = "0.24.7"
 
 [dependencies]
+anyhow = "1.0"
 async-compression = { version = "0.4.12", features = ["tokio", "gzip"] }
 atty = "0.2"
 better-panic = "0.3.0"
@@ -56,7 +57,6 @@ human-panic = "2.0.1"
 ignore = "0.4"
 indicatif = "0.17"
 log = "0.4"
-miette = { version = "7.2.0", features = ["fancy"] }
 num_cpus = "1.16"
 reqwest = { version = "0.12.7", default-features = false, features = [
   "http2",

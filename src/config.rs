@@ -1,11 +1,11 @@
 use std::path::Path;
 
+use anyhow::{Context, Result};
 use diff::Diff;
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
-use miette::{Context, IntoDiagnostic, Result};
 use tracing::debug;
 
 use crate::{
@@ -19,15 +19,10 @@ pub fn run(command: &ConfigCommand, config: &Path) -> Result<()> {
             let config: BuildCommand = current(config, None)?;
             println!(
                 "{}",
-                toml::to_string(&config)
-                    .into_diagnostic()
-                    .wrap_err("Generating default TOML config")?
+                toml::to_string(&config).context("Generating default TOML config")?
             );
         }
-        ConfigCommand::Default => println!(
-            "{}",
-            toml::to_string(&BuildCommand::default()).into_diagnostic()?
-        ),
+        ConfigCommand::Default => println!("{}", toml::to_string(&BuildCommand::default())?),
     };
     Ok(())
 }
@@ -38,8 +33,7 @@ pub fn current(config: &Path, command: Option<&BuildCommand>) -> Result<BuildCom
         .merge(Serialized::defaults(from_default.clone()))
         .merge(Toml::file(config))
         .extract()
-        .into_diagnostic()
-        .wrap_err("Merging default and config file")?;
+        .context("Merging default and config file")?;
     match command {
         Some(from_command) => {
             debug!("Merging cli args + config files");
@@ -73,11 +67,10 @@ pub fn show(command: &BuildCommand) -> Result<()> {
             "{}",
             String::from_utf8(
                 git::column(&langs.join(" "), "  ", 80)
-                    .wrap_err("Printing requested languages")?
+                    .context("Printing requested languages")?
                     .stdout
             )
-            .into_diagnostic()
-            .wrap_err("Converting column-formatted languages to a string for printing")?
+            .context("Converting column-formatted languages to a string for printing")?
         );
     } else {
         println!("Building all languages.");
@@ -85,12 +78,7 @@ pub fn show(command: &BuildCommand) -> Result<()> {
     }
     println!("Running with the following configuration:");
     println!();
-    print_indent(
-        &toml::to_string(&command)
-            .into_diagnostic()
-            .wrap_err("Showing config")?,
-        "  ",
-    );
+    print_indent(&toml::to_string(&command).context("Showing config")?, "  ");
     println!();
     Ok(())
 }

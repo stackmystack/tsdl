@@ -1,6 +1,6 @@
+use anyhow::Result;
 use assert_fs::prelude::*;
 use indoc::{formatdoc, indoc};
-use miette::{IntoDiagnostic, Result};
 #[cfg(test)]
 use pretty_assertions::{assert_eq, assert_ne};
 
@@ -15,32 +15,30 @@ use tsdl::{
 
 #[test]
 fn current_from_generated_default() -> Result<()> {
-    let temp = assert_fs::TempDir::new().into_diagnostic()?;
+    let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
     let def = BuildCommand::default();
-    generated
-        .write_str(&toml::to_string(&def).into_diagnostic()?)
-        .into_diagnostic()?;
+    generated.write_str(&toml::to_string(&def)?)?;
     assert_eq!(def, config::current(&generated, None).unwrap());
     Ok(())
 }
 
 #[test]
 fn current_from_empty() -> Result<()> {
-    let temp = assert_fs::TempDir::new().into_diagnostic()?;
+    let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
     let def = BuildCommand::default();
-    generated.touch().into_diagnostic()?;
+    generated.touch()?;
     assert_eq!(def, config::current(&generated, None).unwrap());
     Ok(())
 }
 
 #[test]
 fn current_preserve_languages() -> Result<()> {
-    let temp = assert_fs::TempDir::new().into_diagnostic()?;
+    let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
     let mut def = BuildCommand::default();
-    generated.touch().into_diagnostic()?;
+    generated.touch()?;
     def.languages = None;
     assert_eq!(def, config::current(&generated, Some(&def)).unwrap());
     def.languages = Some(vec![]);
@@ -74,10 +72,10 @@ fn current_default_is_default() -> Result<()> {
       TREE_SITTER_REPO,
       TREE_SITTER_PLATFORM,
     };
-    let temp = assert_fs::TempDir::new().into_diagnostic()?;
+    let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
     let def = BuildCommand::default();
-    generated.write_str(&config).into_diagnostic()?;
+    generated.write_str(&config)?;
     assert_eq!(def, config::current(&generated, None).unwrap());
     assert_eq!(def, config::current(&generated, Some(&def)).unwrap());
     Ok(())
@@ -98,10 +96,10 @@ fn current_overrides_default() -> Result<()> {
         platform = "linux-arm64"
       "#
     };
-    let temp = assert_fs::TempDir::new().into_diagnostic()?;
+    let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
     let def = BuildCommand::default();
-    generated.write_str(config).into_diagnostic()?;
+    generated.write_str(config)?;
     generated.assert(config);
     assert_ne!(def, config::current(&generated, None).unwrap());
     assert_ne!(def, config::current(&generated, Some(&def)).unwrap());

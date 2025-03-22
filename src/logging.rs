@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use miette::{Context, IntoDiagnostic as _, Result};
+use anyhow::{Context, Result};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_log::AsTrace;
@@ -74,11 +74,7 @@ fn init_log_file(args: &Args) -> Result<File> {
     );
     let parent = log.parent().unwrap_or(Path::new("."));
     if !parent.exists() {
-        fs::create_dir_all(parent)
-            .into_diagnostic()
-            .wrap_err("Preparing log directory")?;
+        fs::create_dir_all(parent).context("Preparing log directory")?;
     }
-    File::create(&log)
-        .into_diagnostic()
-        .wrap_err("Creating log file")
+    File::create(&log).context("Creating log file")
 }

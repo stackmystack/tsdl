@@ -1,6 +1,6 @@
 use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output};
 
-use miette::{IntoDiagnostic, Result};
+use anyhow::Result;
 use tokio::process::Command;
 use tracing::{error, trace};
 
@@ -21,7 +21,7 @@ impl Exec for Command {
         let cmd = self.display()?;
         trace!("{}", cmd);
 
-        let output = self.output().await.into_diagnostic()?;
+        let output = self.output().await?;
         if output.status.success() {
             return Ok(output);
         }
@@ -55,13 +55,13 @@ impl Exec for Command {
         let mut res = String::new();
 
         if let Some(path) = cwd {
-            write!(res, "[{}] ", relative_to_cwd(path).to_string_lossy()).into_diagnostic()?;
+            write!(res, "[{}] ", relative_to_cwd(path).to_string_lossy())?;
         }
 
-        write!(res, "{program} ").into_diagnostic()?;
+        write!(res, "{program} ")?;
 
         for arg in args {
-            write!(res, "{} ", arg.to_string_lossy()).into_diagnostic()?;
+            write!(res, "{} ", arg.to_string_lossy())?;
         }
 
         Ok(res.trim_end().to_string())
