@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use miette::{Context, IntoDiagnostic, Result};
+use anyhow::{Context, Result};
 use tokio::time;
 use url::Url;
 
@@ -34,13 +34,10 @@ fn clear(command: &BuildCommand, progress: &mut Progress) -> Result<()> {
         let handle = progress.register("Fresh Build", 1);
         let disp = &command.build_dir.display();
         fs::remove_dir_all(&command.build_dir)
-            .into_diagnostic()
-            .wrap_err(format!("Removing the build_dir {disp} for a fresh build"))?;
+            .with_context(|| format!("Removing the build_dir {disp} for a fresh build"))?;
         handle.fin(format!("Cleaned {disp}"));
     }
-    fs::create_dir_all(&command.build_dir)
-        .into_diagnostic()
-        .wrap_err("Creating the build dir")?;
+    fs::create_dir_all(&command.build_dir).context("Creating the build dir")?;
     Ok(())
 }
 
@@ -49,14 +46,13 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
         .enable_all()
         .worker_threads(command.ncpus)
         .build()
-        .into_diagnostic()
-        .wrap_err("Failed to initialize tokio runtime")?;
+        .context("Failed to initialize tokio runtime")?;
     let _guard = rt.enter();
     let screen = Arc::new(Mutex::new(progress));
     rt.spawn(update_screen(screen.clone()));
     let ts_cli = rt
         .block_on(tree_sitter::prepare(command, screen.clone()))
-        .wrap_err("Preparing tree-sitter")?;
+        .context("Preparing tree-sitter")?;
     let languages = collect_languages(
         ts_cli,
         screen,
@@ -67,11 +63,7 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
         &command.prefix,
     )?;
     create_dir_all(&command.out_dir)
-        .into_diagnostic()
-        .wrap_err(format!(
-            "Creating output dir {}",
-            &command.out_dir.display()
-        ))?;
+        .with_context(|| format!("Creating output dir {}", &command.out_dir.display()))?;
     rt.block_on(build_languages(languages))
 }
 
@@ -183,11 +175,7 @@ fn get_language_coords(
             resolve_git_ref(git_ref),
             from.as_ref().map_or_else(
                 || default_repo(language),
-                |f| {
-                    Url::parse(f)
-                        .into_diagnostic()
-                        .wrap_err(format!("Parsing {f} for {language}"))
-                },
+                |f| Url::parse(f).with_context(|| format!("Parsing {f} for {language}")),
             ),
         ),
         _ => (None, String::from("HEAD").into(), default_repo(language)),
@@ -210,7 +198,5 @@ fn resolve_git_ref(git_ref: &str) -> Ref {
 
 fn default_repo(language: &str) -> Result<Url> {
     let url = format!("{TSDL_FROM}{language}");
-    Url::parse(&url)
-        .into_diagnostic()
-        .wrap_err(format!("Creating url {url} for {language}"))
+    Url::parse(&url).with_context(|| format!("Creating url {url} for {language}"))
 }

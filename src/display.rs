@@ -18,11 +18,11 @@ use std::{
     time,
 };
 
+use anyhow::{Context, Result};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use console::style;
 use enum_dispatch::enum_dispatch;
 use log::Level;
-use miette::{Context, IntoDiagnostic, Result};
 
 use crate::{args::ProgressStyle, format_duration};
 
@@ -143,8 +143,7 @@ impl ProgressState for Fancy {
     fn clear(&self) -> Result<()> {
         self.multi
             .clear()
-            .into_diagnostic()
-            .wrap_err("Clearing the multi-progress bar")
+            .context("Clearing the multi-progress bar")
     }
 
     fn register(&mut self, name: impl Into<String>, num_tasks: usize) -> ProgressHandle {

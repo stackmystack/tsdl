@@ -55,7 +55,7 @@ use std::{
     time,
 };
 
-use miette::{IntoDiagnostic, Result};
+use anyhow::Result;
 
 extern crate log;
 
@@ -81,7 +81,7 @@ impl SafeCanonicalize for Path {
         if self.is_absolute() {
             Ok(self.to_path_buf())
         } else {
-            let current_dir = env::current_dir().into_diagnostic()?;
+            let current_dir = env::current_dir()?;
             Ok(current_dir.join(self))
         }
     }

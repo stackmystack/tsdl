@@ -5,8 +5,8 @@ use std::{
     process::{Output, Stdio},
 };
 
+use anyhow::{Context, Result};
 use derive_more::{AsRef, Deref, From, FromStr, Into};
-use miette::{IntoDiagnostic, Result};
 use tokio::{fs, process::Command};
 
 use crate::sh::Exec;
@@ -81,7 +81,7 @@ pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
 
 async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> Result<()> {
     clean_anyway(cwd).await?;
-    fs::create_dir_all(cwd).await.into_diagnostic()?;
+    fs::create_dir_all(cwd).await?;
 
     Command::new("git")
         .current_dir(cwd)
@@ -120,7 +120,7 @@ async fn get_head_sha1(cwd: &Path) -> Result<String> {
             .await?
             .stdout,
     )
-    .into_diagnostic()
+    .context("rev-parse HEAD is not a valid utf-8")
 }
 
 async fn clean_anyway(cwd: &Path) -> Result<()> {
@@ -129,8 +129,7 @@ async fn clean_anyway(cwd: &Path) -> Result<()> {
             fs::remove_dir_all(cwd).await
         } else {
             fs::remove_file(cwd).await
-        }
-        .into_diagnostic()?;
+        }?;
     }
     Ok(())
 }
@@ -148,7 +147,7 @@ async fn get_remote_url(cwd: &Path) -> Result<String> {
             .await?
             .stdout,
     )
-    .into_diagnostic()
+    .context("remote get-url origin did not return a valid utf-8")
 }
 
 async fn is_valid_git_dir(cwd: &Path) -> bool {
@@ -191,8 +190,7 @@ pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> Result<String> {
             .exec()
             .await?
             .stdout,
-    )
-    .into_diagnostic()?
+    )?
     .trim()
     .to_string())
 }
@@ -205,10 +203,11 @@ pub fn column(input: &str, indent: &str, width: usize) -> Result<Output> {
         .arg(format!("--width={width}",))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
-        .into_diagnostic()?;
+        .spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input.as_bytes()).into_diagnostic()?;
+        stdin.write_all(input.as_bytes())?;
     }
-    child.wait_with_output().into_diagnostic()
+    child
+        .wait_with_output()
+        .context("git column did not finish normally")
 }
