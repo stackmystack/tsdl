@@ -92,5 +92,5 @@ to get the default config used by tsdl in TOML.
 > override whatever value is the default of `tsdl` or in `parsers.toml`.
 
 > [!TIP]
-> Check out [Faveod/tree-sitter-parsers](Faveod/tree-sitter-parsers) for an
+> Check out [Faveod/tree-sitter-parsers](https://github.com/Faveod/tree-sitter-parsers) for an
 > example configuration.
