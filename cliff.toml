@@ -80,6 +80,7 @@ commit_parsers = [
   { message = "^perf", group = "<!-- 3 -->Performance" },
   { message = "^doc", group = "<!-- 4 -->Documentation" },
   { message = "^refactor", skip = true },
+  { message = "^test", skip = true },
   { message = "^style", skip = true },
   { message = "^chore", skip = true },
   { message = ".*", group = "<!-- 5 -->Other" },
