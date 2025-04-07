@@ -6,9 +6,12 @@ use indoc::{formatdoc, indoc};
 use predicates::{self as p};
 use rstest::*;
 
-use tsdl::consts::{
-    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
-    TSDL_PREFIX,
+use tsdl::{
+    consts::{
+        TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
+        TSDL_PREFIX,
+    },
+    parser::WASM_EXTENSION,
 };
 
 use crate::cmd::Sandbox;
@@ -236,5 +239,40 @@ fn multi_parsers_cmd() {
             .child(TSDL_OUT_DIR)
             .child(format!("{TSDL_PREFIX}{language}.{DLL_EXTENSION}"));
         dylib.assert(p::path::exists()).assert(p::path::is_file());
+    }
+}
+
+#[rstest]
+#[case::default(None, &[DLL_EXTENSION])]
+#[case::all(Some("all"), &[DLL_EXTENSION, WASM_EXTENSION])]
+#[case::native(Some("native"), &[DLL_EXTENSION])]
+#[case::wasm(Some("wasm"), &[WASM_EXTENSION])]
+fn build_target(#[case] target: Option<&str>, #[case] exts: &[&str]) {
+    use std::fmt::Write as _;
+
+    let languages = [("json", "0.21.0")];
+    let mut config = String::new();
+    writeln!(config, "[parsers]").unwrap();
+    for (lang, ver) in languages {
+        writeln!(config, "  {lang} = \"{ver}\"").unwrap();
+    }
+    if let Some(target) = target {
+        config = format!("target = \"{target}\"\n{config}");
+    }
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .tmp
+        .child(TSDL_CONFIG_FILE)
+        .write_str(&config)
+        .unwrap();
+    sandbox.cmd.args(["build"]).assert().success();
+    for (lang, _) in languages {
+        for ext in exts {
+            let dylib = sandbox
+                .tmp
+                .child(TSDL_OUT_DIR)
+                .child(format!("{TSDL_PREFIX}{lang}.{ext}"));
+            dylib.assert(p::path::exists()).assert(p::path::is_file());
+        }
     }
 }
