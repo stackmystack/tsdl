@@ -107,6 +107,35 @@ impl Command {
     }
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize, Diff, PartialEq, Eq, Serialize)]
+#[diff(attr(
+    #[derive(Debug, PartialEq)]
+))]
+#[serde(rename_all = "kebab-case")]
+pub enum Target {
+    Native,
+    Wasm,
+    All,
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+impl Target {
+    #[must_use]
+    pub fn native(&self) -> bool {
+        matches!(self, Self::All | Self::Native)
+    }
+
+    #[must_use]
+    pub fn wasm(&self) -> bool {
+        matches!(self, Self::All | Self::Wasm)
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(clap::Args, Clone, Debug, Deserialize, Diff, PartialEq, Eq, Serialize)]
 #[diff(attr(
@@ -153,6 +182,10 @@ pub struct BuildCommand {
     #[serde(default)]
     pub show_config: bool,
 
+    /// Build target.
+    #[arg(short, long, value_enum, default_value_t = Target::default())]
+    pub target: Target,
+
     #[command(flatten)]
     #[serde(default)]
     pub tree_sitter: TreeSitter,
@@ -161,14 +194,15 @@ pub struct BuildCommand {
 impl Default for BuildCommand {
     fn default() -> Self {
         Self {
-            languages: None,
-            parsers: None,
             build_dir: PathBuf::from(TSDL_BUILD_DIR),
             fresh: TSDL_FRESH,
+            languages: None,
             ncpus: num_cpus::get(),
             out_dir: PathBuf::from(TSDL_OUT_DIR),
+            parsers: None,
             prefix: String::from(TSDL_PREFIX),
             show_config: TSDL_SHOW_CONFIG,
+            target: Target::default(),
             tree_sitter: TreeSitter::default(),
         }
     }

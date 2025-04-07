@@ -11,6 +11,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
+    args::Target,
     display::{Handle, ProgressHandle},
     error,
     git::{clone_fast, Ref},
@@ -19,6 +20,7 @@ use crate::{
 };
 
 pub const NUM_STEPS: usize = 3;
+pub const WASM_EXTENSION: &str = "wasm";
 
 pub async fn build_languages(languages: Vec<Language>) -> Result<()> {
     let buffer = if languages.is_empty() {
@@ -57,6 +59,7 @@ pub struct Language {
     out_dir: PathBuf,
     prefix: String,
     repo: Url,
+    target: Target,
     ts_cli: Arc<PathBuf>,
 }
 
@@ -72,6 +75,7 @@ impl Language {
         out_dir: PathBuf,
         prefix: String,
         repo: Url,
+        target: Target,
         ts_cli: Arc<PathBuf>,
     ) -> Self {
         Language {
@@ -83,6 +87,7 @@ impl Language {
             out_dir,
             prefix,
             repo,
+            target,
             ts_cli,
         }
     }
@@ -124,7 +129,24 @@ impl Language {
         } else {
             warn!("I don't know how to generate parsers when a script/cmd is specified (it's typescript's fault)");
         }
-        self.build(&dir).await?;
+
+        if self.target.native() {
+            self.handle.msg(format!(
+                "Building {} native parser: {}",
+                self.git_ref,
+                dir.file_name().unwrap().to_str().unwrap(),
+            ));
+            self.build(&dir, DLL_EXTENSION).await?;
+        }
+
+        if self.target.wasm() {
+            self.handle.msg(format!(
+                "Building {} wasm parser: {}",
+                self.git_ref,
+                dir.file_name().unwrap().to_str().unwrap(),
+            ));
+            self.build(&dir, WASM_EXTENSION).await?;
+        }
         self.handle.msg(format!(
             "Copying {} parser: {}",
             self.git_ref,
@@ -134,13 +156,25 @@ impl Language {
         Ok(())
     }
 
-    async fn build(&self, dir: &Path) -> Result<()> {
+    async fn build(&self, dir: &Path, ext: &str) -> Result<()> {
+        let effective_name = dir
+            .file_name()
+            .map(|n| {
+                n.to_string_lossy()
+                    .strip_prefix("tree-sitter-")
+                    .map_or_else(|| n.to_string_lossy().to_string(), str::to_string)
+            })
+            .unwrap();
         self.build_script
             .as_ref()
             .map_or_else(
                 || {
                     let mut cmd = Command::new(&*self.ts_cli);
                     cmd.arg("build");
+                    if ext == WASM_EXTENSION {
+                        cmd.arg("--wasm");
+                    }
+                    cmd.args(["--output", &format!("{effective_name}.{ext}")]);
                     cmd
                 },
                 |script| Command::from_str(script),
@@ -197,16 +231,21 @@ impl Language {
             .collect()
     }
 
-    async fn copy(&self, dir: impl Into<PathBuf>) -> Result<()> {
-        let dir = dir.into();
-        let prefix = &self.prefix;
-        let dll = self.find_dll_files(&dir).await?;
-        let name = Self::extract_parser_name(&dll);
-        let dst = self
-            .out_dir
-            .clone()
-            .join(format!("{prefix}{name}.{DLL_EXTENSION}"));
+    async fn copy(&self, dir: &Path) -> Result<()> {
+        if self.target.native() {
+            self.do_copy(dir, DLL_EXTENSION).await?;
+        }
+        if self.target.wasm() {
+            self.do_copy(dir, WASM_EXTENSION).await?;
+        }
+        Ok(())
+    }
 
+    async fn do_copy(&self, dir: &Path, ext: &str) -> Result<()> {
+        let dll = self.find_dll_files(dir, ext).await?;
+        let name = Self::extract_parser_name(&dll, ext);
+        let prefix = &self.prefix;
+        let dst = self.out_dir.clone().join(format!("{prefix}{name}.{ext}"));
         fs::copy(&dll, &dst)
             .await
             .with_context(|| format!("cp {} {}", &dll.display(), dst.display()))
@@ -248,37 +287,35 @@ impl Language {
             .and(Ok(()))
     }
 
-    async fn find_dll_files(&self, dir: &Path) -> Result<PathBuf> {
+    async fn find_dll_files(&self, dir: &Path, ext: &str) -> Result<PathBuf> {
         let mut files = fs::read_dir(&dir).await.unwrap();
         let mut dlls = Vec::with_capacity(1);
         while let Ok(Some(entry)) = files.next_entry().await {
             let file_name = entry.file_name();
             let name = file_name.as_os_str().to_str().unwrap();
-            if entry.file_type().await.unwrap().is_file()
-                && name.ends_with(&format!(".{DLL_EXTENSION}"))
-            {
+            if entry.file_type().await.unwrap().is_file() && name.ends_with(&format!(".{ext}")) {
                 dlls.push(dir.join(name));
             }
         }
         // Error handling for no DLLs or too many DLLs
         match dlls.len() {
             0 => Err(self
-                .create_copy_error(dir, format!("Couldn't find any {DLL_EXTENSION} file"))
+                .create_copy_error(dir, format!("Couldn't find any {ext} file"))
                 .into()),
             n if n > 1 => Err(self
-                .create_copy_error(dir, format!("Found many {DLL_EXTENSION} files: {dlls:?}"))
+                .create_copy_error(dir, format!("Found many {ext} files: {dlls:?}"))
                 .into()),
             _ => Ok(dlls[0].clone()),
         }
     }
 
-    fn extract_parser_name(dll_path: &Path) -> String {
+    fn extract_parser_name(dll_path: &Path, ext: &str) -> String {
         let mut name = dll_path
             .file_name()
             .and_then(|n| n.to_str())
             .map(String::from)
             .unwrap();
-        if name == format!("parser.{DLL_EXTENSION}") {
+        if name == format!("parser.{ext}") {
             name = dll_path
                 .parent()
                 .and_then(|p| p.file_name())
@@ -289,10 +326,8 @@ impl Language {
         if name.starts_with("libtree-sitter-") {
             name = name.trim_start_matches("libtree-sitter-").to_string();
         }
-        if name.ends_with(&format!(".{DLL_EXTENSION}")) {
-            name = name
-                .trim_end_matches(&format!(".{DLL_EXTENSION}"))
-                .to_string();
+        if name.ends_with(&format!(".{ext}")) {
+            name = name.trim_end_matches(&format!(".{ext}")).to_string();
         }
         name
     }

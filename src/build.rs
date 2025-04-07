@@ -10,7 +10,7 @@ use tokio::time;
 use url::Url;
 
 use crate::{
-    args::{BuildCommand, ParserConfig},
+    args::{BuildCommand, ParserConfig, Target},
     config,
     consts::TSDL_FROM,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
@@ -61,6 +61,7 @@ fn build(command: &BuildCommand, progress: Progress) -> Result<()> {
         command.build_dir.clone(),
         command.out_dir.clone(),
         &command.prefix,
+        command.target,
     )?;
     create_dir_all(&command.out_dir)
         .with_context(|| format!("Creating output dir {}", &command.out_dir.display()))?;
@@ -79,6 +80,7 @@ async fn update_screen(progress: Arc<Mutex<Progress>>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_languages(
     ts_cli: PathBuf,
     progress: Arc<Mutex<Progress>>,
@@ -87,12 +89,14 @@ fn collect_languages(
     build_dir: PathBuf,
     out_dir: PathBuf,
     prefix: &str,
+    target: Target,
 ) -> Result<Vec<Language>, error::LanguageCollection> {
     let (res, errs) = unique_languages(
         ts_cli,
         build_dir,
         out_dir,
         prefix,
+        target,
         requested_languages,
         defined_parsers,
         progress,
@@ -112,11 +116,13 @@ type Languages = (
 );
 
 #[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
 fn unique_languages(
     ts_cli: PathBuf,
     build_dir: PathBuf,
     out_dir: PathBuf,
     prefix: &str,
+    target: Target,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
     progress: Arc<Mutex<Progress>>,
@@ -147,6 +153,7 @@ fn unique_languages(
                     out_dir.canon().unwrap(),
                     prefix.into(),
                     repo,
+                    target,
                     ts_cli.clone(),
                 )
             })

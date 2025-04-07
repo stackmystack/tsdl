@@ -33,4 +33,9 @@ jobs:
         with:
           tool: cargo-nextest,just
 
+      - name: Install emcc
+        uses: mymindstorm/setup-emsdk@v14
+      - name: Verify emcc
+        run: emcc -v
+
       - run: just test

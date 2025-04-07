@@ -1,5 +1,10 @@
 # Changelog
 
+- Add support for `--target`:
+  - `native` for native shared libraries, `dylib` or `so` (default).
+  - `wasm` for web assembly.
+  - `all` for all of the above.
+
 ## [1.4.0] - 2025-03-22
 
 ### Features
