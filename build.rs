@@ -61,13 +61,13 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
     let tsdl = meta.get("tsdl").unwrap();
     let tsdl_build_dir = tsdl.get("build-dir").unwrap().as_str().unwrap();
     let tsdl_config_file = tsdl.get("config").unwrap().as_str().unwrap();
+    let tsdl_consts = Path::new(&out_dir).join("tsdl_consts.rs");
     let tsdl_fresh = tsdl.get("fresh").unwrap().as_bool().unwrap();
     let tsdl_from = tsdl.get("from").unwrap().as_str().unwrap();
     let tsdl_out_dir = tsdl.get("out").unwrap().as_str().unwrap();
     let tsdl_prefix = tsdl.get("prefix").unwrap().as_str().unwrap();
     let tsdl_ref = tsdl.get("ref").unwrap().as_str().unwrap();
     let tsdl_show_config = tsdl.get("show-config").unwrap().as_bool().unwrap();
-    let tsdl_consts = Path::new(&out_dir).join("tsdl_consts.rs");
     fs::write(
         tsdl_consts,
         formatdoc!(
