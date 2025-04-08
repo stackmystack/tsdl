@@ -15,10 +15,6 @@
 
 - **tree_sitter**: Init - ([160d832](https://github.com/stackmystack/tsdl/commit/160d8325cf689b7947823a7fba099b0390d0166b))
 
-## New Contributors ❤️
-
-* @stackmystack made their first contribution in [#19](https://github.com/stackmystack/tsdl/pull/19)
-* @dependabot[bot] made their first contribution in [#18](https://github.com/stackmystack/tsdl/pull/18)
 ## [1.3.1] - 2025-01-28
 
 ### Bug Fixes
@@ -45,11 +41,6 @@
 
 - **markdown_to_docs**: Remove unnecessary reference - ([1e5f8d1](https://github.com/stackmystack/tsdl/commit/1e5f8d1d64949e71f7b1c88dcdcff61f86025886))
 - Style - ([8bfc86b](https://github.com/stackmystack/tsdl/commit/8bfc86bfa3d3489adb197f69d7d247af2a5aebd1))
-
-## New Contributors ❤️
-
-* @dependabot[bot] made their first contribution in [#11](https://github.com/stackmystack/tsdl/pull/11)
-## [1.2.1] - 2024-09-07
 
 ### Bug Fixes
 
