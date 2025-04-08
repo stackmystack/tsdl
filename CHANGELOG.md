@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.0] - 2025-04-08
+
+### Features
+
+- **target**: Use --target [native, wasm, all] - ([77f965e](https://github.com/stackmystack/tsdl/commit/77f965e86426b92cb39defb9ec17ceacb5474a5b))
+
+### Bug Fixes
+
+- **cliff**: Remove new contributors section - ([f655e6c](https://github.com/stackmystack/tsdl/commit/f655e6cb16bde0564aa2c8114fa2e3e0eb15aeea))
+- **release**: Do not add a leading v when deducing version - ([80a7993](https://github.com/stackmystack/tsdl/commit/80a7993bd6dc38db0058540dca923cfd8d6e8351))
+- **tree_sitter**: Avoid needless iteration - ([c7b08cb](https://github.com/stackmystack/tsdl/commit/c7b08cb8fcb86880cbecce667bd2fc80920b5b1f))
 - Add support for `--target`:
   - `native` for native shared libraries, `dylib` or `so` (default).
   - `wasm` for web assembly.
