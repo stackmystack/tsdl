@@ -295,25 +295,42 @@ impl Language {
         format!("{prefix}{effective_name}.{ext}")
     }
 
+    // Since we're generating the exact file as `prefix + name + ext` in the
+    // build dir, we rely on that name to copy to output dir.
+
+    // If that name is not present, because the user defined a user script like
+    // make mostly (like in typescript), then take the first match and work
+    // with that.
     async fn find_dll_files(&self, dir: &Path, ext: &str) -> Result<PathBuf> {
+        let effective_name = self.parser_name_and_ext(dir, ext);
         let mut files = fs::read_dir(&dir).await.unwrap();
-        let mut dlls = Vec::with_capacity(1);
+        let mut exact_match = None;
+        let mut all_dlls = Vec::with_capacity(1);
         while let Ok(Some(entry)) = files.next_entry().await {
             let file_name = entry.file_name();
             let name = file_name.as_os_str().to_str().unwrap();
-            if entry.file_type().await.unwrap().is_file() && name.ends_with(&format!(".{ext}")) {
-                dlls.push(dir.join(name));
+            if entry.file_type().await.unwrap().is_file() {
+                if name == effective_name {
+                    exact_match = Some(dir.join(name));
+                    break;
+                } else if name.ends_with(&format!(".{ext}")) {
+                    all_dlls.push(dir.join(name));
+                }
             }
         }
         // Error handling for no DLLs or too many DLLs
-        match dlls.len() {
-            0 => Err(self
-                .create_copy_error(dir, format!("Couldn't find any {ext} file"))
-                .into()),
-            n if n > 1 => Err(self
-                .create_copy_error(dir, format!("Found many {ext} files: {dlls:?}"))
-                .into()),
-            _ => Ok(dlls[0].clone()),
+        if let Some(exact) = exact_match {
+            Ok(exact.clone())
+        } else {
+            match all_dlls.len() {
+                0 => Err(self
+                    .create_copy_error(dir, format!("Couldn't find any {ext} file"))
+                    .into()),
+                1 => Ok(all_dlls[0].clone()),
+                _ => Err(self
+                    .create_copy_error(dir, format!("Found many {ext} files: {all_dlls:?}."))
+                    .into()),
+            }
         }
     }
 
