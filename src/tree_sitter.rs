@@ -38,7 +38,7 @@ fn parse_refs(stdout: &str) -> HashMap<String, String> {
     for line in stdout.lines() {
         let ref_line = line.split('\t').map(str::trim).collect::<Vec<_>>();
         let (sha1, full_ref) = (ref_line[0], ref_line[1]);
-        if let Some(tag) = full_ref.split('/').last() {
+        if let Some(tag) = full_ref.split('/').next_back() {
             trace!("insert {tag} -> {sha1}");
             refs.insert(tag.to_string(), sha1.to_string());
         }
