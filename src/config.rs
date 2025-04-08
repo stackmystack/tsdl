@@ -23,7 +23,7 @@ pub fn run(command: &ConfigCommand, config: &Path) -> Result<()> {
             );
         }
         ConfigCommand::Default => println!("{}", toml::to_string(&BuildCommand::default())?),
-    };
+    }
     Ok(())
 }
 
@@ -44,7 +44,7 @@ pub fn current(config: &Path, command: Option<&BuildCommand>) -> Result<BuildCom
         None => {
             debug!("Skipping cli args + config file merger.");
         }
-    };
+    }
     debug!("from_both = {:?}", from_file);
     // Figment is screwing with me, and it's overriding config coming
     // from Env::prefixed("TSDL_").
