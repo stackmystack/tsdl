@@ -157,14 +157,7 @@ impl Language {
     }
 
     async fn build(&self, dir: &Path, ext: &str) -> Result<()> {
-        let effective_name = dir
-            .file_name()
-            .map(|n| {
-                n.to_string_lossy()
-                    .strip_prefix("tree-sitter-")
-                    .map_or_else(|| n.to_string_lossy().to_string(), str::to_string)
-            })
-            .unwrap();
+        let effective_name = self.parser_name_and_ext(dir, ext);
         self.build_script
             .as_ref()
             .map_or_else(
@@ -174,7 +167,7 @@ impl Language {
                     if ext == WASM_EXTENSION {
                         cmd.arg("--wasm");
                     }
-                    cmd.args(["--output", &format!("{effective_name}.{ext}")]);
+                    cmd.args(["--output", &effective_name]);
                     cmd
                 },
                 |script| Command::from_str(script),
@@ -243,9 +236,11 @@ impl Language {
 
     async fn do_copy(&self, dir: &Path, ext: &str) -> Result<()> {
         let dll = self.find_dll_files(dir, ext).await?;
-        let name = Self::extract_parser_name(&dll, ext);
-        let prefix = &self.prefix;
-        let dst = self.out_dir.clone().join(format!("{prefix}{name}.{ext}"));
+        let name = self.parser_name_and_ext(dir, ext);
+        let dst = self.out_dir.clone().join(name);
+        println!();
+        println!("cp {} {}", dll.display(), dst.display());
+        println!();
         fs::copy(&dll, &dst)
             .await
             .with_context(|| format!("cp {} {}", &dll.display(), dst.display()))
@@ -287,6 +282,19 @@ impl Language {
             .and(Ok(()))
     }
 
+    fn parser_name_and_ext(&self, dir: &Path, ext: &str) -> String {
+        let effective_name = dir
+            .file_name()
+            .map(|n| {
+                n.to_string_lossy()
+                    .strip_prefix("tree-sitter-")
+                    .map_or_else(|| n.to_string_lossy().to_string(), str::to_string)
+            })
+            .unwrap();
+        let prefix = &self.prefix;
+        format!("{prefix}{effective_name}.{ext}")
+    }
+
     async fn find_dll_files(&self, dir: &Path, ext: &str) -> Result<PathBuf> {
         let mut files = fs::read_dir(&dir).await.unwrap();
         let mut dlls = Vec::with_capacity(1);
@@ -307,29 +315,6 @@ impl Language {
                 .into()),
             _ => Ok(dlls[0].clone()),
         }
-    }
-
-    fn extract_parser_name(dll_path: &Path, ext: &str) -> String {
-        let mut name = dll_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(String::from)
-            .unwrap();
-        if name == format!("parser.{ext}") {
-            name = dll_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .map(String::from)
-                .unwrap();
-        }
-        if name.starts_with("libtree-sitter-") {
-            name = name.trim_start_matches("libtree-sitter-").to_string();
-        }
-        if name.ends_with(&format!(".{ext}")) {
-            name = name.trim_end_matches(&format!(".{ext}")).to_string();
-        }
-        name
     }
 
     fn create_copy_error(&self, dir: &Path, message: String) -> error::Step {
