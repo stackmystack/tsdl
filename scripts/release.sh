@@ -2,7 +2,7 @@
 
 set -e
 
-version=${1:-"v$(git cliff --bumped-version)"}
+version=${1:-"$(git cliff --bumped-version)"}
 
 echo "Preparing $version..."
 # lint and test first
