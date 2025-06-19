@@ -67,6 +67,7 @@ pub enum ProgressStyle {
     Plain,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(clap::Subcommand, Clone, Debug, Deserialize, Serialize)]
 pub enum Command {
     /// Build one or many parsers.
