@@ -77,7 +77,7 @@ tokio = { version = "1", features = [
   "sync",
   "time",
 ] }
-toml = "0.8"
+toml = "0.9"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-error = "0.2"
