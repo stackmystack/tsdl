@@ -53,7 +53,7 @@ derive_more = { version = "2.0", features = [
 diff-struct = "0.5"
 enum_dispatch = "0.3"
 figment = { version = "0.10", features = ["toml", "env"] }
-human-panic = "2.0.1"
+human-panic = "2.0.3"
 ignore = "0.4"
 indicatif = "0.17"
 log = "0.4"
