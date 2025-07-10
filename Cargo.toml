@@ -94,7 +94,7 @@ pretty_assertions = "1.4"
 rstest = "0.25.0"
 
 [build-dependencies]
-cargo_metadata = "0.20"
+cargo_metadata = "0.21"
 const-str = "0.6"
 indoc = "2"
 serde_json = "1.0"
