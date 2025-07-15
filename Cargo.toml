@@ -36,7 +36,7 @@ version = "0.24.7"
 
 [dependencies]
 anyhow = "1.0"
-async-compression = { version = "0.4.25", features = ["tokio", "gzip"] }
+async-compression = { version = "0.4.27", features = ["tokio", "gzip"] }
 atty = "0.2"
 better-panic = "0.3.0"
 clap = { version = "4.5", features = ["cargo", "derive", "env"] }
