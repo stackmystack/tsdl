@@ -6,17 +6,32 @@ updates:
     schedule:
       interval: daily
     open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    groups:
+      dependencies:
+        update-types:
+          - "minor"
+          - "major"
+        patterns:
+          - "*"
+    allow:
+      - dependency-type: "direct"
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: daily
-    open-pull-requests-limit: 10
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
     groups:
-      minor:
+      github-actions:
         update-types:
           - "minor"
-      patch:
-        update-types:
-          - "patch"
+          - "major"
+        patterns:
+          - "*"
