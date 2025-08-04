@@ -55,7 +55,7 @@ enum_dispatch = "0.3"
 figment = { version = "0.10", features = ["toml", "env"] }
 human-panic = "2.0"
 ignore = "0.4"
-indicatif = "0.17"
+indicatif = "0.18"
 log = "0.4"
 num_cpus = "1.17"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -77,7 +77,7 @@ tokio = { version = "1", features = [
   "sync",
   "time",
 ] }
-toml = "0.8"
+toml = "0.9"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-error = "0.2"
@@ -91,10 +91,10 @@ assert_fs = "1.1"
 indoc = "2"
 predicates = "3.1"
 pretty_assertions = "1.4"
-rstest = "0.25"
+rstest = "0.26"
 
 [build-dependencies]
-cargo_metadata = "0.20"
+cargo_metadata = "0.21"
 const-str = "0.6"
 indoc = "2"
 serde_json = "1.0"
