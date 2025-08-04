@@ -36,9 +36,9 @@ version = "0.24.7"
 
 [dependencies]
 anyhow = "1.0"
-async-compression = { version = "0.4.25", features = ["tokio", "gzip"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 atty = "0.2"
-better-panic = "0.3.0"
+better-panic = "0.3"
 clap = { version = "4.5", features = ["cargo", "derive", "env"] }
 clap-verbosity-flag = "3.0"
 console = "0.16"
@@ -53,22 +53,22 @@ derive_more = { version = "2.0", features = [
 diff-struct = "0.5"
 enum_dispatch = "0.3"
 figment = { version = "0.10", features = ["toml", "env"] }
-human-panic = "2.0.1"
+human-panic = "2.0"
 ignore = "0.4"
 indicatif = "0.17"
 log = "0.4"
 num_cpus = "1.17"
-reqwest = { version = "0.12.20", default-features = false, features = [
+reqwest = { version = "0.12", default-features = false, features = [
   "http2",
   "rustls-tls",
 ] }
-self_update = { version = "0.42.0", default-features = false, features = [
+self_update = { version = "0.42", default-features = false, features = [
   "compression-flate2",
   "rustls",
 ] }
-semver = "1.0.23"
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tempfile = "3.20.0"
+tempfile = "3.20"
 thiserror = "2"
 tokio = { version = "1", features = [
   "fs",
@@ -91,7 +91,7 @@ assert_fs = "1.1"
 indoc = "2"
 predicates = "3.1"
 pretty_assertions = "1.4"
-rstest = "0.25.0"
+rstest = "0.25"
 
 [build-dependencies]
 cargo_metadata = "0.20"
