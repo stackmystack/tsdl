@@ -191,14 +191,14 @@ fn build_implicit_pinned_and_unpinned() {
 
 #[rstest]
 fn multi_parsers_no_cmd() {
-    let php = "php";
+    let java = "java";
     let version = "HEAD";
-    let languages = [php, "php_only"];
+    let languages = [java];
     let mut sandbox = Sandbox::new();
-    let mut assert = sandbox.cmd.args(["build", php]).assert().success();
+    let mut assert = sandbox.cmd.args(["build", java]).assert().success();
     for language in languages {
         assert = assert.stderr(p::str::contains(format!(
-            "{php}: Building {version} parser: {language}"
+            "{java}: Building {version} parser: tree-sitter-{language}"
         )));
     }
     for language in languages {
