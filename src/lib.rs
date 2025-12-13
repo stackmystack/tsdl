@@ -55,7 +55,7 @@ use std::{
     time,
 };
 
-use anyhow::Result;
+use crate::error::TsdlError;
 
 extern crate log;
 
@@ -73,22 +73,24 @@ pub mod sh;
 pub mod tree_sitter;
 
 pub trait SafeCanonicalize {
-    fn canon(&self) -> Result<PathBuf>;
+    fn canon(&self) -> TsdlResult<PathBuf>;
 }
 
 impl SafeCanonicalize for Path {
-    fn canon(&self) -> Result<PathBuf> {
+    fn canon(&self) -> TsdlResult<PathBuf> {
         if self.is_absolute() {
             Ok(self.to_path_buf())
         } else {
-            let current_dir = env::current_dir()?;
+            let current_dir = env::current_dir().map_err(|e| {
+                TsdlError::context("Failed to get current directory", e)
+            })?;
             Ok(current_dir.join(self))
         }
     }
 }
 
 impl SafeCanonicalize for PathBuf {
-    fn canon(&self) -> Result<PathBuf> {
+    fn canon(&self) -> TsdlResult<PathBuf> {
         self.as_path().canon()
     }
 }
@@ -111,3 +113,6 @@ pub fn relative_to_cwd(dir: &Path) -> PathBuf {
         canon
     }
 }
+
+/// Result type for tsdl operations
+pub type TsdlResult<T> = Result<T, error::TsdlError>;

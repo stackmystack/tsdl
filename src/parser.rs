@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Context, Result};
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
 use tokio::{fs, process::Command, sync::mpsc};
 use tracing::warn;
@@ -13,16 +12,16 @@ use url::Url;
 use crate::{
     args::Target,
     display::{Handle, ProgressHandle},
-    error,
+    error::{self, TsdlError},
     git::{clone_fast, Ref},
     sh::{Exec, Script},
-    SafeCanonicalize,
+    SafeCanonicalize, TsdlResult,
 };
 
 pub const NUM_STEPS: usize = 3;
 pub const WASM_EXTENSION: &str = "wasm";
 
-pub async fn build_languages(languages: Vec<Language>) -> Result<()> {
+pub async fn build_languages(languages: Vec<Language>) -> TsdlResult<()> {
     let buffer = if languages.is_empty() {
         64
     } else {
@@ -92,7 +91,7 @@ impl Language {
         }
     }
 
-    async fn process(&mut self, tx: mpsc::Sender<Result<()>>) {
+    async fn process(&mut self, tx: mpsc::Sender<TsdlResult<()>>) {
         let res = self.steps().await;
         if res.is_err() {
             tx.send(res).await.unwrap();
@@ -103,7 +102,7 @@ impl Language {
         }
     }
 
-    async fn steps(&mut self) -> Result<()> {
+    async fn steps(&mut self) -> TsdlResult<()> {
         self.handle.start(format!("Cloning {}", self.git_ref));
         self.clone().await?;
         self.handle.step(format!("Generating {}", self.git_ref));
@@ -118,7 +117,7 @@ impl Language {
         Ok(())
     }
 
-    async fn build_grammar(&self, dir: PathBuf) -> Result<()> {
+    async fn build_grammar(&self, dir: PathBuf) -> TsdlResult<()> {
         if self.build_script.is_none() {
             self.generate(&dir).await?;
             self.handle.msg(format!(
@@ -156,7 +155,7 @@ impl Language {
         Ok(())
     }
 
-    async fn build(&self, dir: &Path, ext: &str) -> Result<()> {
+    async fn build(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
         let effective_name = self.parser_name_and_ext(dir, ext);
         self.build_script
             .as_ref()
@@ -224,7 +223,7 @@ impl Language {
             .collect()
     }
 
-    async fn copy(&self, dir: &Path) -> Result<()> {
+    async fn copy(&self, dir: &Path) -> TsdlResult<()> {
         if self.target.native() {
             self.do_copy(dir, DLL_EXTENSION).await?;
         }
@@ -234,7 +233,7 @@ impl Language {
         Ok(())
     }
 
-    async fn do_copy(&self, dir: &Path, ext: &str) -> Result<()> {
+    async fn do_copy(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
         let dll = self.find_dll_files(dir, ext).await?;
         let name = self.parser_name_and_ext(dir, ext);
         let dst = self.out_dir.clone().join(name);
@@ -243,12 +242,12 @@ impl Language {
         println!();
         fs::copy(&dll, &dst)
             .await
-            .with_context(|| format!("cp {} {}", &dll.display(), dst.display()))
+            .map_err(|e| TsdlError::context(format!("cp {} {}", &dll.display(), dst.display()), e))
             .map_err(|err| self.create_copy_error(&dll, err.to_string()).into())
             .and(Ok(()))
     }
 
-    async fn clone(&self) -> Result<()> {
+    async fn clone(&self) -> TsdlResult<()> {
         clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
             .await
             .map_err(|err| {
@@ -261,9 +260,10 @@ impl Language {
                 }
                 .into()
             })
+            .and(Ok(()))
     }
 
-    async fn generate(&self, dir: &Path) -> Result<()> {
+    async fn generate(&self, dir: &Path) -> TsdlResult<()> {
         Command::new(&*self.ts_cli)
             .current_dir(dir)
             .arg("generate")
@@ -301,9 +301,11 @@ impl Language {
     // If that name is not present, because the user defined a user script like
     // make mostly (like in typescript), then take the first match and work
     // with that.
-    async fn find_dll_files(&self, dir: &Path, ext: &str) -> Result<PathBuf> {
+    async fn find_dll_files(&self, dir: &Path, ext: &str) -> TsdlResult<PathBuf> {
         let effective_name = self.parser_name_and_ext(dir, ext);
-        let mut files = fs::read_dir(&dir).await.unwrap();
+        let mut files = fs::read_dir(&dir).await.map_err(|e| {
+            TsdlError::context(format!("Failed to read directory {}", dir.display()), e)
+        })?;
         let mut exact_match = None;
         let mut all_dlls = Vec::with_capacity(1);
         while let Ok(Some(entry)) = files.next_entry().await {
@@ -341,7 +343,7 @@ impl Language {
                 src: self.out_dir.clone(),
                 dst: dir.to_path_buf(),
             },
-            source: anyhow!(message).into(),
+            source: Box::new(TsdlError::message(message)),
         }
     }
 }

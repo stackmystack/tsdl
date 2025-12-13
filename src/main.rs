@@ -1,6 +1,5 @@
 use std::{fs, path::PathBuf};
 
-use anyhow::{bail, Result};
 use clap::Parser;
 use self_update::self_replace;
 use semver::Version;
@@ -10,10 +9,12 @@ use tsdl::{
     args, build, config,
     consts::TREE_SITTER_PLATFORM,
     display::{self, Handle, Progress, ProgressState},
+    error::TsdlError,
     logging,
+    TsdlResult,
 };
 
-fn main() -> Result<()> {
+fn main() -> TsdlResult<()> {
     set_panic_hook();
     let args = args::Args::parse();
     let _guard = logging::init(&args)?;
@@ -23,7 +24,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run(args: &args::Args) -> Result<()> {
+fn run(args: &args::Args) -> TsdlResult<()> {
     match &args.command {
         args::Command::Build(command) => build::run(
             &config::current(&args.config, Some(command))?,
@@ -34,25 +35,33 @@ fn run(args: &args::Args) -> Result<()> {
     }
 }
 
-fn self_update(mut progress: Progress) -> Result<()> {
+fn self_update(mut progress: Progress) -> TsdlResult<()> {
     let tsdl = env!("CARGO_BIN_NAME");
-    let current_version = Version::parse(env!("CARGO_PKG_VERSION"))?;
+    let current_version = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| {
+        TsdlError::context("Failed to parse current version", e)
+    })?;
     let mut handle = progress.register("selfupdate", 4);
 
     handle.start("fetching releases".to_string());
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
-        .build()?
-        .fetch()?;
+        .build().map_err(|e| {
+            TsdlError::context("Failed to build release list configuration", e)
+        })?
+        .fetch().map_err(|e| {
+            TsdlError::context("Failed to fetch releases", e)
+        })?;
 
     let name = format!("{tsdl}-{TREE_SITTER_PLATFORM}.gz");
     let asset = releases[0].assets.iter().find(|&asset| asset.name == name);
     if asset.is_none() {
-        bail!("Could not find a suitable release for your platform");
+        return Err(TsdlError::message("Could not find a suitable release for your platform"));
     }
 
-    let latest_version = Version::parse(&releases[0].version)?;
+    let latest_version = Version::parse(&releases[0].version).map_err(|e| {
+        TsdlError::context("Failed to parse latest version", e)
+    })?;
     if latest_version <= current_version {
         handle.msg("already at the latest version".to_string());
         return Ok(());
@@ -60,13 +69,21 @@ fn self_update(mut progress: Progress) -> Result<()> {
 
     handle.step(format!("downloading {latest_version}"));
     let asset = asset.unwrap();
-    let tmp_dir = tempfile::tempdir()?;
+    let tmp_dir = tempfile::tempdir().map_err(|e| {
+        TsdlError::context("Failed to create temporary directory", e)
+    })?;
     let tmp_gz_path = tmp_dir.path().join(&asset.name);
-    let tmp_gz = fs::File::create_new(&tmp_gz_path)?;
+    let tmp_gz = fs::File::create_new(&tmp_gz_path).map_err(|e| {
+        TsdlError::context("Failed to create temporary file", e)
+    })?;
 
     self_update::Download::from_url(&asset.download_url)
-        .set_header(reqwest::header::ACCEPT, "application/octet-stream".parse()?)
-        .download_to(&tmp_gz)?;
+        .set_header(reqwest::header::ACCEPT, "application/octet-stream".parse().map_err(|e| {
+            TsdlError::context("Failed to parse accept header", e)
+        })?)
+        .download_to(&tmp_gz).map_err(|e| {
+            TsdlError::context("Failed to download release asset", e)
+        })?;
 
     handle.step(format!("extracting {latest_version}"));
     let tsdl_bin = PathBuf::from(tsdl);
@@ -74,10 +91,14 @@ fn self_update(mut progress: Progress) -> Result<()> {
         .archive(self_update::ArchiveKind::Plain(Some(
             self_update::Compression::Gz,
         )))
-        .extract_file(tmp_dir.path(), &tsdl_bin)?;
+        .extract_file(tmp_dir.path(), &tsdl_bin).map_err(|e| {
+            TsdlError::context("Failed to extract release asset", e)
+        })?;
 
     let new_exe = tmp_dir.path().join(tsdl_bin);
-    self_replace::self_replace(new_exe)?;
+    self_replace::self_replace(new_exe).map_err(|e| {
+        TsdlError::context("Failed to replace current executable", e)
+    })?;
 
     handle.fin(format!("{latest_version}"));
     Ok(())

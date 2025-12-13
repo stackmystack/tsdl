@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use diff::Diff;
 use figment::{
     providers::{Format, Serialized, Toml},
@@ -10,30 +9,36 @@ use tracing::debug;
 
 use crate::{
     args::{BuildCommand, ConfigCommand},
+    error::TsdlError,
     git,
+    TsdlResult,
 };
 
-pub fn run(command: &ConfigCommand, config: &Path) -> Result<()> {
+pub fn run(command: &ConfigCommand, config: &Path) -> TsdlResult<()> {
     match command {
         ConfigCommand::Current => {
             let config: BuildCommand = current(config, None)?;
             println!(
                 "{}",
-                toml::to_string(&config).context("Generating default TOML config")?
+                toml::to_string(&config).map_err(|e| {
+                    TsdlError::context("Generating default TOML config", e)
+                })?
             );
         }
-        ConfigCommand::Default => println!("{}", toml::to_string(&BuildCommand::default())?),
+        ConfigCommand::Default => println!("{}", toml::to_string(&BuildCommand::default()).map_err(|e| {
+            TsdlError::context("Generating default TOML config", e)
+        })?),
     }
     Ok(())
 }
 
-pub fn current(config: &Path, command: Option<&BuildCommand>) -> Result<BuildCommand> {
+pub fn current(config: &Path, command: Option<&BuildCommand>) -> TsdlResult<BuildCommand> {
     let from_default = BuildCommand::default();
     let mut from_file: BuildCommand = Figment::new()
         .merge(Serialized::defaults(from_default.clone()))
         .merge(Toml::file(config))
         .extract()
-        .context("Merging default and config file")?;
+        .map_err(|e| TsdlError::context("Merging default and config file", e))?;
     match command {
         Some(from_command) => {
             debug!("Merging cli args + config files");
@@ -59,7 +64,7 @@ pub fn print_indent(s: &str, indent: &str) {
     s.lines().for_each(|line| println!("{indent}{line}"));
 }
 
-pub fn show(command: &BuildCommand) -> Result<()> {
+pub fn show(command: &BuildCommand) -> TsdlResult<()> {
     if let Some(langs) = &command.languages {
         println!("Building the following languages:");
         println!();
@@ -67,10 +72,10 @@ pub fn show(command: &BuildCommand) -> Result<()> {
             "{}",
             String::from_utf8(
                 git::column(&langs.join(" "), "  ", 80)
-                    .context("Printing requested languages")?
+                    .map_err(|e| TsdlError::context("Printing requested languages", e))?
                     .stdout
             )
-            .context("Converting column-formatted languages to a string for printing")?
+            .map_err(|e| TsdlError::context("Converting column-formatted languages to a string for printing", e))?
         );
     } else {
         println!("Building all languages.");
@@ -78,7 +83,7 @@ pub fn show(command: &BuildCommand) -> Result<()> {
     }
     println!("Running with the following configuration:");
     println!();
-    print_indent(&toml::to_string(&command).context("Showing config")?, "  ");
+    print_indent(&toml::to_string(&command).map_err(|e| TsdlError::context("Showing config", e))?, "  ");
     println!();
     Ok(())
 }
