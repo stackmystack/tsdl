@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_log::AsTrace;
@@ -13,9 +12,11 @@ use crate::{
     args::{Args, LogColor},
     config::current,
     consts::TSDL_BUILD_DIR,
+    error::TsdlError,
+    TsdlResult,
 };
 
-pub fn init(args: &Args) -> Result<WorkerGuard> {
+pub fn init(args: &Args) -> TsdlResult<WorkerGuard> {
     let color = match args.log_color {
         LogColor::Auto => atty::is(atty::Stream::Stdout),
         LogColor::No => false,
@@ -62,7 +63,7 @@ fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
     guard
 }
 
-fn init_log_file(args: &Args) -> Result<File> {
+fn init_log_file(args: &Args) -> TsdlResult<File> {
     let log = args.log.as_ref().map_or_else(
         || {
             current(&args.config, args.command.as_build()).map_or_else(
@@ -74,7 +75,11 @@ fn init_log_file(args: &Args) -> Result<File> {
     );
     let parent = log.parent().unwrap_or(Path::new("."));
     if !parent.exists() {
-        fs::create_dir_all(parent).context("Preparing log directory")?;
+        fs::create_dir_all(parent).map_err(|e| {
+            TsdlError::context("Preparing log directory", e)
+        })?;
     }
-    File::create(&log).context("Creating log file")
+    File::create(&log).map_err(|e| {
+        TsdlError::context("Creating log file", e)
+    })
 }

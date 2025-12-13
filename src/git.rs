@@ -5,11 +5,10 @@ use std::{
     process::{Output, Stdio},
 };
 
-use anyhow::{Context, Result};
 use derive_more::{AsRef, Deref, From, FromStr, Into};
 use tokio::{fs, process::Command};
 
-use crate::sh::Exec;
+use crate::{error::TsdlError, sh::Exec, TsdlResult};
 
 #[derive(AsRef, Clone, Debug, Deref, From, FromStr, Hash, Into, PartialEq, Eq)]
 #[as_ref(str, [u8], String)]
@@ -51,7 +50,7 @@ impl fmt::Display for Tag {
     }
 }
 
-pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
+pub async fn clone(repo: &str, cwd: &Path) -> TsdlResult<()> {
     if cwd.exists() {
         Command::new("git")
             .current_dir(cwd)
@@ -67,7 +66,7 @@ pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
+pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> TsdlResult<()> {
     if !is_same_remote(cwd, repo).await {
         clean_anyway(cwd).await?;
     }
@@ -79,7 +78,7 @@ pub async fn clone_fast(repo: &str, git_ref: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> Result<()> {
+async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> TsdlResult<()> {
     clean_anyway(cwd).await?;
     fs::create_dir_all(cwd).await?;
 
@@ -99,7 +98,7 @@ async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &str) -> Resul
     Ok(())
 }
 
-async fn reset_head_hard(cwd: &Path, git_ref: &str) -> Result<()> {
+async fn reset_head_hard(cwd: &Path, git_ref: &str) -> TsdlResult<()> {
     if git_ref != get_head_sha1(cwd).await?.trim() {
         Command::new("git")
             .current_dir(cwd)
@@ -111,7 +110,7 @@ async fn reset_head_hard(cwd: &Path, git_ref: &str) -> Result<()> {
     Ok(())
 }
 
-async fn get_head_sha1(cwd: &Path) -> Result<String> {
+async fn get_head_sha1(cwd: &Path) -> TsdlResult<String> {
     String::from_utf8(
         Command::new("git")
             .current_dir(cwd)
@@ -120,10 +119,10 @@ async fn get_head_sha1(cwd: &Path) -> Result<String> {
             .await?
             .stdout,
     )
-    .context("rev-parse HEAD is not a valid utf-8")
+    .map_err(|e| TsdlError::context("rev-parse HEAD is not a valid utf-8", e))
 }
 
-async fn clean_anyway(cwd: &Path) -> Result<()> {
+async fn clean_anyway(cwd: &Path) -> TsdlResult<()> {
     if cwd.exists() {
         if cwd.is_dir() {
             fs::remove_dir_all(cwd).await
@@ -138,7 +137,7 @@ async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
     remote == get_remote_url(cwd).await.unwrap_or_default().trim()
 }
 
-async fn get_remote_url(cwd: &Path) -> Result<String> {
+async fn get_remote_url(cwd: &Path) -> TsdlResult<String> {
     String::from_utf8(
         Command::new("git")
             .current_dir(cwd)
@@ -147,7 +146,7 @@ async fn get_remote_url(cwd: &Path) -> Result<String> {
             .await?
             .stdout,
     )
-    .context("remote get-url origin did not return a valid utf-8")
+    .map_err(|e| TsdlError::context("remote get-url origin did not return a valid utf-8", e))
 }
 
 async fn is_valid_git_dir(cwd: &Path) -> bool {
@@ -167,7 +166,7 @@ async fn is_valid_git_dir(cwd: &Path) -> bool {
     is_inside_work_tree && can_parse_head
 }
 
-async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
+async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> TsdlResult<()> {
     Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(cwd)
@@ -182,7 +181,7 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> Result<String> {
+pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> TsdlResult<String> {
     Ok(String::from_utf8(
         Command::new("git")
             .current_dir(cwd)
@@ -190,12 +189,13 @@ pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> Result<String> {
             .exec()
             .await?
             .stdout,
-    )?
+    )
+    .map_err(|e| TsdlError::context("Failed to parse git tag output as UTF-8", e))?
     .trim()
     .to_string())
 }
 
-pub fn column(input: &str, indent: &str, width: usize) -> Result<Output> {
+pub fn column(input: &str, indent: &str, width: usize) -> TsdlResult<Output> {
     let mut child = std::process::Command::new("git")
         .arg("column")
         .arg("--mode=always")
@@ -205,9 +205,11 @@ pub fn column(input: &str, indent: &str, width: usize) -> Result<Output> {
         .stdout(Stdio::piped())
         .spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input.as_bytes())?;
+        stdin.write_all(input.as_bytes()).map_err(|e| {
+            TsdlError::context("Failed to write to git column stdin", e)
+        })?;
     }
     child
         .wait_with_output()
-        .context("git column did not finish normally")
+        .map_err(|e| TsdlError::context("git column did not finish normally", e))
 }

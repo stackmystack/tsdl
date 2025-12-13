@@ -64,3 +64,68 @@ fn format_errors(errs: &Vec<Box<dyn std::error::Error + Send + Sync + 'static>>)
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// Main error type for tsdl operations
+#[derive(Debug, Error)]
+pub enum TsdlError {
+    /// Command execution failed
+    #[error("{0}")]
+    Command(#[from] Command),
+    
+    /// Language collection failed
+    #[error("{0}")]
+    LanguageCollection(#[from] LanguageCollection),
+    
+    /// Individual language failed
+    #[error("{0}")]
+    Language(#[from] Language),
+    
+    /// Parser building failed
+    #[error("{0}")]
+    Parser(#[from] Parser),
+    
+    /// Specific step failed
+    #[error("{0}")]
+    Step(#[from] Step),
+    
+    /// Generic IO error
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    Config(String),
+    
+    /// Generic error with context
+    #[error("{context}: {source}")]
+    Context {
+        context: String,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>
+    },
+    
+    /// Simple error message
+    #[error("{0}")]
+    Message(String),
+}
+
+impl TsdlError {
+    /// Create a new error with context
+    pub fn context<C, E>(context: C, source: E) -> Self
+    where
+        C: Into<String>,
+        E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    {
+        TsdlError::Context {
+            context: context.into(),
+            source: source.into(),
+        }
+    }
+    
+    /// Create a simple error message
+    pub fn message<M>(message: M) -> Self
+    where
+        M: Into<String>,
+    {
+        TsdlError::Message(message.into())
+    }
+}

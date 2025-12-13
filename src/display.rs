@@ -18,13 +18,12 @@ use std::{
     time,
 };
 
-use anyhow::{Context, Result};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use console::style;
 use enum_dispatch::enum_dispatch;
 use log::Level;
 
-use crate::{args::ProgressStyle, format_duration};
+use crate::{args::ProgressStyle, error::TsdlError, format_duration, TsdlResult};
 
 /// Spinning sprite.
 pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";
@@ -72,7 +71,7 @@ pub struct Fancy {
 
 #[enum_dispatch]
 pub trait ProgressState {
-    fn clear(&self) -> Result<()>;
+    fn clear(&self) -> TsdlResult<()>;
     fn register(&mut self, name: impl Into<String>, num_tasks: usize) -> ProgressHandle;
     fn tick(&self);
     fn is_done(&self) -> bool;
@@ -140,10 +139,10 @@ impl Drop for Fancy {
 }
 
 impl ProgressState for Fancy {
-    fn clear(&self) -> Result<()> {
+    fn clear(&self) -> TsdlResult<()> {
         self.multi
             .clear()
-            .context("Clearing the multi-progress bar")
+            .map_err(|e| TsdlError::context("Clearing the multi-progress bar", e))
     }
 
     fn register(&mut self, name: impl Into<String>, num_tasks: usize) -> ProgressHandle {
@@ -178,7 +177,7 @@ impl ProgressState for Fancy {
 }
 
 impl ProgressState for Plain {
-    fn clear(&self) -> Result<()> {
+    fn clear(&self) -> TsdlResult<()> {
         Ok(())
     }
 

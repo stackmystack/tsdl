@@ -1,14 +1,13 @@
 use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output};
 
-use anyhow::Result;
 use tokio::process::Command;
 use tracing::{error, trace};
 
-use crate::{error, relative_to_cwd};
+use crate::{error, relative_to_cwd, TsdlResult};
 
 pub trait Exec {
-    fn exec(&mut self) -> impl std::future::Future<Output = Result<Output>>;
-    fn display(&self) -> Result<String>;
+    fn exec(&mut self) -> impl std::future::Future<Output = TsdlResult<Output>>;
+    fn display(&self) -> TsdlResult<String>;
 }
 
 pub trait Script {
@@ -17,11 +16,14 @@ pub trait Script {
 
 impl Exec for Command {
     #[tracing::instrument(skip(self))]
-    async fn exec(&mut self) -> Result<Output> {
+    async fn exec(&mut self) -> TsdlResult<Output> {
         let cmd = self.display()?;
         trace!("{}", cmd);
 
-        let output = self.output().await?;
+        let output = self.output().await.map_err(|e| {
+            error::TsdlError::context("Failed to execute command", e)
+        })?;
+        
         if output.status.success() {
             return Ok(output);
         }
@@ -48,20 +50,26 @@ impl Exec for Command {
         .into())
     }
 
-    fn display(&self) -> Result<String> {
+    fn display(&self) -> TsdlResult<String> {
         let program = self.as_std().get_program().to_string_lossy();
         let args = self.as_std().get_args();
         let cwd = self.as_std().get_current_dir();
         let mut res = String::new();
 
         if let Some(path) = cwd {
-            write!(res, "[{}] ", relative_to_cwd(path).to_string_lossy())?;
+            write!(res, "[{}] ", relative_to_cwd(path).to_string_lossy()).map_err(|e| {
+                error::TsdlError::context("Failed to write to display string", e)
+            })?;
         }
 
-        write!(res, "{program} ")?;
+        write!(res, "{program} ").map_err(|e| {
+            error::TsdlError::context("Failed to write program to display string", e)
+        })?;
 
         for arg in args {
-            write!(res, "{} ", arg.to_string_lossy())?;
+            write!(res, "{} ", arg.to_string_lossy()).map_err(|e| {
+                error::TsdlError::context("Failed to write argument to display string", e)
+            })?;
         }
 
         Ok(res.trim_end().to_string())

@@ -5,14 +5,12 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
 use tokio::process::Command;
 use tokio::{fs, io};
 use tracing::trace;
 use url::Url;
 
-use crate::display::ProgressHandle;
 use crate::git::{self, Ref};
 use crate::SafeCanonicalize;
 use crate::{
@@ -21,9 +19,10 @@ use crate::{
     git::Tag,
     sh::Exec,
 };
+use crate::{display::ProgressHandle, error::TsdlError, TsdlResult};
 
 #[allow(clippy::missing_panics_doc)]
-pub async fn tag(repo: &str, version: &str) -> Result<Tag> {
+pub async fn tag(repo: &str, version: &str) -> TsdlResult<Tag> {
     let output = Command::new("git")
         .args(["ls-remote", "--refs", "--tags", repo])
         .exec()
@@ -61,7 +60,7 @@ fn find_tag(refs: &HashMap<String, String>, version: &str) -> Tag {
         )
 }
 
-async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<PathBuf> {
+async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> TsdlResult<PathBuf> {
     let build_dir = &args.build_dir;
     let platform = &args.tree_sitter.platform;
     let repo = &args.tree_sitter.repo;
@@ -87,55 +86,74 @@ async fn cli(args: &BuildCommand, tag: &Tag, handle: &ProgressHandle) -> Result<
     Ok(res)
 }
 
-async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> Result<()> {
+async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> TsdlResult<()> {
     download(gz, url).await?;
     gunzip(gz).await?;
     chmod_x(res).await?;
-    fs::remove_file(gz).await?;
+    fs::remove_file(gz)
+        .await
+        .map_err(|e| TsdlError::context(format!("removing {}", gz.display()), e))?;
     Ok(())
 }
 
-async fn download(gz: &Path, url: &str) -> Result<()> {
-    fs::write(gz, reqwest::get(url).await.context("fetch")?.bytes().await?)
-        .await
-        .with_context(|| format!("downloading {url} to {}", gz.display()))
+async fn download(gz: &Path, url: &str) -> TsdlResult<()> {
+    fs::write(
+        gz,
+        reqwest::get(url)
+            .await
+            .map_err(|e| TsdlError::context("fetch", e))?
+            .bytes()
+            .await
+            .map_err(|e| TsdlError::context("fetching bytes", e))?,
+    )
+    .await
+    .map_err(|e| TsdlError::context(format!("downloading {url} to {}", gz.display()), e))
 }
 
-async fn gunzip(gz: &Path) -> Result<()> {
-    let file = fs::File::open(gz).await?;
+async fn gunzip(gz: &Path) -> TsdlResult<()> {
+    let file = fs::File::open(gz)
+        .await
+        .map_err(|e| TsdlError::context(format!("opening {}", gz.display()), e))?;
     let mut decompressor = GzipDecoder::new(tokio::io::BufReader::new(file));
     let out_path = gz.with_extension("");
-    let mut out_file = tokio::fs::File::create(out_path).await?;
+    let mut out_file = tokio::fs::File::create(&out_path)
+        .await
+        .map_err(|e| TsdlError::context(format!("creating {}", out_path.display()), e))?;
     io::copy(&mut decompressor, &mut out_file)
         .await
         .and(Ok(()))
-        .with_context(|| format!("decompressing {}", gz.display()))
+        .map_err(|e| TsdlError::context(format!("decompressing {}", gz.display()), e))
 }
 
-async fn chmod_x(prog: &Path) -> Result<()> {
-    let metadata = fs::metadata(prog).await?;
+async fn chmod_x(prog: &Path) -> TsdlResult<()> {
+    let metadata = fs::metadata(prog)
+        .await
+        .map_err(|e| TsdlError::context(format!("getting metadata for {}", prog.display()), e))?;
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(prog, permissions)
         .await
-        .with_context(|| format!("chmod +x {}", prog.display()))
+        .map_err(|e| TsdlError::context(format!("chmod +x {}", prog.display()), e))
 }
 
-pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Result<PathBuf> {
+pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> TsdlResult<PathBuf> {
     let mut handle = {
         progress
             .lock()
             .map(|mut lock| lock.register("tree-sitter-cli", 3))
-            .or(Err(anyhow!("Acquiring progress lock")))?
+            .or(Err(TsdlError::message("Acquiring progress lock")))?
     };
-
-    let repo = Url::parse(&args.tree_sitter.repo).context("Parsing the tree-sitter URL")?;
+    let repo = Url::parse(&args.tree_sitter.repo)
+        .map_err(|e| TsdlError::context("Parsing the tree-sitter URL", e))?;
     let version = &args.tree_sitter.version;
+
     handle.start(format!("Figuring out tag from version {version}"));
     let tag = tag(repo.as_str(), version).await?;
+
     handle.step(format!("Fetching {tag}",));
     let cli = cli(args, &tag, &handle).await?;
     handle.fin(format!("{tag}"));
+
     Ok(cli)
 }
 
