@@ -75,11 +75,7 @@ fn init_log_file(args: &Args) -> TsdlResult<File> {
     );
     let parent = log.parent().unwrap_or(Path::new("."));
     if !parent.exists() {
-        fs::create_dir_all(parent).map_err(|e| {
-            TsdlError::context("Preparing log directory", e)
-        })?;
+        fs::create_dir_all(parent).map_err(|e| TsdlError::context("Preparing log directory", e))?;
     }
-    File::create(&log).map_err(|e| {
-        TsdlError::context("Creating log file", e)
-    })
+    File::create(&log).map_err(|e| TsdlError::context("Creating log file", e))
 }

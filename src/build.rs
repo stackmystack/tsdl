@@ -12,13 +12,12 @@ use crate::{
     args::{BuildCommand, ParserConfig, Target},
     config,
     consts::TSDL_FROM,
-    error::TsdlError,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
     error,
+    error::TsdlError,
     git::Ref,
     parser::{build_languages, Language, NUM_STEPS},
-    tree_sitter, SafeCanonicalize,
-    TsdlResult,
+    tree_sitter, SafeCanonicalize, TsdlResult,
 };
 
 pub fn run(command: &BuildCommand, mut progress: Progress) -> TsdlResult<()> {
@@ -34,11 +33,16 @@ fn clear(command: &BuildCommand, progress: &mut Progress) -> TsdlResult<()> {
     if command.fresh && command.build_dir.exists() {
         let handle = progress.register("Fresh Build", 1);
         let disp = &command.build_dir.display();
-        fs::remove_dir_all(&command.build_dir)
-            .map_err(|e| TsdlError::context(format!("Removing the build_dir {disp} for a fresh build"), e))?;
+        fs::remove_dir_all(&command.build_dir).map_err(|e| {
+            TsdlError::context(
+                format!("Removing the build_dir {disp} for a fresh build"),
+                e,
+            )
+        })?;
         handle.fin(format!("Cleaned {disp}"));
     }
-    fs::create_dir_all(&command.build_dir).map_err(|e| TsdlError::context("Creating the build dir", e))?;
+    fs::create_dir_all(&command.build_dir)
+        .map_err(|e| TsdlError::context("Creating the build dir", e))?;
     Ok(())
 }
 
@@ -64,8 +68,12 @@ fn build(command: &BuildCommand, progress: Progress) -> TsdlResult<()> {
         &command.prefix,
         command.target,
     )?;
-    create_dir_all(&command.out_dir)
-        .map_err(|e| TsdlError::context(format!("Creating output dir {}", &command.out_dir.display()), e))?;
+    create_dir_all(&command.out_dir).map_err(|e| {
+        TsdlError::context(
+            format!("Creating output dir {}", &command.out_dir.display()),
+            e,
+        )
+    })?;
     rt.block_on(build_languages(languages))
 }
 
@@ -180,7 +188,10 @@ fn get_language_coords(
             resolve_git_ref(git_ref),
             from.as_ref().map_or_else(
                 || default_repo(language),
-                |f| Url::parse(f).map_err(|e| TsdlError::context(format!("Parsing {f} for {language}"), e)),
+                |f| {
+                    Url::parse(f)
+                        .map_err(|e| TsdlError::context(format!("Parsing {f} for {language}"), e))
+                },
             ),
         ),
         _ => (None, String::from("HEAD").into(), default_repo(language)),
@@ -203,5 +214,6 @@ fn resolve_git_ref(git_ref: &str) -> Ref {
 
 fn default_repo(language: &str) -> TsdlResult<Url> {
     let url = format!("{TSDL_FROM}{language}");
-    Url::parse(&url).map_err(|e| TsdlError::context(format!("Creating url {url} for {language}"), e))
+    Url::parse(&url)
+        .map_err(|e| TsdlError::context(format!("Creating url {url} for {language}"), e))
 }

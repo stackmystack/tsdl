@@ -10,14 +10,13 @@ use tsdl::{
     consts::TREE_SITTER_PLATFORM,
     display::{self, Handle, Progress, ProgressState},
     error::TsdlError,
-    logging,
-    TsdlResult,
+    logging, TsdlResult,
 };
 
 fn main() -> ExitCode {
     set_panic_hook();
     let args = args::Args::parse();
-    
+
     match logging::init(&args) {
         Err(e) => {
             eprintln!("Could not initialize logging: {}", e);
@@ -26,10 +25,12 @@ fn main() -> ExitCode {
         Ok(_) => {
             info!("Starting");
             match run(&args) {
-                Err(e) => { eprintln!("{e}"); ExitCode::FAILURE }
-                Ok(_) => ExitCode::SUCCESS,    
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+                Ok(_) => ExitCode::SUCCESS,
             }
-            
         }
     }
 }
@@ -47,31 +48,29 @@ fn run(args: &args::Args) -> TsdlResult<()> {
 
 fn self_update(mut progress: Progress) -> TsdlResult<()> {
     let tsdl = env!("CARGO_BIN_NAME");
-    let current_version = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| {
-        TsdlError::context("Failed to parse current version", e)
-    })?;
+    let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|e| TsdlError::context("Failed to parse current version", e))?;
     let mut handle = progress.register("selfupdate", 4);
 
     handle.start("fetching releases".to_string());
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
-        .build().map_err(|e| {
-            TsdlError::context("Failed to build release list configuration", e)
-        })?
-        .fetch().map_err(|e| {
-            TsdlError::context("Failed to fetch releases", e)
-        })?;
+        .build()
+        .map_err(|e| TsdlError::context("Failed to build release list configuration", e))?
+        .fetch()
+        .map_err(|e| TsdlError::context("Failed to fetch releases", e))?;
 
     let name = format!("{tsdl}-{TREE_SITTER_PLATFORM}.gz");
     let asset = releases[0].assets.iter().find(|&asset| asset.name == name);
     if asset.is_none() {
-        return Err(TsdlError::message("Could not find a suitable release for your platform"));
+        return Err(TsdlError::message(
+            "Could not find a suitable release for your platform",
+        ));
     }
 
-    let latest_version = Version::parse(&releases[0].version).map_err(|e| {
-        TsdlError::context("Failed to parse latest version", e)
-    })?;
+    let latest_version = Version::parse(&releases[0].version)
+        .map_err(|e| TsdlError::context("Failed to parse latest version", e))?;
     if latest_version <= current_version {
         handle.msg("already at the latest version".to_string());
         return Ok(());
@@ -79,21 +78,21 @@ fn self_update(mut progress: Progress) -> TsdlResult<()> {
 
     handle.step(format!("downloading {latest_version}"));
     let asset = asset.unwrap();
-    let tmp_dir = tempfile::tempdir().map_err(|e| {
-        TsdlError::context("Failed to create temporary directory", e)
-    })?;
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| TsdlError::context("Failed to create temporary directory", e))?;
     let tmp_gz_path = tmp_dir.path().join(&asset.name);
-    let tmp_gz = fs::File::create_new(&tmp_gz_path).map_err(|e| {
-        TsdlError::context("Failed to create temporary file", e)
-    })?;
+    let tmp_gz = fs::File::create_new(&tmp_gz_path)
+        .map_err(|e| TsdlError::context("Failed to create temporary file", e))?;
 
     self_update::Download::from_url(&asset.download_url)
-        .set_header(reqwest::header::ACCEPT, "application/octet-stream".parse().map_err(|e| {
-            TsdlError::context("Failed to parse accept header", e)
-        })?)
-        .download_to(&tmp_gz).map_err(|e| {
-            TsdlError::context("Failed to download release asset", e)
-        })?;
+        .set_header(
+            reqwest::header::ACCEPT,
+            "application/octet-stream"
+                .parse()
+                .map_err(|e| TsdlError::context("Failed to parse accept header", e))?,
+        )
+        .download_to(&tmp_gz)
+        .map_err(|e| TsdlError::context("Failed to download release asset", e))?;
 
     handle.step(format!("extracting {latest_version}"));
     let tsdl_bin = PathBuf::from(tsdl);
@@ -101,14 +100,12 @@ fn self_update(mut progress: Progress) -> TsdlResult<()> {
         .archive(self_update::ArchiveKind::Plain(Some(
             self_update::Compression::Gz,
         )))
-        .extract_file(tmp_dir.path(), &tsdl_bin).map_err(|e| {
-            TsdlError::context("Failed to extract release asset", e)
-        })?;
+        .extract_file(tmp_dir.path(), &tsdl_bin)
+        .map_err(|e| TsdlError::context("Failed to extract release asset", e))?;
 
     let new_exe = tmp_dir.path().join(tsdl_bin);
-    self_replace::self_replace(new_exe).map_err(|e| {
-        TsdlError::context("Failed to replace current executable", e)
-    })?;
+    self_replace::self_replace(new_exe)
+        .map_err(|e| TsdlError::context("Failed to replace current executable", e))?;
 
     handle.fin(format!("{latest_version}"));
     Ok(())
