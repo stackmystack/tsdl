@@ -81,27 +81,24 @@ fn collect_languages(
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
 ) -> Result<Vec<Language>, error::LanguageCollection> {
-    let (res, errs) = unique_languages(app, ts_cli, requested_languages, defined_parsers);
-    if errs.is_empty() {
-        Ok(res.into_iter().map(Result::unwrap).collect())
+    let results = unique_languages(app, ts_cli, requested_languages, defined_parsers);
+    let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
+    if err.is_empty() {
+        Ok(ok.into_iter().map(Result::unwrap).collect())
     } else {
         Err(error::LanguageCollection {
-            related: errs.into_iter().map(Result::unwrap_err).collect(),
+            related: err.into_iter().map(Result::unwrap_err).collect(),
         })
     }
 }
-
-type Languages = (
-    Vec<Result<Language, error::Language>>,
-    Vec<Result<Language, error::Language>>,
-);
 
 fn unique_languages(
     app: &App,
     ts_cli: PathBuf,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-) -> Languages {
+) -> Vec<Result<Language, error::Language>> {
     let ts_cli = Arc::new(ts_cli);
     let final_languages = match requested_languages {
         Some(langs) if !langs.is_empty() => langs.clone(),
@@ -109,33 +106,35 @@ fn unique_languages(
             .map(|parsers| parsers.keys().cloned().collect())
             .unwrap_or_default(),
     };
-    final_languages
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .map(|language| {
-            let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
-            url.map(|repo| {
-                Language::new(
-                    app.command
-                        .build_dir
-                        .join(format!("tree-sitter-{}", &language)) // make sure it follows this format because the cli takes advantage of that.
-                        .canon()
-                        .unwrap(),
-                    build_script,
-                    git_ref,
-                    app.progress.lock().unwrap().register(&language, NUM_STEPS),
-                    language.clone(),
-                    app.command.out_dir.canon().unwrap(),
-                    app.command.prefix.clone(),
-                    repo,
-                    app.command.target,
-                    ts_cli.clone(),
-                )
-            })
-            .map_err(|err| error::Language::new(language, err))
-        })
-        .partition(Result::is_ok)
+
+    let unique = final_languages.into_iter().collect::<HashSet<_>>();
+    let mut results = Vec::new();
+
+    for language in unique {
+        let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
+        let result = match url {
+            Ok(repo) => Ok(Language::new(
+                app.command
+                    .build_dir
+                    .join(format!("tree-sitter-{}", &language)) // make sure it follows this format because the cli takes advantage of that.
+                    .canon()
+                    .unwrap(),
+                build_script,
+                git_ref,
+                app.progress.lock().unwrap().register(&language, NUM_STEPS),
+                language.clone(),
+                app.command.out_dir.canon().unwrap(),
+                app.command.prefix.clone(),
+                repo,
+                app.command.target,
+                ts_cli.clone(),
+            )),
+            Err(err) => Err(error::Language::new(language, err)),
+        };
+        results.push(result);
+    }
+
+    results
 }
 
 fn get_language_coords(
