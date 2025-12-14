@@ -7,7 +7,7 @@ mod log;
 
 use std::{env, fs, path::Path};
 
-use assert_cmd::Command;
+use assert_cmd::{Command, cargo::cargo_bin_cmd};
 use assert_fs::TempDir;
 use figment::{
     providers::{Format, Serialized, Toml},
@@ -25,7 +25,7 @@ pub struct Sandbox {
 impl Sandbox {
     pub fn new() -> Self {
         let tmp = TempDir::new().unwrap();
-        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let mut cmd = cargo_bin_cmd!();
         cmd.current_dir(tmp.path());
         Sandbox {
             build: BuildCommand::default(),
