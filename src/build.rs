@@ -158,10 +158,7 @@ fn unique_languages(
                     ts_cli.clone(),
                 )
             })
-            .map_err(|err| error::Language {
-                name: language,
-                source: Box::new(err.into()),
-            })
+            .map_err(|err| error::Language::new(language, err))
         })
         .partition(Result::is_ok)
 }

@@ -15,6 +15,7 @@ use crate::{
     error::{self, TsdlError},
     git::{clone_fast, Ref},
     sh::{Exec, Script},
+    step_error,
     SafeCanonicalize, TsdlResult,
 };
 
@@ -175,14 +176,13 @@ impl Language {
             .exec()
             .await
             .map_err(|err| {
-                error::Step {
-                    name: self.name.clone(),
-                    kind: error::ParserOp::Build {
+                step_error!(
+                    self.name,
+                    error::ParserOp::Build {
                         dir: self.build_dir.clone(),
                     },
-                    source: Box::new(err.into()),
-                }
-                .into()
+                    err
+                )
             })
             .and(Ok(()))
     }
@@ -251,14 +251,13 @@ impl Language {
         clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
             .await
             .map_err(|err| {
-                error::Step {
-                    name: self.name.clone(),
-                    kind: error::ParserOp::Clone {
+                step_error!(
+                    self.name,
+                    error::ParserOp::Clone {
                         dir: self.build_dir.clone(),
                     },
-                    source: Box::new(err.into()),
-                }
-                .into()
+                    err
+                )
             })
             .and(Ok(()))
     }
@@ -270,14 +269,13 @@ impl Language {
             .exec()
             .await
             .map_err(|err| {
-                error::Step {
-                    name: self.name.clone(),
-                    kind: error::ParserOp::Generate {
+                step_error!(
+                    self.name,
+                    error::ParserOp::Generate {
                         dir: self.build_dir.clone(),
                     },
-                    source: Box::new(err.into()),
-                }
-                .into()
+                    err
+                )
             })
             .and(Ok(()))
     }
@@ -336,14 +334,14 @@ impl Language {
         }
     }
 
-    fn create_copy_error(&self, dir: &Path, message: String) -> error::Step {
-        error::Step {
-            name: self.name.clone(),
-            kind: error::ParserOp::Copy {
+    fn create_copy_error(&self, dir: &Path, message: String) -> error::TsdlError {
+        error::Step::new(
+            self.name.clone(),
+            error::ParserOp::Copy {
                 src: self.out_dir.clone(),
                 dst: dir.to_path_buf(),
             },
-            source: Box::new(TsdlError::message(message).into()),
-        }
+            TsdlError::message(message)
+        )
     }
 }
