@@ -15,7 +15,7 @@ use crate::{
     error::{self, TsdlError},
     git::{clone_fast, Ref},
     sh::{Exec, Script},
-    step_error, SafeCanonicalize, TsdlResult,
+    SafeCanonicalize, TsdlResult,
 };
 
 pub const NUM_STEPS: usize = 3;
@@ -63,33 +63,6 @@ pub struct Language {
 }
 
 impl Language {
-    /// Create a step error with automatic context
-    fn step_err(&self, op: error::ParserOp, err: impl Into<TsdlError>) -> TsdlError {
-        step_error!(self.name, op, err).into()
-    }
-
-    /// Create a context error with automatic wrapping
-    #[allow(clippy::unused_self)]
-    fn context_err<C, E>(&self, context: C, err: E) -> TsdlError
-    where
-        C: Into<String>,
-        E: Into<TsdlError>,
-    {
-        TsdlError::context(context, err)
-    }
-
-    /// Create a copy-specific error
-    fn copy_err(&self, dir: &Path, message: impl Into<String>) -> TsdlError {
-        error::TsdlError::Step(error::Step::new(
-            self.name.clone(),
-            error::ParserOp::Copy {
-                src: self.out_dir.clone(),
-                dst: dir.to_path_buf(),
-            },
-            TsdlError::message(message.into()),
-        ))
-    }
-
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -184,32 +157,21 @@ impl Language {
 
     async fn build(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
         let effective_name = self.parser_name_and_ext(dir, ext);
-        self.build_script
-            .as_ref()
-            .map_or_else(
-                || {
-                    let mut cmd = Command::new(&*self.ts_cli);
-                    cmd.arg("build");
-                    if ext == WASM_EXTENSION {
-                        cmd.arg("--wasm");
-                    }
-                    cmd.args(["--output", &effective_name]);
-                    cmd
-                },
-                |script| Command::from_str(script),
-            )
-            .current_dir(dir)
-            .exec()
-            .await
-            .map_err(|err| {
-                self.step_err(
-                    error::ParserOp::Build {
-                        dir: self.build_dir.clone(),
-                    },
-                    err,
-                )
-            })
-            .and(Ok(()))
+
+        let mut cmd = if let Some(script) = &self.build_script {
+            Command::from_str(script)
+        } else {
+            let mut cmd = Command::new(&*self.ts_cli);
+            cmd.arg("build");
+            if ext == WASM_EXTENSION {
+                cmd.arg("--wasm");
+            }
+            cmd.args(["--output", &effective_name]);
+            cmd
+        };
+
+        cmd.current_dir(dir).exec().await?;
+        Ok(())
     }
 
     fn collect_grammars(&self) -> Vec<PathBuf> {
@@ -265,25 +227,13 @@ impl Language {
         println!();
         println!("cp {} {}", dll.display(), dst.display());
         println!();
-        fs::copy(&dll, &dst)
-            .await
-            .map_err(|e| self.context_err(format!("cp {} {}", &dll.display(), dst.display()), e))
-            .map_err(|err: TsdlError| self.copy_err(&dll, err.to_string()))
-            .and(Ok(()))
+        fs::copy(&dll, &dst).await?;
+        Ok(())
     }
 
     async fn clone(&self) -> TsdlResult<()> {
-        clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
-            .await
-            .map_err(|err| {
-                self.step_err(
-                    error::ParserOp::Clone {
-                        dir: self.build_dir.clone(),
-                    },
-                    err,
-                )
-            })
-            .and(Ok(()))
+        clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir).await?;
+        Ok(())
     }
 
     async fn generate(&self, dir: &Path) -> TsdlResult<()> {
@@ -291,16 +241,8 @@ impl Language {
             .current_dir(dir)
             .arg("generate")
             .exec()
-            .await
-            .map_err(|err| {
-                self.step_err(
-                    error::ParserOp::Generate {
-                        dir: self.build_dir.clone(),
-                    },
-                    err,
-                )
-            })
-            .and(Ok(()))
+            .await?;
+        Ok(())
     }
 
     fn parser_name_and_ext(&self, dir: &Path, ext: &str) -> String {
@@ -346,9 +288,23 @@ impl Language {
             Ok(exact.clone())
         } else {
             match all_dlls.len() {
-                0 => Err(self.copy_err(dir, format!("Couldn't find any {ext} file"))),
+                0 => Err(error::TsdlError::Step(error::Step::new(
+                    self.name.clone(),
+                    error::ParserOp::Copy {
+                        src: self.out_dir.clone(),
+                        dst: dir.to_path_buf(),
+                    },
+                    TsdlError::message(format!("Couldn't find any {ext} file")),
+                ))),
                 1 => Ok(all_dlls[0].clone()),
-                _ => Err(self.copy_err(dir, format!("Found many {ext} files: {all_dlls:?}."))),
+                _ => Err(error::TsdlError::Step(error::Step::new(
+                    self.name.clone(),
+                    error::ParserOp::Copy {
+                        src: self.out_dir.clone(),
+                        dst: dir.to_path_buf(),
+                    },
+                    TsdlError::message(format!("Found many {ext} files: {all_dlls:?}.")),
+                ))),
             }
         }
     }
