@@ -180,7 +180,7 @@ impl Language {
                     kind: error::ParserOp::Build {
                         dir: self.build_dir.clone(),
                     },
-                    source: err.into(),
+                    source: Box::new(err.into()),
                 }
                 .into()
             })
@@ -256,7 +256,7 @@ impl Language {
                     kind: error::ParserOp::Clone {
                         dir: self.build_dir.clone(),
                     },
-                    source: err.into(),
+                    source: Box::new(err.into()),
                 }
                 .into()
             })
@@ -275,7 +275,7 @@ impl Language {
                     kind: error::ParserOp::Generate {
                         dir: self.build_dir.clone(),
                     },
-                    source: err.into(),
+                    source: Box::new(err.into()),
                 }
                 .into()
             })
@@ -343,7 +343,7 @@ impl Language {
                 src: self.out_dir.clone(),
                 dst: dir.to_path_buf(),
             },
-            source: Box::new(TsdlError::message(message)),
+            source: Box::new(TsdlError::message(message).into()),
         }
     }
 }
