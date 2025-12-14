@@ -141,26 +141,30 @@ fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
 ) -> (Option<String>, Ref, TsdlResult<Url>) {
-    match defined_parsers.as_ref().and_then(|p| p.get(language)) {
+    // Attempt to find the config; defaults to None if map or key is missing
+    let config = defined_parsers.and_then(|parsers| parsers.get(language));
+
+    match config {
         Some(ParserConfig::Ref(git_ref)) => {
             (None, resolve_git_ref(git_ref), default_repo(language))
         }
+
         Some(ParserConfig::Full {
             build_script,
             git_ref,
             from,
-        }) => (
-            build_script.clone(),
-            resolve_git_ref(git_ref),
-            from.as_ref().map_or_else(
-                || default_repo(language),
-                |f| {
-                    Url::parse(f)
-                        .map_err(|e| TsdlError::context(format!("Parsing {f} for {language}"), e))
-                },
-            ),
-        ),
-        _ => (None, String::from("HEAD").into(), default_repo(language)),
+        }) => {
+            let url_result = match from {
+                Some(url_str) => Url::parse(url_str).map_err(|e| {
+                    TsdlError::context(format!("Parsing {url_str} for {language}"), e)
+                }),
+                None => default_repo(language),
+            };
+
+            (build_script.clone(), resolve_git_ref(git_ref), url_result)
+        }
+
+        None => (None, String::from("HEAD").into(), default_repo(language)),
     }
 }
 
