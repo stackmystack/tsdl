@@ -59,6 +59,7 @@ use crate::error::TsdlError;
 
 extern crate log;
 
+pub mod app;
 pub mod args;
 pub mod build;
 pub mod config;

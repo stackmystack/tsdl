@@ -6,9 +6,10 @@ use semver::Version;
 use tracing::{error, info};
 
 use tsdl::{
-    args, build, config,
+    app::App,
+    args,
     consts::TREE_SITTER_PLATFORM,
-    display::{self, Handle, Progress, ProgressState},
+    display::{Handle, ProgressState},
     error::TsdlError,
     logging, TsdlResult,
 };
@@ -22,7 +23,7 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         info!("Starting");
-        match run(&args) {
+        match App::new(&args).and_then(|app| run(&app, &args)) {
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE
@@ -32,18 +33,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &args::Args) -> TsdlResult<()> {
+fn run(app: &App, args: &args::Args) -> TsdlResult<()> {
     match &args.command {
-        args::Command::Build(command) => build::run(
-            &config::current(&args.config, Some(command))?,
-            display::current(&args.progress, &args.verbose),
-        ),
-        args::Command::Config { command } => config::run(command, &args.config),
-        args::Command::Selfupdate => self_update(display::current(&args.progress, &args.verbose)),
+        args::Command::Build(_) => tsdl::build::run(app),
+        args::Command::Config { command } => tsdl::config::run(app, command),
+        args::Command::Selfupdate => execute_selfupdate(app),
     }
 }
 
-fn self_update(mut progress: Progress) -> TsdlResult<()> {
+fn execute_selfupdate(app: &App) -> TsdlResult<()> {
+    let mut progress = app
+        .progress
+        .lock()
+        .map_err(|e| TsdlError::message(format!("Failed to acquire progress lock: {e}")))?;
     let tsdl = env!("CARGO_BIN_NAME");
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| TsdlError::context("Failed to parse current version", e))?;

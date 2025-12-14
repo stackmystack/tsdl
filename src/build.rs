@@ -9,8 +9,8 @@ use tokio::time;
 use url::Url;
 
 use crate::{
-    args::{BuildCommand, ParserConfig, Target},
-    config,
+    app::App,
+    args::ParserConfig,
     consts::TSDL_FROM,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
     error,
@@ -20,46 +20,46 @@ use crate::{
     tree_sitter, SafeCanonicalize, TsdlResult,
 };
 
-pub fn run(command: &BuildCommand, mut progress: Progress) -> TsdlResult<()> {
-    if command.show_config {
-        config::show(command)?;
+pub fn run(app: &App) -> TsdlResult<()> {
+    if app.config.show_config {
+        crate::config::show(&app.config)?;
     }
-    clear(command, &mut progress)?;
-    build(command, progress)?;
+    clear(app)?;
+    build_impl(app)?;
     Ok(())
 }
 
-fn clear(command: &BuildCommand, progress: &mut Progress) -> TsdlResult<()> {
-    if command.fresh && command.build_dir.exists() {
+fn clear(app: &App) -> TsdlResult<()> {
+    if app.config.fresh && app.config.build_dir.exists() {
+        let mut progress = app
+            .progress
+            .lock()
+            .map_err(|e| TsdlError::message(format!("Failed to acquire progress lock: {e}")))?;
         let handle = progress.register("Fresh Build", 1);
-        let disp = &command.build_dir.display();
-        fs::remove_dir_all(&command.build_dir)?;
+        let disp = &app.config.build_dir.display();
+        fs::remove_dir_all(&app.config.build_dir)?;
         handle.fin(format!("Cleaned {disp}"));
     }
-    fs::create_dir_all(&command.build_dir)?;
+    fs::create_dir_all(&app.config.build_dir)?;
     Ok(())
 }
 
-fn build(command: &BuildCommand, progress: Progress) -> TsdlResult<()> {
+fn build_impl(app: &App) -> TsdlResult<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(command.ncpus)
+        .worker_threads(app.config.ncpus)
         .build()?;
     let _guard = rt.enter();
-    let screen = Arc::new(Mutex::new(progress));
-    rt.spawn(update_screen(screen.clone()));
-    let ts_cli = rt.block_on(tree_sitter::prepare(command, screen.clone()))?;
+    rt.spawn(update_screen(app.progress.clone()));
+    let ts_cli = rt.block_on(tree_sitter::prepare(&app.config, app.progress.clone()))?;
+
     let languages = collect_languages(
+        app,
         ts_cli,
-        screen,
-        command.languages.as_ref(),
-        command.parsers.as_ref(),
-        command.build_dir.clone(),
-        command.out_dir.clone(),
-        &command.prefix,
-        command.target,
+        app.config.languages.as_ref(),
+        app.config.parsers.as_ref(),
     )?;
-    create_dir_all(&command.out_dir)?;
+    create_dir_all(&app.config.out_dir)?;
     rt.block_on(build_languages(languages))
 }
 
@@ -75,27 +75,13 @@ async fn update_screen(progress: Arc<Mutex<Progress>>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collect_languages(
+    app: &App,
     ts_cli: PathBuf,
-    progress: Arc<Mutex<Progress>>,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-    build_dir: PathBuf,
-    out_dir: PathBuf,
-    prefix: &str,
-    target: Target,
 ) -> Result<Vec<Language>, error::LanguageCollection> {
-    let (res, errs) = unique_languages(
-        ts_cli,
-        build_dir,
-        out_dir,
-        prefix,
-        target,
-        requested_languages,
-        defined_parsers,
-        progress,
-    );
+    let (res, errs) = unique_languages(app, ts_cli, requested_languages, defined_parsers);
     if errs.is_empty() {
         Ok(res.into_iter().map(Result::unwrap).collect())
     } else {
@@ -110,17 +96,11 @@ type Languages = (
     Vec<Result<Language, error::Language>>,
 );
 
-#[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::too_many_arguments)]
 fn unique_languages(
+    app: &App,
     ts_cli: PathBuf,
-    build_dir: PathBuf,
-    out_dir: PathBuf,
-    prefix: &str,
-    target: Target,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-    progress: Arc<Mutex<Progress>>,
 ) -> Languages {
     let ts_cli = Arc::new(ts_cli);
     let final_languages = match requested_languages {
@@ -137,18 +117,19 @@ fn unique_languages(
             let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
             url.map(|repo| {
                 Language::new(
-                    build_dir
+                    app.config
+                        .build_dir
                         .join(format!("tree-sitter-{}", &language)) // make sure it follows this format because the cli takes advantage of that.
                         .canon()
                         .unwrap(),
                     build_script,
                     git_ref,
-                    progress.lock().unwrap().register(&language, NUM_STEPS),
+                    app.progress.lock().unwrap().register(&language, NUM_STEPS),
                     language.clone(),
-                    out_dir.canon().unwrap(),
-                    prefix.into(),
+                    app.config.out_dir.canon().unwrap(),
+                    app.config.prefix.clone(),
                     repo,
-                    target,
+                    app.config.target,
                     ts_cli.clone(),
                 )
             })
