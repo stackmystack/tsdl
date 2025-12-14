@@ -62,7 +62,7 @@ pub struct Language {
 
 impl fmt::Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.\n{:?}", self.name, self.source)
+        write!(f, "{}.\n{}", self.name, self.source)
     }
 }
 
@@ -98,7 +98,7 @@ pub struct Step {
 
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}.\n{:?}", self.name, self.kind, self.source)
+        write!(f, "{}: {}.\n{}", self.name, self.kind, self.source)
     }
 }
 
@@ -130,7 +130,7 @@ fn format_languages(langs: &[Language]) -> String {
 
 fn format_errors(errs: &Vec<Box<dyn std::error::Error + Send + Sync + 'static>>) -> String {
     errs.iter()
-        .map(|e| format!("{e:?}"))
+        .map(|e| format!("{e}"))
         .collect::<Vec<_>>()
         .join("\n")
 }
