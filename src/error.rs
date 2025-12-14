@@ -42,6 +42,8 @@ impl fmt::Display for Command {
 }
 
 impl Command {
+    #[must_use]
+    #[allow(clippy::format_push_string)]
     pub fn format_with_indent(&self, indent: usize) -> String {
         let prefix = " ".repeat(indent);
         let mut result = format!("{}$ {}", prefix, self.msg);
@@ -53,7 +55,7 @@ impl Command {
                 prefix,
                 self.stdout
                     .lines()
-                    .map(|l| format!("{}  {}", prefix, l))
+                    .map(|l| format!("{prefix}  {l}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -62,20 +64,20 @@ impl Command {
                 prefix,
                 self.stderr
                     .lines()
-                    .map(|l| format!("{}  {}", prefix, l))
+                    .map(|l| format!("{prefix}  {l}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
         } else if !self.stderr.is_empty() {
             result.push('\n');
             for line in self.stderr.lines() {
-                result.push_str(&format!("{}{}\n", prefix, line));
+                result.push_str(&format!("{prefix}{line}\n"));
             }
             result.pop(); // Remove trailing newline
         } else if !self.stdout.is_empty() {
             result.push('\n');
             for line in self.stdout.lines() {
-                result.push_str(&format!("{}{}\n", prefix, line));
+                result.push_str(&format!("{prefix}{line}\n"));
             }
             result.pop(); // Remove trailing newline
         }
@@ -114,6 +116,7 @@ impl fmt::Display for Language {
 }
 
 impl Language {
+    #[must_use]
     pub fn format_with_indent(&self, indent: usize) -> String {
         let prefix = " ".repeat(indent);
         format!(
@@ -152,9 +155,11 @@ impl fmt::Display for Parser {
 }
 
 impl Parser {
+    #[must_use]
+    #[allow(clippy::format_push_string)]
     pub fn format_with_indent(&self, indent: usize) -> String {
         let prefix = " ".repeat(indent);
-        let mut result = format!("{}Could not build all parsers.", prefix);
+        let mut result = format!("{prefix}Could not build all parsers.");
         for err in &self.related {
             result.push_str(&format!("\n\n{}", err.format_with_indent(indent + 2)));
         }
@@ -178,6 +183,7 @@ impl fmt::Display for Step {
 }
 
 impl Step {
+    #[must_use]
     pub fn format_with_indent(&self, indent: usize) -> String {
         let prefix = " ".repeat(indent);
         format!(
@@ -191,12 +197,12 @@ impl Step {
 }
 
 impl Step {
-    pub fn new(name: String, kind: ParserOp, source: impl Into<TsdlError>) -> TsdlError {
-        TsdlError::Step(Step {
+    pub fn new(name: String, kind: ParserOp, source: impl Into<TsdlError>) -> Step {
+        Step {
             name,
             kind,
             source: Box::new(source.into()),
-        })
+        }
     }
 }
 
@@ -380,8 +386,8 @@ impl From<reqwest::header::InvalidHeaderValue> for TsdlError {
 }
 
 impl TsdlError {
-    /// Wrap a TsdlError with additional context message
-    /// The error parameter must be convertible to TsdlError
+    /// Wrap a `TsdlError` with additional context message
+    /// The error parameter must be convertible to `TsdlError`
     pub fn context<C, E>(context: C, error: E) -> Self
     where
         C: Into<String>,
@@ -406,30 +412,31 @@ impl TsdlError {
     }
 
     /// Format the error with indentation support
+    #[must_use]
     pub fn format_with_indent(&self, indent: usize) -> String {
         let prefix = " ".repeat(indent);
         match self {
             TsdlError::Command(e) => e.format_with_indent(indent),
-            TsdlError::LanguageCollection(e) => format!("{}{}", prefix, e),
+            TsdlError::LanguageCollection(e) => format!("{prefix}{e}"),
             TsdlError::Language(e) => e.format_with_indent(indent),
             TsdlError::Parser(e) => e.format_with_indent(indent),
             TsdlError::Step(e) => e.format_with_indent(indent),
-            TsdlError::Io(e) => format!("{}IO error: {}", prefix, e),
-            TsdlError::Config(msg) => format!("{}Configuration error: {}", prefix, msg),
+            TsdlError::Io(e) => format!("{prefix}IO error: {e}"),
+            TsdlError::Config(msg) => format!("{prefix}Configuration error: {msg}"),
             TsdlError::Context(kind) => {
                 // For context, show message and indent the nested error
                 format!(
                     "{}{}\n{}",
                     prefix,
                     kind.message,
-                    self.format_context_error(&kind.error, indent + 2)
+                    TsdlError::format_context_error(&kind.error, indent + 2)
                 )
             }
-            TsdlError::Message(msg) => format!("{}{}", prefix, msg),
+            TsdlError::Message(msg) => format!("{prefix}{msg}"),
         }
     }
 
-    fn format_context_error(&self, err: &TsdlError, indent: usize) -> String {
+    fn format_context_error(err: &TsdlError, indent: usize) -> String {
         err.format_with_indent(indent)
     }
 }
@@ -445,7 +452,7 @@ mod tests {
         let command_error = Command {
             msg: "git fetch origin --depth 1 HEAD failed with exit status 128.".to_string(),
             stderr: stderr.to_string(),
-            stdout: "".to_string(),
+            stdout: String::new(),
         };
 
         let step_error = Step {
@@ -465,12 +472,12 @@ mod tests {
         let tsdl_error = TsdlError::Parser(parser_error);
         let formatted = tsdl_error.format_with_indent(0);
 
-        let expected = r#"Could not build all parsers.
+        let expected = r"Could not build all parsers.
 
   jsonxxx: Could not clone to /home/firas/src/github.com/stackmystack/tsdl/tmp/tree-sitter-jsonxxx.
     $ git fetch origin --depth 1 HEAD failed with exit status 128.
     remote: Repository not found.
-    fatal: repository 'https://github.com/tree-sitter/tree-sitter-jsonxxx/' not found"#;
+    fatal: repository 'https://github.com/tree-sitter/tree-sitter-jsonxxx/' not found";
 
         assert_eq!(formatted, expected);
     }

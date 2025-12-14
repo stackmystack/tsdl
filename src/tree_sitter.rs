@@ -54,7 +54,7 @@ fn find_tag(refs: &HashMap<String, String>, version: &str) -> Tag {
                 trace!("Found! {k} -> {v}");
                 Tag::Exact {
                     sha1: Ref::from_str(v).unwrap(),
-                    label: k.to_string(),
+                    label: k.clone(),
                 }
             },
         )
