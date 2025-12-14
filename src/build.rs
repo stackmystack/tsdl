@@ -33,16 +33,10 @@ fn clear(command: &BuildCommand, progress: &mut Progress) -> TsdlResult<()> {
     if command.fresh && command.build_dir.exists() {
         let handle = progress.register("Fresh Build", 1);
         let disp = &command.build_dir.display();
-        fs::remove_dir_all(&command.build_dir).map_err(|e| {
-            TsdlError::context(
-                format!("Removing the build_dir {disp} for a fresh build"),
-                e,
-            )
-        })?;
+        fs::remove_dir_all(&command.build_dir)?;
         handle.fin(format!("Cleaned {disp}"));
     }
-    fs::create_dir_all(&command.build_dir)
-        .map_err(|e| TsdlError::context("Creating the build dir", e))?;
+    fs::create_dir_all(&command.build_dir)?;
     Ok(())
 }
 
@@ -50,14 +44,11 @@ fn build(command: &BuildCommand, progress: Progress) -> TsdlResult<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(command.ncpus)
-        .build()
-        .map_err(|e| TsdlError::context("Failed to initialize tokio runtime", e))?;
+        .build()?;
     let _guard = rt.enter();
     let screen = Arc::new(Mutex::new(progress));
     rt.spawn(update_screen(screen.clone()));
-    let ts_cli = rt
-        .block_on(tree_sitter::prepare(command, screen.clone()))
-        .map_err(|e| TsdlError::context("Preparing tree-sitter", e))?;
+    let ts_cli = rt.block_on(tree_sitter::prepare(command, screen.clone()))?;
     let languages = collect_languages(
         ts_cli,
         screen,
@@ -68,12 +59,7 @@ fn build(command: &BuildCommand, progress: Progress) -> TsdlResult<()> {
         &command.prefix,
         command.target,
     )?;
-    create_dir_all(&command.out_dir).map_err(|e| {
-        TsdlError::context(
-            format!("Creating output dir {}", &command.out_dir.display()),
-            e,
-        )
-    })?;
+    create_dir_all(&command.out_dir)?;
     rt.block_on(build_languages(languages))
 }
 
