@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, process::ExitCode};
 
 use clap::Parser;
 use self_update::self_replace;
@@ -14,14 +14,24 @@ use tsdl::{
     TsdlResult,
 };
 
-fn main() -> TsdlResult<()> {
+fn main() -> ExitCode {
     set_panic_hook();
     let args = args::Args::parse();
-    let _guard = logging::init(&args)?;
-    info!("Starting");
-    run(&args)?;
-    info!("Done");
-    Ok(())
+    
+    match logging::init(&args) {
+        Err(e) => {
+            eprintln!("Could not initialize logging: {}", e);
+            ExitCode::FAILURE
+        }
+        Ok(_) => {
+            info!("Starting");
+            match run(&args) {
+                Err(e) => { eprintln!("Error: {}", e); ExitCode::FAILURE }
+                Ok(_) => ExitCode::SUCCESS,    
+            }
+            
+        }
+    }
 }
 
 fn run(args: &args::Args) -> TsdlResult<()> {
