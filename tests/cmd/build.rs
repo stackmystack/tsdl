@@ -96,6 +96,35 @@ fn unknown_parser_should_fail(#[case] languages: Vec<&str>) {
 }
 
 #[rstest]
+fn test_real_parser_error_formatting() {
+    let mut sandbox = Sandbox::new();
+    let output = sandbox.cmd.arg("build").args(["jsonxxx"]).output().unwrap();
+
+    // Should fail
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Extract just the error part (after the progress messages)
+    let error_part = stderr
+        .lines()
+        .skip_while(|line| !line.contains("Could not build all parsers"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let build_dir = sandbox.tmp.path().join("tree-sitter-jsonxxx");
+
+    // Define the exact expected error format using multi-line string literal
+    let expected = format!(
+        "Could not build all parsers.\n\n  jsonxxx: Could not clone to {}.\n    $ git fetch origin --depth 1 HEAD failed with exit status 128.\n    fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        build_dir.display()
+    );
+
+    // Match the complete error message
+    assert_eq!(error_part, expected);
+}
+
+#[rstest]
 #[case::json(vec!["json"])]
 #[case::json_rust(vec!["json", "rust"])]
 fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {

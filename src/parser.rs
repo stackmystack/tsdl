@@ -181,7 +181,15 @@ impl Language {
             cmd
         };
 
-        cmd.current_dir(dir).exec().await?;
+        cmd.current_dir(dir).exec().await.map_err(|err| {
+            error::TsdlError::Step(error::Step::new(
+                self.name.clone(),
+                error::ParserOp::Build {
+                    dir: dir.to_path_buf(),
+                },
+                err,
+            ))
+        })?;
         Ok(())
     }
 
@@ -202,12 +210,31 @@ impl Language {
         println!();
         println!("cp {} {}", dll.display(), dst.display());
         println!();
-        fs::copy(&dll, &dst).await?;
+        fs::copy(&dll, &dst).await.map_err(|err| {
+            error::TsdlError::Step(error::Step::new(
+                self.name.clone(),
+                error::ParserOp::Copy {
+                    src: dll.clone(),
+                    dst: dst.clone(),
+                },
+                err,
+            ))
+        })?;
         Ok(())
     }
 
     async fn clone(&self) -> TsdlResult<()> {
-        clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir).await?;
+        clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
+            .await
+            .map_err(|err| {
+                error::TsdlError::Step(error::Step::new(
+                    self.name.clone(),
+                    error::ParserOp::Clone {
+                        dir: self.build_dir.clone(),
+                    },
+                    err,
+                ))
+            })?;
         Ok(())
     }
 
@@ -216,7 +243,16 @@ impl Language {
             .current_dir(dir)
             .arg("generate")
             .exec()
-            .await?;
+            .await
+            .map_err(|err| {
+                error::TsdlError::Step(error::Step::new(
+                    self.name.clone(),
+                    error::ParserOp::Generate {
+                        dir: dir.to_path_buf(),
+                    },
+                    err,
+                ))
+            })?;
         Ok(())
     }
 
