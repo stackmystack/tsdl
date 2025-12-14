@@ -81,9 +81,8 @@ impl SafeCanonicalize for Path {
         if self.is_absolute() {
             Ok(self.to_path_buf())
         } else {
-            let current_dir = env::current_dir().map_err(|e| {
-                TsdlError::context("Failed to get current directory", e)
-            })?;
+            let current_dir = env::current_dir()
+                .map_err(|e| TsdlError::context("Failed to get current directory", e))?;
             Ok(current_dir.join(self))
         }
     }
