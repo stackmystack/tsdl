@@ -37,52 +37,62 @@ impl std::error::Error for Command {}
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_with_indent(0))
+        self.format_inner(f, 0)
     }
 }
 
 impl Command {
-    #[must_use]
-    #[allow(clippy::format_push_string)]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
-        let mut result = format!("{}$ {}", prefix, self.msg);
+        write!(w, "{}$ {}", prefix, self.msg)?;
 
-        // Only show stderr/stdout if they have content
-        if !self.stderr.is_empty() && !self.stdout.is_empty() {
-            result.push_str(&format!(
-                "\n{}  stdout:\n{}",
-                prefix,
-                self.stdout
-                    .lines()
-                    .map(|l| format!("{prefix}  {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
-            result.push_str(&format!(
-                "\n{}  stderr:\n{}",
-                prefix,
-                self.stderr
-                    .lines()
-                    .map(|l| format!("{prefix}  {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
-        } else if !self.stderr.is_empty() {
-            result.push('\n');
-            for line in self.stderr.lines() {
-                result.push_str(&format!("{prefix}{line}\n"));
+        let has_stdout = !self.stdout.is_empty();
+        let has_stderr = !self.stderr.is_empty();
+
+        if has_stdout && has_stderr {
+            let mut write_section = |header: &str, content: &str| -> fmt::Result {
+                writeln!(w, "\n{prefix}  {header}:")?;
+
+                let mut lines = content.lines();
+                if let Some(first) = lines.next() {
+                    write!(w, "{prefix}  {first}")?;
+                    for line in lines {
+                        write!(w, "\n{prefix}  {line}")?;
+                    }
+                }
+                Ok(())
+            };
+
+            write_section("stdout", &self.stdout)?;
+            write_section("stderr", &self.stderr)?;
+        } else if has_stderr {
+            writeln!(w)?;
+            let mut lines = self.stderr.lines();
+            if let Some(first) = lines.next() {
+                write!(w, "{prefix}{first}")?;
+                for line in lines {
+                    write!(w, "\n{prefix}{line}")?;
+                }
             }
-            result.pop(); // Remove trailing newline
-        } else if !self.stdout.is_empty() {
-            result.push('\n');
-            for line in self.stdout.lines() {
-                result.push_str(&format!("{prefix}{line}\n"));
+        } else if has_stdout {
+            writeln!(w)?;
+            let mut lines = self.stdout.lines();
+            if let Some(first) = lines.next() {
+                write!(w, "{prefix}{first}")?;
+                for line in lines {
+                    write!(w, "\n{prefix}{line}")?;
+                }
             }
-            result.pop(); // Remove trailing newline
         }
 
-        result
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let mut s = String::new();
+        let _ = self.format_inner(&mut s, indent);
+        s
     }
 }
 
@@ -93,11 +103,8 @@ pub struct LanguageCollection {
 
 impl fmt::Display for LanguageCollection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Could not figure out all languages:\n{}",
-            format_languages(&self.related)
-        )
+        writeln!(f, "Could not figure out all languages:")?;
+        format_languages_inner(f, &self.related)
     }
 }
 
@@ -111,20 +118,33 @@ pub struct Language {
 
 impl fmt::Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_with_indent(0))
+        self.format_inner(f, 0)
     }
 }
 
 impl Language {
-    #[must_use]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
-        format!(
+        write!(
+            w,
             "{}{}\n{}",
             prefix,
             self.name,
             self.source.format_with_indent(indent + 2)
         )
+    }
+
+    /// Format with indentation
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if writing to the string fails, which should never happen
+    /// since we're writing to a String which doesn't fail.
+    #[must_use]
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let mut s = String::new();
+        self.format_inner(&mut s, indent).unwrap();
+        s
     }
 }
 
@@ -150,20 +170,33 @@ pub struct Parser {
 
 impl fmt::Display for Parser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_with_indent(0))
+        self.format_inner(f, 0)
     }
 }
 
 impl Parser {
-    #[must_use]
-    #[allow(clippy::format_push_string)]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
-        let mut result = format!("{prefix}Could not build all parsers.");
+        write!(w, "{prefix}Could not build all parsers.")?;
+
         for err in &self.related {
-            result.push_str(&format!("\n\n{}", err.format_with_indent(indent + 2)));
+            write!(w, "\n\n{}", err.format_with_indent(indent + 2))?;
         }
-        result
+
+        Ok(())
+    }
+
+    /// Format with indentation
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if writing to the string fails, which should never happen
+    /// since we're writing to a String which doesn't fail.
+    #[must_use]
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let mut s = String::new();
+        self.format_inner(&mut s, indent).unwrap();
+        s
     }
 }
 
@@ -178,21 +211,34 @@ pub struct Step {
 
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_with_indent(0))
+        self.format_inner(f, 0)
     }
 }
 
 impl Step {
-    #[must_use]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
-        format!(
+        write!(
+            w,
             "{}{}: {}.\n{}",
             prefix,
             self.name,
             self.kind,
             self.source.format_with_indent(indent + 2)
         )
+    }
+
+    /// Format with indentation
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if writing to the string fails, which should never happen
+    /// since we're writing to a String which doesn't fail.
+    #[must_use]
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let mut s = String::new();
+        self.format_inner(&mut s, indent).unwrap();
+        s
     }
 }
 
@@ -224,12 +270,14 @@ pub enum ParserOp {
     Generate { dir: PathBuf },
 }
 
-fn format_languages(langs: &[Language]) -> String {
-    langs
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
+fn format_languages_inner(w: &mut impl fmt::Write, langs: &[Language]) -> fmt::Result {
+    for (i, lang) in langs.iter().enumerate() {
+        if i > 0 {
+            write!(w, ", ")?;
+        }
+        write!(w, "{}", lang.name)?;
+    }
+    Ok(())
 }
 
 /// Main error type for tsdl operations
@@ -412,27 +460,39 @@ impl TsdlError {
     }
 
     /// Format the error with indentation support
+    /// Format the error with indentation support
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if writing to the string fails, which should never happen
+    /// since we're writing to a String which doesn't fail.
     #[must_use]
     pub fn format_with_indent(&self, indent: usize) -> String {
+        let mut s = String::new();
+        self.format_inner(&mut s, indent).unwrap();
+        s
+    }
+
+    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         match self {
-            TsdlError::Command(e) => e.format_with_indent(indent),
-            TsdlError::LanguageCollection(e) => format!("{prefix}{e}"),
-            TsdlError::Language(e) => e.format_with_indent(indent),
-            TsdlError::Parser(e) => e.format_with_indent(indent),
-            TsdlError::Step(e) => e.format_with_indent(indent),
-            TsdlError::Io(e) => format!("{prefix}IO error: {e}"),
-            TsdlError::Config(msg) => format!("{prefix}Configuration error: {msg}"),
+            TsdlError::Command(e) => e.format_inner(w, indent),
+            TsdlError::LanguageCollection(e) => write!(w, "{prefix}{e}"),
+            TsdlError::Language(e) => e.format_inner(w, indent),
+            TsdlError::Parser(e) => e.format_inner(w, indent),
+            TsdlError::Step(e) => e.format_inner(w, indent),
+            TsdlError::Io(e) => write!(w, "{prefix}IO error: {e}"),
+            TsdlError::Config(msg) => write!(w, "{prefix}Configuration error: {msg}"),
             TsdlError::Context(kind) => {
-                // For context, show message and indent the nested error
-                format!(
+                write!(
+                    w,
                     "{}{}\n{}",
                     prefix,
                     kind.message,
                     TsdlError::format_context_error(&kind.error, indent + 2)
                 )
             }
-            TsdlError::Message(msg) => format!("{prefix}{msg}"),
+            TsdlError::Message(msg) => write!(w, "{prefix}{msg}"),
         }
     }
 
