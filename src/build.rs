@@ -169,17 +169,17 @@ fn get_language_coords(
 }
 
 fn resolve_git_ref(git_ref: &str) -> Ref {
-    Some(git_ref)
-        .filter(|f| f.len() != 40 && !f.starts_with('v'))
-        .and_then(|f| {
-            let versions = f.split('.').collect::<Vec<_>>();
-            if !versions.is_empty() && versions.iter().all(|f| f.parse::<u32>().is_ok()) {
-                Some(format!("v{f}").into())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| git_ref.to_string().into())
+    let is_sha1 = git_ref.len() == 40 && git_ref.chars().all(|c| c.is_ascii_hexdigit());
+
+    if is_sha1 || git_ref.starts_with('v') {
+        return git_ref.to_string().into();
+    }
+
+    if git_ref.split('.').all(|part| part.parse::<u32>().is_ok()) {
+        format!("v{git_ref}").into()
+    } else {
+        git_ref.to_string().into()
+    }
 }
 
 fn default_repo(language: &str) -> TsdlResult<Url> {
