@@ -21,8 +21,8 @@ use crate::{
 };
 
 pub fn run(app: &App) -> TsdlResult<()> {
-    if app.config.show_config {
-        crate::config::show(&app.config)?;
+    if app.command.show_config {
+        crate::config::show(&app.command)?;
     }
     clear(app)?;
     build_impl(app)?;
@@ -30,36 +30,36 @@ pub fn run(app: &App) -> TsdlResult<()> {
 }
 
 fn clear(app: &App) -> TsdlResult<()> {
-    if app.config.fresh && app.config.build_dir.exists() {
+    if app.command.fresh && app.command.build_dir.exists() {
         let mut progress = app
             .progress
             .lock()
             .map_err(|e| TsdlError::message(format!("Failed to acquire progress lock: {e}")))?;
         let handle = progress.register("Fresh Build", 1);
-        let disp = &app.config.build_dir.display();
-        fs::remove_dir_all(&app.config.build_dir)?;
+        let disp = &app.command.build_dir.display();
+        fs::remove_dir_all(&app.command.build_dir)?;
         handle.fin(format!("Cleaned {disp}"));
     }
-    fs::create_dir_all(&app.config.build_dir)?;
+    fs::create_dir_all(&app.command.build_dir)?;
     Ok(())
 }
 
 fn build_impl(app: &App) -> TsdlResult<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(app.config.ncpus)
+        .worker_threads(app.command.ncpus)
         .build()?;
     let _guard = rt.enter();
     rt.spawn(update_screen(app.progress.clone()));
-    let ts_cli = rt.block_on(tree_sitter::prepare(&app.config, app.progress.clone()))?;
+    let ts_cli = rt.block_on(tree_sitter::prepare(&app.command, app.progress.clone()))?;
 
     let languages = collect_languages(
         app,
         ts_cli,
-        app.config.languages.as_ref(),
-        app.config.parsers.as_ref(),
+        app.command.languages.as_ref(),
+        app.command.parsers.as_ref(),
     )?;
-    create_dir_all(&app.config.out_dir)?;
+    create_dir_all(&app.command.out_dir)?;
     rt.block_on(build_languages(languages))
 }
 
@@ -117,7 +117,7 @@ fn unique_languages(
             let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
             url.map(|repo| {
                 Language::new(
-                    app.config
+                    app.command
                         .build_dir
                         .join(format!("tree-sitter-{}", &language)) // make sure it follows this format because the cli takes advantage of that.
                         .canon()
@@ -126,10 +126,10 @@ fn unique_languages(
                     git_ref,
                     app.progress.lock().unwrap().register(&language, NUM_STEPS),
                     language.clone(),
-                    app.config.out_dir.canon().unwrap(),
-                    app.config.prefix.clone(),
+                    app.command.out_dir.canon().unwrap(),
+                    app.command.prefix.clone(),
                     repo,
-                    app.config.target,
+                    app.command.target,
                     ts_cli.clone(),
                 )
             })

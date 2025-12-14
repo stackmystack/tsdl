@@ -37,11 +37,11 @@ fn run(app: &App, args: &args::Args) -> TsdlResult<()> {
     match &args.command {
         args::Command::Build(_) => tsdl::build::run(app),
         args::Command::Config { command } => tsdl::config::run(app, command),
-        args::Command::Selfupdate => execute_selfupdate(app),
+        args::Command::Selfupdate => selfupdate(app),
     }
 }
 
-fn execute_selfupdate(app: &App) -> TsdlResult<()> {
+fn selfupdate(app: &App) -> TsdlResult<()> {
     let mut progress = app
         .progress
         .lock()
