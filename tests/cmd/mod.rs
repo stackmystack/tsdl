@@ -7,7 +7,7 @@ mod log;
 
 use std::{env, fs, path::Path};
 
-use assert_cmd::{Command, cargo::cargo_bin_cmd};
+use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use assert_fs::TempDir;
 use figment::{
     providers::{Format, Serialized, Toml},

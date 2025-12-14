@@ -15,8 +15,7 @@ use crate::{
     error::{self, TsdlError},
     git::{clone_fast, Ref},
     sh::{Exec, Script},
-    step_error,
-    SafeCanonicalize, TsdlResult,
+    step_error, SafeCanonicalize, TsdlResult,
 };
 
 pub const NUM_STEPS: usize = 3;
@@ -341,7 +340,7 @@ impl Language {
                 src: self.out_dir.clone(),
                 dst: dir.to_path_buf(),
             },
-            TsdlError::message(message)
+            TsdlError::message(message),
         )
     }
 }

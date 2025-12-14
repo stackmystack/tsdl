@@ -10,8 +10,7 @@ use tracing::debug;
 use crate::{
     args::{BuildCommand, ConfigCommand},
     error::TsdlError,
-    git,
-    TsdlResult,
+    git, TsdlResult,
 };
 
 pub fn run(command: &ConfigCommand, config: &Path) -> TsdlResult<()> {
@@ -20,14 +19,15 @@ pub fn run(command: &ConfigCommand, config: &Path) -> TsdlResult<()> {
             let config: BuildCommand = current(config, None)?;
             println!(
                 "{}",
-                toml::to_string(&config).map_err(|e| {
-                    TsdlError::context("Generating default TOML config", e)
-                })?
+                toml::to_string(&config)
+                    .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
             );
         }
-        ConfigCommand::Default => println!("{}", toml::to_string(&BuildCommand::default()).map_err(|e| {
-            TsdlError::context("Generating default TOML config", e)
-        })?),
+        ConfigCommand::Default => println!(
+            "{}",
+            toml::to_string(&BuildCommand::default())
+                .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
+        ),
     }
     Ok(())
 }
@@ -75,7 +75,10 @@ pub fn show(command: &BuildCommand) -> TsdlResult<()> {
                     .map_err(|e| TsdlError::context("Printing requested languages", e))?
                     .stdout
             )
-            .map_err(|e| TsdlError::context("Converting column-formatted languages to a string for printing", e))?
+            .map_err(|e| TsdlError::context(
+                "Converting column-formatted languages to a string for printing",
+                e
+            ))?
         );
     } else {
         println!("Building all languages.");
@@ -83,7 +86,10 @@ pub fn show(command: &BuildCommand) -> TsdlResult<()> {
     }
     println!("Running with the following configuration:");
     println!();
-    print_indent(&toml::to_string(&command).map_err(|e| TsdlError::context("Showing config", e))?, "  ");
+    print_indent(
+        &toml::to_string(&command).map_err(|e| TsdlError::context("Showing config", e))?,
+        "  ",
+    );
     println!();
     Ok(())
 }
