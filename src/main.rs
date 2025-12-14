@@ -17,20 +17,17 @@ fn main() -> ExitCode {
     set_panic_hook();
     let args = args::Args::parse();
 
-    match logging::init(&args) {
-        Err(e) => {
-            eprintln!("Could not initialize logging: {}", e);
-            ExitCode::FAILURE
-        }
-        Ok(_) => {
-            info!("Starting");
-            match run(&args) {
-                Err(e) => {
-                    eprintln!("{e}");
-                    ExitCode::FAILURE
-                }
-                Ok(_) => ExitCode::SUCCESS,
+    if let Err(e) = logging::init(&args) {
+        eprintln!("Could not initialize logging: {e}");
+        ExitCode::FAILURE
+    } else {
+        info!("Starting");
+        match run(&args) {
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
             }
+            Ok(()) => ExitCode::SUCCESS,
         }
     }
 }

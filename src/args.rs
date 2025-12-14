@@ -113,16 +113,12 @@ impl Command {
     #[derive(Debug, PartialEq)]
 ))]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum Target {
+    #[default]
     Native,
     Wasm,
     All,
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Self::Native
-    }
 }
 
 impl Target {
