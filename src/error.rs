@@ -433,6 +433,12 @@ impl From<reqwest::header::InvalidHeaderValue> for TsdlError {
     }
 }
 
+impl From<tokio::task::JoinError> for TsdlError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        TsdlError::Message(format!("Task join error: {e}"))
+    }
+}
+
 impl TsdlError {
     /// Wrap a `TsdlError` with additional context message
     /// The error parameter must be convertible to `TsdlError`
