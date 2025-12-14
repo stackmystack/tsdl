@@ -18,13 +18,15 @@ pub trait Script {
 impl Exec for Command {
     #[tracing::instrument(skip(self))]
     async fn exec(&mut self) -> TsdlResult<Output> {
-        let cmd = self.display_full()?;
-        trace!("{}", cmd);
+        let cmd_full = self.display_full()?;
+        trace!("{}", cmd_full);
 
-        let output = self.output().await.map_err(|e| {
-            error::TsdlError::context("Failed to execute command", e)
-        })?;
-        
+        let cmd = self.display()?;
+        let output = self
+            .output()
+            .await
+            .map_err(|e| error::TsdlError::context("Failed to execute command", e))?;
+
         if output.status.success() {
             return Ok(output);
         }
@@ -72,7 +74,7 @@ impl Exec for Command {
     fn display_full(&self) -> TsdlResult<String> {
         let cwd = self.as_std().get_current_dir();
         let base = self.display()?;
-        
+
         match cwd {
             Some(path) => Ok(format!("[{}] {}", path.display(), base)),
             None => Ok(base),

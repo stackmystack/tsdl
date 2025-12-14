@@ -3,6 +3,14 @@ use std::path::PathBuf;
 
 use derive_more::derive::Display;
 
+/// Macro for creating Step errors with common patterns
+#[macro_export]
+macro_rules! step_error {
+    ($name:expr, $kind:expr, $source:expr) => {
+        error::Step::new($name.to_string(), $kind, $source)
+    };
+}
+
 /// Represents a single layer in the context chain
 #[derive(Debug)]
 pub struct ContextKind {
@@ -24,6 +32,8 @@ pub struct Command {
     pub stderr: String,
     pub stdout: String,
 }
+
+impl std::error::Error for Command {}
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,10 +79,10 @@ impl Command {
             }
             result.pop(); // Remove trailing newline
         }
-        
+
         result
     }
-}impl std::error::Error for Command {}
+}
 
 #[derive(Debug)]
 pub struct LanguageCollection {
@@ -115,6 +125,15 @@ impl Language {
     }
 }
 
+impl Language {
+    pub fn new(name: String, source: impl Into<TsdlError>) -> Language {
+        Language {
+            name,
+            source: Box::new(source.into()),
+        }
+    }
+}
+
 impl std::error::Error for Language {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.source.as_ref())
@@ -137,10 +156,7 @@ impl Parser {
         let prefix = " ".repeat(indent);
         let mut result = format!("{}Could not build all parsers.", prefix);
         for err in &self.related {
-            result.push_str(&format!(
-                "\n\n{}",
-                err.format_with_indent(indent + 2)
-            ));
+            result.push_str(&format!("\n\n{}", err.format_with_indent(indent + 2)));
         }
         result
     }
@@ -174,6 +190,16 @@ impl Step {
     }
 }
 
+impl Step {
+    pub fn new(name: String, kind: ParserOp, source: impl Into<TsdlError>) -> TsdlError {
+        TsdlError::Step(Step {
+            name,
+            kind,
+            source: Box::new(source.into()),
+        })
+    }
+}
+
 impl std::error::Error for Step {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.source.as_ref())
@@ -199,8 +225,6 @@ fn format_languages(langs: &[Language]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-
-
 
 /// Main error type for tsdl operations
 #[derive(Debug)]
