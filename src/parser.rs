@@ -94,11 +94,11 @@ impl Language {
     async fn process(&mut self, tx: mpsc::Sender<TsdlResult<()>>) {
         let res = self.steps().await;
         if res.is_err() {
-            tx.send(res).await.unwrap();
+            let _ = tx.send(res).await;
             self.handle.err(self.git_ref.to_string());
         } else {
             self.handle.fin(self.git_ref.to_string());
-            tx.send(Ok(())).await.unwrap();
+            let _ = tx.send(Ok(())).await;
         }
     }
 
@@ -106,25 +106,41 @@ impl Language {
         self.handle.start(format!("Cloning {}", self.git_ref));
         self.clone().await?;
         self.handle.step(format!("Generating {}", self.git_ref));
-        for dir in self.collect_grammars() {
-            self.handle.msg(format!(
-                "Generating {} in {}",
-                self.git_ref,
-                dir.file_name().unwrap().to_str().unwrap()
-            ));
+
+        // Wrap blocking I/O in spawn_blocking to avoid blocking the async runtime
+        let build_dir = self.build_dir.clone();
+        let grammars = tokio::task::spawn_blocking(move || collect_grammars(&build_dir))
+            .await
+            .map_err(|e| {
+                TsdlError::context("Failed to collect grammars in blocking task".to_string(), e)
+            })?;
+
+        for dir in grammars {
+            let dir_name = dir
+                .file_name()
+                .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
+                .ok_or_else(|| {
+                    TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
+                })?;
+            self.handle
+                .msg(format!("Generating {} in {}", self.git_ref, dir_name));
             self.build_grammar(dir).await?;
         }
         Ok(())
     }
 
     async fn build_grammar(&self, dir: PathBuf) -> TsdlResult<()> {
+        let dir_name = dir
+            .file_name()
+            .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
+            .ok_or_else(|| {
+                TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
+            })?;
+
         if self.build_script.is_none() {
             self.generate(&dir).await?;
-            self.handle.msg(format!(
-                "Building {} parser: {}",
-                self.git_ref,
-                dir.file_name().unwrap().to_str().unwrap(),
-            ));
+            self.handle
+                .msg(format!("Building {} parser: {}", self.git_ref, dir_name,));
         } else {
             warn!("I don't know how to generate parsers when a script/cmd is specified (it's typescript's fault)");
         }
@@ -132,8 +148,7 @@ impl Language {
         if self.target.native() {
             self.handle.msg(format!(
                 "Building {} native parser: {}",
-                self.git_ref,
-                dir.file_name().unwrap().to_str().unwrap(),
+                self.git_ref, dir_name,
             ));
             self.build(&dir, DLL_EXTENSION).await?;
         }
@@ -141,22 +156,18 @@ impl Language {
         if self.target.wasm() {
             self.handle.msg(format!(
                 "Building {} wasm parser: {}",
-                self.git_ref,
-                dir.file_name().unwrap().to_str().unwrap(),
+                self.git_ref, dir_name,
             ));
             self.build(&dir, WASM_EXTENSION).await?;
         }
-        self.handle.msg(format!(
-            "Copying {} parser: {}",
-            self.git_ref,
-            dir.file_name().unwrap().to_str().unwrap(),
-        ));
+        self.handle
+            .msg(format!("Copying {} parser: {}", self.git_ref, dir_name,));
         self.copy(&dir).await?;
         Ok(())
     }
 
     async fn build(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
-        let effective_name = self.parser_name_and_ext(dir, ext);
+        let effective_name = self.parser_name_and_ext(dir, ext)?;
 
         let mut cmd = if let Some(script) = &self.build_script {
             Command::from_str(script)
@@ -174,42 +185,6 @@ impl Language {
         Ok(())
     }
 
-    fn collect_grammars(&self) -> Vec<PathBuf> {
-        let mut types_builder = TypesBuilder::new();
-        types_builder.add_def("js:*.js").unwrap();
-        let types = types_builder.select("js").build().unwrap();
-        let mut overrides_builder = OverrideBuilder::new(&self.build_dir);
-        overrides_builder.case_insensitive(true).unwrap();
-        overrides_builder
-            .add("!(.github|bindings|doc|docs|examples|queries|script|scripts|test|tests)/**")
-            .unwrap();
-        let overrides = overrides_builder.build().unwrap();
-        let mut walker = WalkBuilder::new(&self.build_dir);
-        walker
-            .git_global(false)
-            .git_ignore(true)
-            .hidden(false)
-            .overrides(overrides)
-            .types(types);
-        walker
-            .build()
-            .filter_map(|entry| {
-                entry.ok().filter(|dir| {
-                    dir.file_type().unwrap().is_file() && dir.file_name() == "grammar.js"
-                })
-            })
-            .map(|entry| {
-                entry
-                    .path()
-                    .to_path_buf()
-                    .parent()
-                    .unwrap()
-                    .canon()
-                    .unwrap()
-            })
-            .collect()
-    }
-
     async fn copy(&self, dir: &Path) -> TsdlResult<()> {
         if self.target.native() {
             self.do_copy(dir, DLL_EXTENSION).await?;
@@ -222,7 +197,7 @@ impl Language {
 
     async fn do_copy(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
         let dll = self.find_dll_files(dir, ext).await?;
-        let name = self.parser_name_and_ext(dir, ext);
+        let name = self.parser_name_and_ext(dir, ext)?;
         let dst = self.out_dir.clone().join(name);
         println!();
         println!("cp {} {}", dll.display(), dst.display());
@@ -245,7 +220,7 @@ impl Language {
         Ok(())
     }
 
-    fn parser_name_and_ext(&self, dir: &Path, ext: &str) -> String {
+    fn parser_name_and_ext(&self, dir: &Path, ext: &str) -> TsdlResult<String> {
         let effective_name = dir
             .file_name()
             .map(|n| {
@@ -253,9 +228,11 @@ impl Language {
                     .strip_prefix("tree-sitter-")
                     .map_or_else(|| n.to_string_lossy().to_string(), str::to_string)
             })
-            .unwrap();
+            .ok_or_else(|| {
+                TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
+            })?;
         let prefix = &self.prefix;
-        format!("{prefix}{effective_name}.{ext}")
+        Ok(format!("{prefix}{effective_name}.{ext}"))
     }
 
     // Since we're generating the exact file as `prefix + name + ext` in the
@@ -265,47 +242,92 @@ impl Language {
     // make mostly (like in typescript), then take the first match and work
     // with that.
     async fn find_dll_files(&self, dir: &Path, ext: &str) -> TsdlResult<PathBuf> {
-        let effective_name = self.parser_name_and_ext(dir, ext);
+        let effective_name = self.parser_name_and_ext(dir, ext)?;
         let mut files = fs::read_dir(&dir).await.map_err(|e| {
             TsdlError::context(format!("Failed to read directory {}", dir.display()), e)
         })?;
+
         let mut exact_match = None;
         let mut all_dlls = Vec::with_capacity(1);
+
         while let Ok(Some(entry)) = files.next_entry().await {
             let file_name = entry.file_name();
-            let name = file_name.as_os_str().to_str().unwrap();
+            let name = file_name.as_os_str().to_string_lossy();
             if entry.file_type().await.unwrap().is_file() {
                 if name == effective_name {
-                    exact_match = Some(dir.join(name));
+                    exact_match = Some(dir.join(&file_name));
                     break;
-                } else if name.ends_with(&format!(".{ext}")) {
-                    all_dlls.push(dir.join(name));
+                } else if Path::new(&file_name)
+                    .extension()
+                    .and_then(|e: &std::ffi::OsStr| e.to_str())
+                    == Some(ext)
+                {
+                    all_dlls.push(dir.join(&file_name));
                 }
             }
         }
+
         // Error handling for no DLLs or too many DLLs
-        if let Some(exact) = exact_match {
-            Ok(exact.clone())
-        } else {
-            match all_dlls.len() {
-                0 => Err(error::TsdlError::Step(error::Step::new(
-                    self.name.clone(),
-                    error::ParserOp::Copy {
-                        src: self.out_dir.clone(),
-                        dst: dir.to_path_buf(),
-                    },
-                    TsdlError::message(format!("Couldn't find any {ext} file")),
-                ))),
-                1 => Ok(all_dlls[0].clone()),
-                _ => Err(error::TsdlError::Step(error::Step::new(
-                    self.name.clone(),
-                    error::ParserOp::Copy {
-                        src: self.out_dir.clone(),
-                        dst: dir.to_path_buf(),
-                    },
-                    TsdlError::message(format!("Found many {ext} files: {all_dlls:?}.")),
-                ))),
-            }
+        match (exact_match, all_dlls.len()) {
+            (Some(exact), _) => Ok(exact),
+            (None, 0) => Err(create_copy_error(
+                &self.name,
+                &self.out_dir,
+                dir,
+                format!("Couldn't find any {ext} file"),
+            )),
+            (None, 1) => Ok(all_dlls[0].clone()),
+            (None, _) => Err(create_copy_error(
+                &self.name,
+                &self.out_dir,
+                dir,
+                format!("Found many {ext} files: {all_dlls:?}."),
+            )),
         }
     }
+}
+
+/// Standalone function for collecting grammars to avoid lifetime issues
+fn collect_grammars(build_dir: &Path) -> Vec<PathBuf> {
+    let mut types_builder = TypesBuilder::new();
+    types_builder.add_def("js:*.js").unwrap();
+    let types = types_builder.select("js").build().unwrap();
+    let mut overrides_builder = OverrideBuilder::new(build_dir);
+    overrides_builder.case_insensitive(true).unwrap();
+    overrides_builder
+        .add("!(.github|bindings|doc|docs|examples|queries|script|scripts|test|tests)/**")
+        .unwrap();
+    let overrides = overrides_builder.build().unwrap();
+    let mut walker = WalkBuilder::new(build_dir);
+    walker
+        .git_global(false)
+        .git_ignore(true)
+        .hidden(false)
+        .overrides(overrides)
+        .types(types);
+    walker
+        .build()
+        .filter_map(|entry| {
+            entry.ok().and_then(|dir| {
+                if dir.file_type().unwrap().is_file() && dir.file_name() == "grammar.js" {
+                    Some(dir.path().to_path_buf())
+                } else {
+                    None
+                }
+            })
+        })
+        .filter_map(|path| path.parent().and_then(|p| p.canon().ok()))
+        .collect()
+}
+
+/// Helper function to create copy errors consistently
+fn create_copy_error(name: &str, out_dir: &Path, dst_dir: &Path, message: String) -> TsdlError {
+    error::TsdlError::Step(error::Step::new(
+        name.to_string(),
+        error::ParserOp::Copy {
+            src: out_dir.to_path_buf(),
+            dst: dst_dir.to_path_buf(),
+        },
+        TsdlError::message(message),
+    ))
 }
