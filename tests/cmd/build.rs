@@ -112,7 +112,11 @@ fn test_real_parser_error_formatting() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let build_dir = sandbox.tmp.path().join("tree-sitter-jsonxxx");
+    let build_dir = sandbox
+        .tmp
+        .path()
+        .join(TSDL_BUILD_DIR)
+        .join("tree-sitter-jsonxxx");
 
     // Define the exact expected error format using multi-line string literal
     let expected = format!(
