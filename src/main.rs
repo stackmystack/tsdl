@@ -26,7 +26,7 @@ fn main() -> ExitCode {
         Ok(_) => {
             info!("Starting");
             match run(&args) {
-                Err(e) => { eprintln!("Error: {}", e); ExitCode::FAILURE }
+                Err(e) => { eprintln!("{e}"); ExitCode::FAILURE }
                 Ok(_) => ExitCode::SUCCESS,    
             }
             
