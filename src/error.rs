@@ -27,15 +27,52 @@ pub struct Command {
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}\nStdOut:\n{}\nStdErr:\n{}",
-            self.msg, self.stdout, self.stderr
-        )
+        write!(f, "{}", self.format_with_indent(0))
     }
 }
 
-impl std::error::Error for Command {}
+impl Command {
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let prefix = " ".repeat(indent);
+        let mut result = format!("{}$ {}", prefix, self.msg);
+
+        // Only show stderr/stdout if they have content
+        if !self.stderr.is_empty() && !self.stdout.is_empty() {
+            result.push_str(&format!(
+                "\n{}  stdout:\n{}",
+                prefix,
+                self.stdout
+                    .lines()
+                    .map(|l| format!("{}  {}", prefix, l))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+            result.push_str(&format!(
+                "\n{}  stderr:\n{}",
+                prefix,
+                self.stderr
+                    .lines()
+                    .map(|l| format!("{}  {}", prefix, l))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        } else if !self.stderr.is_empty() {
+            result.push('\n');
+            for line in self.stderr.lines() {
+                result.push_str(&format!("{}{}\n", prefix, line));
+            }
+            result.pop(); // Remove trailing newline
+        } else if !self.stdout.is_empty() {
+            result.push('\n');
+            for line in self.stdout.lines() {
+                result.push_str(&format!("{}{}\n", prefix, line));
+            }
+            result.pop(); // Remove trailing newline
+        }
+        
+        result
+    }
+}impl std::error::Error for Command {}
 
 #[derive(Debug)]
 pub struct LanguageCollection {
@@ -62,7 +99,19 @@ pub struct Language {
 
 impl fmt::Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.\n{}", self.name, self.source)
+        write!(f, "{}", self.format_with_indent(0))
+    }
+}
+
+impl Language {
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let prefix = " ".repeat(indent);
+        format!(
+            "{}{}\n{}",
+            prefix,
+            self.name,
+            format_error_with_indent(&*self.source, indent + 2)
+        )
     }
 }
 
@@ -79,11 +128,21 @@ pub struct Parser {
 
 impl fmt::Display for Parser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Could not build all parsers.\n{}",
-            format_errors(&self.related)
-        )
+        write!(f, "{}", self.format_with_indent(0))
+    }
+}
+
+impl Parser {
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let prefix = " ".repeat(indent);
+        let mut result = format!("{}Could not build all parsers.", prefix);
+        for err in &self.related {
+            result.push_str(&format!(
+                "\n\n{}",
+                format_error_with_indent(err.as_ref(), indent + 2)
+            ));
+        }
+        result
     }
 }
 
@@ -98,7 +157,20 @@ pub struct Step {
 
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}.\n{}", self.name, self.kind, self.source)
+        write!(f, "{}", self.format_with_indent(0))
+    }
+}
+
+impl Step {
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let prefix = " ".repeat(indent);
+        format!(
+            "{}{}: {}.\n{}",
+            prefix,
+            self.name,
+            self.kind,
+            format_error_with_indent(&*self.source, indent + 2)
+        )
     }
 }
 
@@ -128,11 +200,18 @@ fn format_languages(langs: &[Language]) -> String {
         .join(", ")
 }
 
-fn format_errors(errs: &Vec<Box<dyn std::error::Error + Send + Sync + 'static>>) -> String {
-    errs.iter()
-        .map(|e| format!("{e}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+fn format_error_with_indent(err: &dyn std::error::Error, indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+
+    // Since we can't easily downcast from dyn Error, just indent the formatted error
+    let mut result = String::new();
+    for line in err.to_string().lines() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(&format!("{}{}", prefix, line));
+    }
+    result
 }
 
 /// Main error type for tsdl operations
@@ -140,28 +219,28 @@ fn format_errors(errs: &Vec<Box<dyn std::error::Error + Send + Sync + 'static>>)
 pub enum TsdlError {
     /// Command execution failed
     Command(Command),
-    
+
     /// Language collection failed
     LanguageCollection(LanguageCollection),
-    
+
     /// Individual language failed
     Language(Language),
-    
+
     /// Parser building failed
     Parser(Parser),
-    
+
     /// Specific step failed
     Step(Step),
-    
+
     /// Generic IO error
     Io(std::io::Error),
-    
+
     /// Configuration error
     Config(String),
-    
+
     /// Context chain (linked list of context layers)
     Context(Box<ContextKind>),
-    
+
     /// Simple error message
     Message(String),
 }
@@ -298,19 +377,89 @@ impl TsdlError {
     {
         let message = context.into();
         let tsdl_err = error.into();
-        
+
         // Create a context wrapper linking the message to the error
         TsdlError::Context(Box::new(ContextKind {
             message,
             error: tsdl_err,
         }))
     }
-    
+
     /// Create a simple error message
     pub fn message<M>(message: M) -> Self
     where
         M: Into<String>,
     {
         TsdlError::Message(message.into())
+    }
+
+    /// Format the error with indentation support
+    pub fn format_with_indent(&self, indent: usize) -> String {
+        let prefix = " ".repeat(indent);
+        match self {
+            TsdlError::Command(e) => e.format_with_indent(indent),
+            TsdlError::LanguageCollection(e) => format!("{}{}", prefix, e),
+            TsdlError::Language(e) => e.format_with_indent(indent),
+            TsdlError::Parser(e) => e.format_with_indent(indent),
+            TsdlError::Step(e) => e.format_with_indent(indent),
+            TsdlError::Io(e) => format!("{}IO error: {}", prefix, e),
+            TsdlError::Config(msg) => format!("{}Configuration error: {}", prefix, msg),
+            TsdlError::Context(kind) => {
+                // For context, show message and indent the nested error
+                format!(
+                    "{}{}\n{}",
+                    prefix,
+                    kind.message,
+                    self.format_context_error(&kind.error, indent + 2)
+                )
+            }
+            TsdlError::Message(msg) => format!("{}{}", prefix, msg),
+        }
+    }
+
+    fn format_context_error(&self, err: &TsdlError, indent: usize) -> String {
+        err.format_with_indent(indent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_formatting_with_indentation() {
+        // Simulate the jsonxxx error structure
+        let stderr = "remote: Repository not found.\nfatal: repository 'https://github.com/tree-sitter/tree-sitter-jsonxxx/' not found";
+        let command_error = Command {
+            msg: "git fetch origin --depth 1 HEAD failed with exit status 128.".to_string(),
+            stderr: stderr.to_string(),
+            stdout: "".to_string(),
+        };
+
+        let step_error = Step {
+            name: "jsonxxx".to_string(),
+            kind: ParserOp::Clone {
+                dir: PathBuf::from(
+                    "/home/firas/src/github.com/stackmystack/tsdl/tmp/tree-sitter-jsonxxx",
+                ),
+            },
+            source: Box::new(command_error),
+        };
+
+        let parser_error = Parser {
+            related: vec![Box::new(step_error)],
+        };
+
+        let tsdl_error = TsdlError::Parser(parser_error);
+        let formatted = tsdl_error.format_with_indent(0);
+
+        let expected = r#"Could not build all parsers.
+
+  jsonxxx: Could not clone to /home/firas/src/github.com/stackmystack/tsdl/tmp/tree-sitter-jsonxxx.
+    $ git fetch origin --depth 1 HEAD failed with exit status 128.
+    remote: Repository not found.
+    fatal: repository 'https://github.com/tree-sitter/tree-sitter-jsonxxx/' not found"#;
+
+        assert_eq!(formatted, expected);
     }
 }

@@ -3,11 +3,12 @@ use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output};
 use tokio::process::Command;
 use tracing::{error, trace};
 
-use crate::{error, relative_to_cwd, TsdlResult};
+use crate::{error, TsdlResult};
 
 pub trait Exec {
     fn exec(&mut self) -> impl std::future::Future<Output = TsdlResult<Output>>;
     fn display(&self) -> TsdlResult<String>;
+    fn display_full(&self) -> TsdlResult<String>;
 }
 
 pub trait Script {
@@ -17,7 +18,7 @@ pub trait Script {
 impl Exec for Command {
     #[tracing::instrument(skip(self))]
     async fn exec(&mut self) -> TsdlResult<Output> {
-        let cmd = self.display()?;
+        let cmd = self.display_full()?;
         trace!("{}", cmd);
 
         let output = self.output().await.map_err(|e| {
@@ -53,14 +54,7 @@ impl Exec for Command {
     fn display(&self) -> TsdlResult<String> {
         let program = self.as_std().get_program().to_string_lossy();
         let args = self.as_std().get_args();
-        let cwd = self.as_std().get_current_dir();
         let mut res = String::new();
-
-        if let Some(path) = cwd {
-            write!(res, "[{}] ", relative_to_cwd(path).to_string_lossy()).map_err(|e| {
-                error::TsdlError::context("Failed to write to display string", e)
-            })?;
-        }
 
         write!(res, "{program} ").map_err(|e| {
             error::TsdlError::context("Failed to write program to display string", e)
@@ -73,6 +67,16 @@ impl Exec for Command {
         }
 
         Ok(res.trim_end().to_string())
+    }
+
+    fn display_full(&self) -> TsdlResult<String> {
+        let cwd = self.as_std().get_current_dir();
+        let base = self.display()?;
+        
+        match cwd {
+            Some(path) => Ok(format!("[{}] {}", path.display(), base)),
+            None => Ok(base),
+        }
     }
 }
 
