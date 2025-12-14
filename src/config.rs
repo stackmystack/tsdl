@@ -8,15 +8,16 @@ use figment::{
 use tracing::debug;
 
 use crate::{
+    app::App,
     args::{BuildCommand, ConfigCommand},
     error::TsdlError,
     git, TsdlResult,
 };
 
-pub fn run(command: &ConfigCommand, config: &Path) -> TsdlResult<()> {
+pub fn run(app: &App, command: &ConfigCommand) -> TsdlResult<()> {
     match command {
         ConfigCommand::Current => {
-            let config: BuildCommand = current(config, None)?;
+            let config: BuildCommand = current(&app.config_path, None)?;
             println!(
                 "{}",
                 toml::to_string(&config)
