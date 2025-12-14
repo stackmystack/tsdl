@@ -160,7 +160,7 @@ fn unique_languages(
             })
             .map_err(|err| error::Language {
                 name: language,
-                source: Box::new(err),
+                source: Box::new(err.into()),
             })
         })
         .partition(Result::is_ok)

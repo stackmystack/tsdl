@@ -94,7 +94,7 @@ impl std::error::Error for LanguageCollection {}
 #[derive(Debug)]
 pub struct Language {
     pub name: String,
-    pub source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    pub source: Box<TsdlError>,
 }
 
 impl fmt::Display for Language {
@@ -110,7 +110,7 @@ impl Language {
             "{}{}\n{}",
             prefix,
             self.name,
-            format_error_with_indent(&*self.source, indent + 2)
+            self.source.format_with_indent(indent + 2)
         )
     }
 }
@@ -123,7 +123,7 @@ impl std::error::Error for Language {
 
 #[derive(Debug)]
 pub struct Parser {
-    pub related: Vec<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    pub related: Vec<TsdlError>,
 }
 
 impl fmt::Display for Parser {
@@ -139,7 +139,7 @@ impl Parser {
         for err in &self.related {
             result.push_str(&format!(
                 "\n\n{}",
-                format_error_with_indent(err.as_ref(), indent + 2)
+                err.format_with_indent(indent + 2)
             ));
         }
         result
@@ -152,7 +152,7 @@ impl std::error::Error for Parser {}
 pub struct Step {
     pub name: String,
     pub kind: ParserOp,
-    pub source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    pub source: Box<TsdlError>,
 }
 
 impl fmt::Display for Step {
@@ -169,7 +169,7 @@ impl Step {
             prefix,
             self.name,
             self.kind,
-            format_error_with_indent(&*self.source, indent + 2)
+            self.source.format_with_indent(indent + 2)
         )
     }
 }
@@ -200,19 +200,7 @@ fn format_languages(langs: &[Language]) -> String {
         .join(", ")
 }
 
-fn format_error_with_indent(err: &dyn std::error::Error, indent: usize) -> String {
-    let prefix = " ".repeat(indent);
 
-    // Since we can't easily downcast from dyn Error, just indent the formatted error
-    let mut result = String::new();
-    for line in err.to_string().lines() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(&format!("{}{}", prefix, line));
-    }
-    result
-}
 
 /// Main error type for tsdl operations
 #[derive(Debug)]
@@ -443,11 +431,11 @@ mod tests {
                     "/home/firas/src/github.com/stackmystack/tsdl/tmp/tree-sitter-jsonxxx",
                 ),
             },
-            source: Box::new(command_error),
+            source: Box::new(command_error.into()),
         };
 
         let parser_error = Parser {
-            related: vec![Box::new(step_error)],
+            related: vec![TsdlError::Step(step_error)],
         };
 
         let tsdl_error = TsdlError::Parser(parser_error);
