@@ -63,6 +63,33 @@ pub struct Language {
 }
 
 impl Language {
+    /// Create a step error with automatic context
+    fn step_err(&self, op: error::ParserOp, err: impl Into<TsdlError>) -> TsdlError {
+        step_error!(self.name, op, err).into()
+    }
+
+    /// Create a context error with automatic wrapping
+    #[allow(clippy::unused_self)]
+    fn context_err<C, E>(&self, context: C, err: E) -> TsdlError
+    where
+        C: Into<String>,
+        E: Into<TsdlError>,
+    {
+        TsdlError::context(context, err)
+    }
+
+    /// Create a copy-specific error
+    fn copy_err(&self, dir: &Path, message: impl Into<String>) -> TsdlError {
+        error::TsdlError::Step(error::Step::new(
+            self.name.clone(),
+            error::ParserOp::Copy {
+                src: self.out_dir.clone(),
+                dst: dir.to_path_buf(),
+            },
+            TsdlError::message(message.into()),
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -175,14 +202,12 @@ impl Language {
             .exec()
             .await
             .map_err(|err| {
-                step_error!(
-                    self.name,
+                self.step_err(
                     error::ParserOp::Build {
                         dir: self.build_dir.clone(),
                     },
-                    err
+                    err,
                 )
-                .into()
             })
             .and(Ok(()))
     }
@@ -242,8 +267,8 @@ impl Language {
         println!();
         fs::copy(&dll, &dst)
             .await
-            .map_err(|e| TsdlError::context(format!("cp {} {}", &dll.display(), dst.display()), e))
-            .map_err(|err| self.create_copy_error(&dll, err.to_string()))
+            .map_err(|e| self.context_err(format!("cp {} {}", &dll.display(), dst.display()), e))
+            .map_err(|err: TsdlError| self.copy_err(&dll, err.to_string()))
             .and(Ok(()))
     }
 
@@ -251,14 +276,12 @@ impl Language {
         clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
             .await
             .map_err(|err| {
-                step_error!(
-                    self.name,
+                self.step_err(
                     error::ParserOp::Clone {
                         dir: self.build_dir.clone(),
                     },
-                    err
+                    err,
                 )
-                .into()
             })
             .and(Ok(()))
     }
@@ -270,14 +293,12 @@ impl Language {
             .exec()
             .await
             .map_err(|err| {
-                step_error!(
-                    self.name,
+                self.step_err(
                     error::ParserOp::Generate {
                         dir: self.build_dir.clone(),
                     },
-                    err
+                    err,
                 )
-                .into()
             })
             .and(Ok(()))
     }
@@ -325,24 +346,10 @@ impl Language {
             Ok(exact.clone())
         } else {
             match all_dlls.len() {
-                0 => Err(self.create_copy_error(dir, format!("Couldn't find any {ext} file"))),
+                0 => Err(self.copy_err(dir, format!("Couldn't find any {ext} file"))),
                 1 => Ok(all_dlls[0].clone()),
-                _ => {
-                    Err(self
-                        .create_copy_error(dir, format!("Found many {ext} files: {all_dlls:?}.")))
-                }
+                _ => Err(self.copy_err(dir, format!("Found many {ext} files: {all_dlls:?}."))),
             }
         }
-    }
-
-    fn create_copy_error(&self, dir: &Path, message: String) -> error::TsdlError {
-        error::TsdlError::Step(error::Step::new(
-            self.name.clone(),
-            error::ParserOp::Copy {
-                src: self.out_dir.clone(),
-                dst: dir.to_path_buf(),
-            },
-            TsdlError::message(message),
-        ))
     }
 }
