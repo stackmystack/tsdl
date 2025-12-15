@@ -2,7 +2,7 @@ use rstest::*;
 
 use assert_fs::prelude::*;
 use predicates::{self as p};
-use tsdl::consts::{TREE_SITTER_VERSION, TSDL_BUILD_DIR};
+use tsdl::consts::{TREE_SITTER_REF, TSDL_BUILD_DIR};
 
 use crate::cmd::Sandbox;
 
@@ -15,7 +15,7 @@ fn build_no_args_should_log_to_default_path() {
         .assert()
         .success()
         .stderr(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_VERSION} done"
+            "tree-sitter-cli v{TREE_SITTER_REF} done"
         )));
     assert!(!sandbox.is_empty());
     sandbox
@@ -39,7 +39,7 @@ fn build_w_specific_log_path(#[case] log: &str) {
         .assert()
         .success()
         .stderr(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_VERSION} done"
+            "tree-sitter-cli v{TREE_SITTER_REF} done"
         )));
     sandbox
         .tmp

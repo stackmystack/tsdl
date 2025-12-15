@@ -9,7 +9,7 @@ use diff::Diff;
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{
-    TREE_SITTER_PLATFORM, TREE_SITTER_REPO, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE,
+    TREE_SITTER_PLATFORM, TREE_SITTER_REF, TREE_SITTER_REPO, TSDL_BUILD_DIR, TSDL_CONFIG_FILE,
     TSDL_FRESH, TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG,
 };
 
@@ -233,9 +233,10 @@ pub enum ParserConfig {
     #[derive(Debug, PartialEq)]
 ))]
 pub struct TreeSitter {
-    /// Tree-sitter version.
-    #[arg(short = 'V', long = "tree-sitter-version", default_value = TREE_SITTER_VERSION)]
-    pub version: String,
+    /// Tree-sitter git ref (branch, tag, commit SHA1).
+    #[arg(short = 'V', long = "tree-sitter-ref", alias = "tree-sitter-version", default_value = TREE_SITTER_REF)]
+    #[serde(rename = "git-ref")]
+    pub git_ref: String,
 
     /// Tree-sitter repo.
     #[arg(short = 'R', long = "tree-sitter-repo", default_value = TREE_SITTER_REPO)]
@@ -249,7 +250,7 @@ pub struct TreeSitter {
 impl Default for TreeSitter {
     fn default() -> Self {
         Self {
-            version: TREE_SITTER_VERSION.to_string(),
+            git_ref: TREE_SITTER_REF.to_string(),
             repo: TREE_SITTER_REPO.to_string(),
             platform: TREE_SITTER_PLATFORM.to_string(),
         }

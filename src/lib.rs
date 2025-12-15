@@ -31,7 +31,7 @@
 //! to get the default config used by tsdl in TOML.
 //!
 //! All configuration you can pass to `tsd build` can be put in the `parsers.toml`,
-//! like `tree-sitter-version`, `out-dir`, etc.
+//! like `tree-sitter-ref`, `out-dir`, etc.
 //!
 //! ```toml
 //! build-dir = "/tmp/tsdl"

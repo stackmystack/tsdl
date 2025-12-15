@@ -182,17 +182,32 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> TsdlResult<()> {
 }
 
 pub async fn tag_for_ref(cwd: &Path, git_ref: &str) -> TsdlResult<String> {
-    Ok(String::from_utf8(
-        Command::new("git")
-            .current_dir(cwd)
-            .args(["describe", "--abbrev=0", "--tags", git_ref])
-            .exec()
-            .await?
-            .stdout,
-    )
-    .map_err(|e| TsdlError::context("Failed to parse git tag output as UTF-8", e))?
-    .trim()
-    .to_string())
+    // Try to find a tag for this ref
+    let tag_result = Command::new("git")
+        .current_dir(cwd)
+        .args(["describe", "--abbrev=0", "--tags", git_ref])
+        .exec()
+        .await;
+
+    match tag_result {
+        Ok(output) => {
+            // Found a tag, use it
+            String::from_utf8(output.stdout)
+                .map_err(|e| TsdlError::context("Failed to parse git tag output as UTF-8", e))
+                .map(|s| s.trim().to_string())
+        }
+        Err(_) => {
+            // No tag found (e.g., ref is a branch), fall back to commit SHA1
+            let sha1_output = Command::new("git")
+                .current_dir(cwd)
+                .args(["rev-parse", git_ref])
+                .exec()
+                .await?;
+            String::from_utf8(sha1_output.stdout)
+                .map_err(|e| TsdlError::context("Failed to parse git rev-parse output as UTF-8", e))
+                .map(|s| s.trim().to_string())
+        }
+    }
 }
 
 pub fn column(input: &str, indent: &str, width: usize) -> TsdlResult<Output> {
