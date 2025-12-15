@@ -145,10 +145,10 @@ pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> Tsd
     };
     let repo = Url::parse(&args.tree_sitter.repo)
         .map_err(|e| TsdlError::context("Parsing the tree-sitter URL", e))?;
-    let version = &args.tree_sitter.version;
+    let git_ref = &args.tree_sitter.git_ref;
 
-    handle.start(format!("Figuring out tag from version {version}"));
-    let tag = tag(repo.as_str(), version).await?;
+    handle.start(format!("Figuring out tag from ref {git_ref}"));
+    let tag = tag(repo.as_str(), git_ref).await?;
 
     handle.step(format!("Fetching {tag}",));
     let cli = cli(args, &tag, &handle).await?;

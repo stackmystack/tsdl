@@ -8,7 +8,7 @@ use rstest::*;
 
 use tsdl::{
     consts::{
-        TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
+        TREE_SITTER_PLATFORM, TREE_SITTER_REF, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
         TSDL_PREFIX,
     },
     parser::WASM_EXTENSION,
@@ -25,7 +25,7 @@ fn no_args_should_download_tree_sitter_cli() {
         .assert()
         .success()
         .stderr(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_VERSION} done"
+            "tree-sitter-cli v{TREE_SITTER_REF} done"
         )));
     assert!(!sandbox.is_empty());
     let tree_sitter_cli = sandbox
@@ -54,9 +54,7 @@ fn no_args_should_build_tree_sitter_with_specific_version(
     #[case] cli_version: &str,
 ) {
     let mut sandbox = Sandbox::new();
-    sandbox
-        .cmd
-        .args(["build", "--tree-sitter-version", requested]);
+    sandbox.cmd.args(["build", "--tree-sitter-ref", requested]);
     sandbox
         .cmd
         .assert()

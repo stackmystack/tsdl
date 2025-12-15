@@ -93,7 +93,7 @@ fn write_tree_sitter_consts(
     out_dir: &OsString,
 ) {
     let tree_sitter = meta.get("tree-sitter").unwrap();
-    let tree_sitter_version = tree_sitter.get("version").unwrap().as_str().unwrap();
+    let tree_sitter_ref = tree_sitter.get("ref").unwrap().as_str().unwrap();
     let tree_sitter_repo = tree_sitter.get("repo").unwrap().as_str().unwrap();
     let tree_sitter_platform = platform_for_target(build_target.to_str().unwrap());
     let tree_sitter_consts = Path::new(out_dir).join("tree_sitter_consts.rs");
@@ -103,7 +103,7 @@ fn write_tree_sitter_consts(
             r#"
               pub const TREE_SITTER_PLATFORM: &str = "{tree_sitter_platform}";
               pub const TREE_SITTER_REPO: &str = "{tree_sitter_repo}";
-              pub const TREE_SITTER_VERSION: &str = "{tree_sitter_version}";
+              pub const TREE_SITTER_REF: &str = "{tree_sitter_ref}";
             "#
         ),
     )
