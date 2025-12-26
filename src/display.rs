@@ -225,8 +225,10 @@ impl Handle for FancyHandle {
 
     fn fin(&self, msg: impl HandleMessage) {
         self.bar.inc(1);
+        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
+        let position = position.min(self.num_tasks);
         self.bar
-            .set_prefix(format!("[{}/{}]", self.bar.position(), self.num_tasks));
+            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
         self.bar.finish_with_message(format!(
             "{} {} {}{}",
             *self.name,
@@ -237,15 +239,19 @@ impl Handle for FancyHandle {
     }
 
     fn msg(&self, msg: impl HandleMessage) {
+        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
+        let position = position.min(self.num_tasks);
         self.bar
-            .set_prefix(format!("[{}/{}]", self.bar.position(), self.num_tasks));
+            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
         self.bar.set_message(format!("{} {}", *self.name, msg));
     }
 
     fn step(&self, msg: impl HandleMessage) {
         self.bar.inc(1);
+        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
+        let position = position.min(self.num_tasks);
         self.bar
-            .set_prefix(format!("[{}/{}]", self.bar.position(), self.num_tasks));
+            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
         self.bar.set_message(format!("{}: {}", *self.name, msg));
     }
 
@@ -256,8 +262,10 @@ impl Handle for FancyHandle {
     fn start(&mut self, msg: impl HandleMessage) {
         self.t_start = Some(time::Instant::now());
         self.bar.inc(1);
+        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
+        let position = position.min(self.num_tasks);
         self.bar
-            .set_prefix(format!("[{}/{}]", self.bar.position(), self.num_tasks));
+            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
         self.bar.set_message(format!("{} {}", *self.name, msg));
     }
 
@@ -295,7 +303,7 @@ impl Handle for PlainHandle {
     fn fin(&self, msg: impl HandleMessage) {
         let cur_task = {
             let mut res = self.cur_task.lock().unwrap();
-            *res += 1;
+            *res = res.saturating_add(1);
             *res
         };
         eprintln!(
@@ -322,7 +330,7 @@ impl Handle for PlainHandle {
     fn step(&self, msg: impl HandleMessage) {
         let cur_task = {
             let mut res = self.cur_task.lock().unwrap();
-            *res += 1;
+            *res = res.saturating_add(1);
             *res
         };
         eprintln!("[{}/{}] {} {}", cur_task, self.num_tasks, *self.name, msg);
@@ -336,7 +344,7 @@ impl Handle for PlainHandle {
         self.t_start = Some(time::Instant::now());
         let cur_task = {
             let mut res = self.cur_task.lock().unwrap();
-            *res += 1;
+            *res = res.saturating_add(1);
             *res
         };
         eprintln!("[{}/{}] {} {}", cur_task, self.num_tasks, *self.name, msg);

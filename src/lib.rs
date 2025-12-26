@@ -101,7 +101,7 @@ fn format_duration(duration: time::Duration) -> String {
     if total_seconds < 60 {
         format!("{total_seconds}.{milliseconds:#02}s")
     } else {
-        format!("{}mn {}s", total_seconds % 60, total_seconds / 60)
+        format!("{}mn {}s", total_seconds / 60, total_seconds % 60)
     }
 }
 
