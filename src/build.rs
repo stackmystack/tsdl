@@ -11,6 +11,7 @@ use url::Url;
 use crate::{
     app::App,
     args::ParserConfig,
+    cache::{self, Cache},
     consts::TSDL_FROM,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
     error,
@@ -53,14 +54,32 @@ fn build_impl(app: &App) -> TsdlResult<()> {
     rt.spawn(update_screen(app.progress.clone()));
     let ts_cli = rt.block_on(tree_sitter::prepare(&app.command, app.progress.clone()))?;
 
+    // Load cache from disk
+    let cache = Cache::load(&app.command.build_dir)?;
+    let cache = Arc::new(Mutex::new(cache));
+
     let languages = collect_languages(
         app,
         ts_cli,
         app.command.languages.as_ref(),
         app.command.parsers.as_ref(),
+        &cache,
     )?;
     create_dir_all(&app.command.out_dir)?;
-    rt.block_on(build_languages(languages))
+
+    // Build and then save cache
+    let result = rt.block_on(async {
+        let result = build_languages(languages).await;
+
+        // Save cache to disk after build completes (success or failure)
+        if let Ok(cache_guard) = cache.try_lock() {
+            cache_guard.save(&app.command.build_dir).ok();
+        }
+
+        result
+    });
+
+    result
 }
 
 async fn update_screen(progress: Arc<Mutex<Progress>>) {
@@ -80,8 +99,9 @@ fn collect_languages(
     ts_cli: PathBuf,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
+    cache: &Arc<Mutex<cache::Cache>>,
 ) -> Result<Vec<Language>, error::LanguageCollection> {
-    let results = unique_languages(app, ts_cli, requested_languages, defined_parsers);
+    let results = unique_languages(app, ts_cli, requested_languages, defined_parsers, cache);
     let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     if err.is_empty() {
@@ -98,6 +118,7 @@ fn unique_languages(
     ts_cli: PathBuf,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
+    cache: &Arc<Mutex<cache::Cache>>,
 ) -> Vec<Result<Language, error::Language>> {
     let ts_cli = Arc::new(ts_cli);
     let final_languages = match requested_languages {
@@ -120,6 +141,7 @@ fn unique_languages(
                     .canon()
                     .unwrap(),
                 build_script,
+                app.command.force,
                 git_ref,
                 app.progress.lock().unwrap().register(&language, NUM_STEPS),
                 language.clone(),
@@ -128,6 +150,7 @@ fn unique_languages(
                 repo,
                 app.command.target,
                 ts_cli.clone(),
+                cache.clone(),
             )),
             Err(err) => Err(error::Language::new(language, err)),
         };

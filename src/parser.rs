@@ -1,7 +1,9 @@
 use std::{
     env::consts::DLL_EXTENSION,
+    fs as std_fs,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
@@ -11,6 +13,7 @@ use url::Url;
 
 use crate::{
     args::Target,
+    cache::{self, CacheEntry},
     display::{Handle, ProgressHandle},
     error::{self, TsdlError},
     git::{clone_fast, Ref},
@@ -52,6 +55,7 @@ pub async fn build_languages(languages: Vec<Language>) -> TsdlResult<()> {
 pub struct Language {
     build_dir: PathBuf,
     build_script: Option<String>,
+    force: bool,
     git_ref: Ref,
     handle: ProgressHandle,
     name: String,
@@ -60,6 +64,8 @@ pub struct Language {
     repo: Url,
     target: Target,
     ts_cli: Arc<PathBuf>,
+    cache: Arc<Mutex<cache::Cache>>,
+    cache_hit: bool,
 }
 
 impl Language {
@@ -68,6 +74,7 @@ impl Language {
     pub fn new(
         build_dir: PathBuf,
         build_script: Option<String>,
+        force: bool,
         git_ref: Ref,
         handle: ProgressHandle,
         name: String,
@@ -76,10 +83,12 @@ impl Language {
         repo: Url,
         target: Target,
         ts_cli: Arc<PathBuf>,
+        cache: Arc<Mutex<cache::Cache>>,
     ) -> Self {
         Language {
             build_dir,
             build_script,
+            force,
             git_ref,
             handle,
             name,
@@ -88,6 +97,8 @@ impl Language {
             repo,
             target,
             ts_cli,
+            cache,
+            cache_hit: false,
         }
     }
 
@@ -97,35 +108,67 @@ impl Language {
             let _ = tx.send(res).await;
             self.handle.err(self.git_ref.to_string());
         } else {
-            self.handle.fin(self.git_ref.to_string());
+            let msg = if self.cache_hit {
+                format!("{} (cached)", self.git_ref)
+            } else {
+                self.git_ref.to_string()
+            };
+            self.handle.fin(msg);
             let _ = tx.send(Ok(())).await;
         }
     }
 
     async fn steps(&mut self) -> TsdlResult<()> {
+        // Check cache before cloning (unless --force is set)
+        let cache_hit = if self.force {
+            false
+        } else {
+            match self.check_cache_early().await {
+                Ok(hit) => hit,
+                Err(e) => return Err(e),
+            }
+        };
+
+        // If all grammars are cached, skip clone and build steps
+        if cache_hit {
+            self.cache_hit = true;
+            return Ok(());
+        }
+
         self.handle.start(format!("Cloning {}", self.git_ref));
         self.clone().await?;
         self.handle.step(format!("Generating {}", self.git_ref));
 
         // Wrap blocking I/O in spawn_blocking to avoid blocking the async runtime
         let build_dir = self.build_dir.clone();
-        let grammars = tokio::task::spawn_blocking(move || collect_grammars(&build_dir))
+        let grammars = match tokio::task::spawn_blocking(move || collect_grammars(&build_dir))
             .await
             .map_err(|e| {
                 TsdlError::context("Failed to collect grammars in blocking task".to_string(), e)
-            })?;
+            }) {
+            Ok(g) => g,
+            Err(e) => return Err(e),
+        };
 
         for dir in grammars {
-            let dir_name = dir
+            let Some(dir_name) = dir
                 .file_name()
                 .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
-                .ok_or_else(|| {
-                    TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
-                })?;
+            else {
+                return Err(TsdlError::Message(format!(
+                    "Could not get dir name for {}",
+                    dir.display()
+                )));
+            };
+
             self.handle
                 .msg(format!("Generating {} in {}", self.git_ref, dir_name));
-            self.build_grammar(dir).await?;
+            self.build_grammar(dir.clone()).await?;
         }
+
+        // Update cache with grammar SHA1 after successful build
+        self.update_cache_after_build().await?;
+
         Ok(())
     }
 
@@ -207,10 +250,9 @@ impl Language {
         let dll = self.find_dll_files(dir, ext).await?;
         let name = self.parser_name_and_ext(dir, ext)?;
         let dst = self.out_dir.clone().join(name);
-        println!();
-        println!("cp {} {}", dll.display(), dst.display());
-        println!();
-        fs::copy(&dll, &dst).await.map_err(|err| {
+
+        // Use hard-link installation logic
+        self.install_via_hardlink(&dll, &dst).map_err(|err| {
             error::TsdlError::Step(error::Step::new(
                 self.name.clone(),
                 error::ParserOp::Copy {
@@ -221,6 +263,76 @@ impl Language {
             ))
         })?;
         Ok(())
+    }
+
+    /// Install binary via hard-link with inode checking
+    fn install_via_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
+        // Case 1: Destination doesn't exist → create hard-link
+        if !dst.exists() {
+            std_fs::hard_link(src, dst).map_err(|e| {
+                TsdlError::context(
+                    format!(
+                        "Creating hard-link from {} to {}",
+                        src.display(),
+                        dst.display()
+                    ),
+                    e,
+                )
+            })?;
+            self.handle.msg(format!(
+                "Installed {} → {} (hard-link)",
+                src.display(),
+                dst.display()
+            ));
+            return Ok(());
+        }
+
+        // Case 2: Destination exists → check inodes
+        let src_meta = std_fs::metadata(src).map_err(|e| {
+            TsdlError::context(format!("Reading metadata for {}", src.display()), e)
+        })?;
+        let dst_meta = std_fs::metadata(dst).map_err(|e| {
+            TsdlError::context(format!("Reading metadata for {}", dst.display()), e)
+        })?;
+
+        let src_ino = src_meta.ino();
+        let dst_ino = dst_meta.ino();
+
+        if src_ino == dst_ino {
+            // Same inode → already installed, nothing to do
+            self.handle
+                .msg(format!("Already installed {} (same inode)", dst.display()));
+            return Ok(());
+        }
+
+        // Different inode → binary changed or was replaced
+        if self.force {
+            // Remove old file and hard-link new one
+            std_fs::remove_file(dst).map_err(|e| {
+                TsdlError::context(format!("Removing existing {}", dst.display()), e)
+            })?;
+            std_fs::hard_link(src, dst).map_err(|e| {
+                TsdlError::context(
+                    format!(
+                        "Creating hard-link from {} to {}",
+                        src.display(),
+                        dst.display()
+                    ),
+                    e,
+                )
+            })?;
+            self.handle.msg(format!(
+                "Reinstalled {} → {} (hard-link, --force)",
+                src.display(),
+                dst.display()
+            ));
+            Ok(())
+        } else {
+            Err(TsdlError::message(format!(
+                "Binary differs at {}. Use --force to overwrite",
+                dst.display()
+            )))
+        }
     }
 
     async fn clone(&self) -> TsdlResult<()> {
@@ -320,6 +432,108 @@ impl Language {
                 format!("Found many {ext} files: {all_dlls:?}."),
             )),
         }
+    }
+
+    /// Check cache and compute grammar hashes before cloning
+    /// Returns true if cache hit (skip build), false if need to rebuild
+    async fn check_cache_early(&mut self) -> TsdlResult<bool> {
+        // Skip cache checks if --force is set
+        if self.force {
+            return Ok(false);
+        }
+
+        let build_dir = self.build_dir.clone();
+        let name = self.name.clone();
+        let git_ref = self.git_ref.to_string();
+
+        // Compute grammar hashes in a blocking task
+        let grammar_result =
+            tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir, &name))
+                .await
+                .map_err(|e| {
+                    TsdlError::context(
+                        "Failed to compute grammar hashes in blocking task".to_string(),
+                        e,
+                    )
+                })?;
+
+        // If no grammars exist in build_dir yet, can't skip (need to clone first)
+        if grammar_result.is_none() {
+            return Ok(false);
+        }
+
+        let (_grammar_paths, grammar_sha1) = grammar_result.unwrap();
+
+        // Check cache
+        let cache_guard = self.cache.lock().expect("cache mutex poisoned");
+        Ok(!cache_guard.needs_rebuild(&self.name, &grammar_sha1, &git_ref))
+    }
+
+    /// Update cache with successful build by computing grammar SHA1
+    async fn update_cache_after_build(&self) -> TsdlResult<()> {
+        // Compute grammar SHA1 from the build directory
+        let build_dir = self.build_dir.clone();
+        let name = self.name.clone();
+
+        let grammar_sha1 =
+            tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir, &name))
+                .await
+                .map_err(|e| {
+                    TsdlError::context(
+                        "Failed to compute grammar hash in blocking task".to_string(),
+                        e,
+                    )
+                })?;
+
+        if let Some((_paths, sha1)) = grammar_sha1 {
+            let mut cache_guard = self.cache.lock().expect("cache mutex poisoned");
+            let targets = vec![
+                self.target.native().then_some(Target::Native),
+                self.target.wasm().then_some(Target::Wasm),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            cache_guard.set(
+                self.name.clone(),
+                CacheEntry {
+                    grammar_sha1: sha1,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    git_ref: self.git_ref.to_string(),
+                    targets,
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Compute SHA1 of grammar files for a parser (before clone)
+/// Returns (`grammar_paths`, `sha1_hash`) if `build_dir` exists and has grammar files, None if `build_dir` doesn't exist yet
+fn compute_grammar_hashes(build_dir: &Path, _parser_name: &str) -> Option<(Vec<PathBuf>, String)> {
+    // Only useful if the build_dir already exists (i.e., parser was previously built)
+    if !build_dir.exists() {
+        return None;
+    }
+
+    let grammars = collect_grammars(build_dir);
+    if grammars.is_empty() {
+        return None;
+    }
+
+    // For now, compute hash of the first grammar.js found (parser dir)
+    // In future, could combine hashes if multiple grammars
+    if let Some(first_grammar_dir) = grammars.first() {
+        match cache::sha1_grammar_dir(first_grammar_dir) {
+            Ok(sha1) => Some((grammars, sha1)),
+            Err(_) => None, // Grammar file missing, force rebuild
+        }
+    } else {
+        None
     }
 }
 
