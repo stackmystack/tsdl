@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod build;
 #[cfg(test)]
+mod cache;
+#[cfg(test)]
 mod config;
 #[cfg(test)]
 mod log;

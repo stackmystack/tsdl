@@ -62,6 +62,7 @@ extern crate log;
 pub mod app;
 pub mod args;
 pub mod build;
+pub mod cache;
 pub mod config;
 pub mod consts;
 pub mod display;

@@ -60,8 +60,10 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
     let tsdl_bin_build_dir = tsdl_bin_build_dir.to_str().unwrap();
     let tsdl = meta.get("tsdl").unwrap();
     let tsdl_build_dir = tsdl.get("build-dir").unwrap().as_str().unwrap();
+    let tsdl_cache_file = tsdl.get("cache-file").unwrap().as_str().unwrap();
     let tsdl_config_file = tsdl.get("config").unwrap().as_str().unwrap();
     let tsdl_consts = Path::new(&out_dir).join("tsdl_consts.rs");
+    let tsdl_force = tsdl.get("force").unwrap().as_bool().unwrap();
     let tsdl_fresh = tsdl.get("fresh").unwrap().as_bool().unwrap();
     let tsdl_from = tsdl.get("from").unwrap().as_str().unwrap();
     let tsdl_out_dir = tsdl.get("out").unwrap().as_str().unwrap();
@@ -74,7 +76,9 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
             r#"
               pub const TSDL_BIN_BUILD_DIR: &str = "{tsdl_bin_build_dir}/";
               pub const TSDL_BUILD_DIR: &str = "{tsdl_build_dir}";
+              pub const TSDL_CACHE_FILE: &str = "{tsdl_cache_file}";
               pub const TSDL_CONFIG_FILE: &str = "{tsdl_config_file}";
+              pub const TSDL_FORCE: bool = {tsdl_force};
               pub const TSDL_FRESH: bool = {tsdl_fresh};
               pub const TSDL_FROM: &str = "{tsdl_from}";
               pub const TSDL_OUT_DIR: &str = "{tsdl_out_dir}";

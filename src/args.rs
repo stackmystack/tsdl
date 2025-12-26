@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::consts::{
     TREE_SITTER_PLATFORM, TREE_SITTER_REF, TREE_SITTER_REPO, TSDL_BUILD_DIR, TSDL_CONFIG_FILE,
-    TSDL_FRESH, TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG,
+    TSDL_FORCE, TSDL_FRESH, TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG,
 };
 
 const TSDL_VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/tsdl.version"));
@@ -183,6 +183,11 @@ pub struct BuildCommand {
     #[arg(short, long, value_enum, default_value_t = Target::default())]
     pub target: Target,
 
+    /// Force installation by overwriting existing binaries.
+    #[arg(long, default_value_t = false)]
+    #[serde(default)]
+    pub force: bool,
+
     #[command(flatten)]
     #[serde(default)]
     pub tree_sitter: TreeSitter,
@@ -193,6 +198,7 @@ impl Default for BuildCommand {
         Self {
             build_dir: PathBuf::from(TSDL_BUILD_DIR),
             fresh: TSDL_FRESH,
+            force: TSDL_FORCE,
             languages: None,
             ncpus: num_cpus::get(),
             out_dir: PathBuf::from(TSDL_OUT_DIR),

@@ -409,6 +409,12 @@ impl From<toml::ser::Error> for TsdlError {
     }
 }
 
+impl From<toml::de::Error> for TsdlError {
+    fn from(e: toml::de::Error) -> Self {
+        TsdlError::Message(format!("TOML deserialization error: {e}"))
+    }
+}
+
 impl From<figment::Error> for TsdlError {
     fn from(e: figment::Error) -> Self {
         TsdlError::Message(format!("Configuration error: {e}"))
