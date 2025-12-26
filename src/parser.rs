@@ -495,14 +495,15 @@ impl Language {
             .flatten()
             .collect();
 
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             cache_guard.set(
                 self.name.clone(),
                 CacheEntry {
                     grammar_sha1: sha1,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
+                    timestamp,
                     git_ref: self.git_ref.to_string(),
                     targets,
                 },
