@@ -131,6 +131,15 @@ impl Target {
     pub fn wasm(&self) -> bool {
         matches!(self, Self::All | Self::Wasm)
     }
+
+    /// Check if this target covers (is a superset of) another target
+    #[must_use]
+    pub fn covers(&self, other: Target) -> bool {
+        matches!(
+            (self, other),
+            (Target::All, _) | (Target::Native, Target::Native) | (Target::Wasm, Target::Wasm)
+        )
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]
