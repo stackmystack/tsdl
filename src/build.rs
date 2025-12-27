@@ -52,7 +52,12 @@ fn build_impl(app: &App) -> TsdlResult<()> {
         .build()?;
     let _guard = rt.enter();
     rt.spawn(update_screen(app.progress.clone()));
-    let ts_cli = rt.block_on(tree_sitter::prepare(&app.command, app.progress.clone()))?;
+    let handle = app
+        .progress
+        .lock()
+        .expect("Failed to acquire progress lock")
+        .register("Preparing tree-sitter-cli", 3);
+    let ts_cli = rt.block_on(tree_sitter::prepare(&app.command, handle))?;
 
     // Load cache from disk
     let cache = Cache::load(&app.command.build_dir)?;
