@@ -434,80 +434,58 @@ impl Language {
         }
     }
 
+    /// Compute grammar hashes and lock cache for an operation
+    async fn with_cache<F, R>(&self, operation: F) -> TsdlResult<R>
+    where
+        F: FnOnce(&mut std::sync::MutexGuard<cache::Cache>, &str) -> R,
+    {
+        let build_dir = self.build_dir.clone();
+
+        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
+            .await
+            .map_err(|e| TsdlError::context("Failed to compute hashes", e))?
+            .unwrap_or_default();
+
+        let mut cache = self.cache.lock().expect("cache mutex poisoned");
+        Ok(operation(&mut cache, &sha1))
+    }
+
     /// Check cache and compute grammar hashes before cloning
     /// Returns true if cache hit (skip build), false if need to rebuild
     async fn check_cache_early(&mut self) -> TsdlResult<bool> {
-        // Skip cache checks if --force is set
         if self.force {
             return Ok(false);
         }
 
-        let build_dir = self.build_dir.clone();
-        let git_ref = self.git_ref.to_string();
+        let (name, git_ref, target) = (self.name.clone(), self.git_ref.to_string(), self.target);
 
-        // Compute grammar hashes in a blocking task
-        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
-            .await
-            .map_err(|e| {
-                TsdlError::context(
-                    "Failed to compute grammar hashes in blocking task".to_string(),
-                    e,
-                )
-            })?;
-
-        // If no grammars exist in build_dir yet, can't skip (need to clone first)
-        let Some(sha1) = sha1 else {
-            // FIXME: this should probably be an error?
-            return Ok(false);
-        };
-
-        // Check cache
-        let cache_guard = self.cache.lock().expect("cache mutex poisoned");
-        Ok(!cache_guard.needs_rebuild(&self.name, &sha1, &git_ref))
+        self.with_cache(move |cache, sha1| {
+            // Cache is valid if hash exists AND rebuild is NOT needed
+            !sha1.is_empty() && !cache.needs_rebuild(&name, sha1, &git_ref, target)
+        })
+        .await
     }
 
-    /// Update cache with successful build by computing grammar SHA1
     async fn update_cache_after_build(&self) -> TsdlResult<()> {
-        // Compute grammar SHA1 from the build directory
-        let build_dir = self.build_dir.clone();
+        self.with_cache(|cache, sha1| {
+            if sha1.is_empty() {
+                return;
+            }
 
-        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
-            .await
-            .map_err(|e| {
-                TsdlError::context(
-                    "Failed to compute grammar hash in blocking task".to_string(),
-                    e,
-                )
-            })?;
-
-        let Some(sha1) = sha1 else {
-            // FIXME: this should probably be an error?
-            return Ok(());
-        };
-
-        let mut cache_guard = self.cache.lock().expect("cache mutex poisoned");
-        let targets = vec![
-            self.target.native().then_some(Target::Native),
-            self.target.wasm().then_some(Target::Wasm),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        cache_guard.set(
-            self.name.clone(),
-            CacheEntry {
-                grammar_sha1: sha1,
-                timestamp,
-                git_ref: self.git_ref.to_string(),
-                targets,
-            },
-        );
-        Ok(())
+            cache.set(
+                self.name.clone(),
+                CacheEntry {
+                    grammar_sha1: sha1.to_string(),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    git_ref: self.git_ref.to_string(),
+                    target: self.target,
+                },
+            );
+        })
+        .await
     }
 }
 

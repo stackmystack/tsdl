@@ -22,9 +22,9 @@ pub struct CacheEntry {
     pub timestamp: u64,
     /// Git reference that was built
     pub git_ref: String,
-    /// Build targets
+    /// Build target
     #[serde(default)]
-    pub targets: Vec<Target>,
+    pub target: Target,
 }
 
 impl Cache {
@@ -68,8 +68,14 @@ impl Cache {
         self.parsers.get(parser_name)
     }
 
-    /// Check if a parser needs rebuilding by comparing grammar SHA1
-    pub fn needs_rebuild(&self, parser_name: &str, grammar_sha1: &str, git_ref: &str) -> bool {
+    /// Check if a parser needs rebuilding by comparing grammar SHA1 and target coverage
+    pub fn needs_rebuild(
+        &self,
+        parser_name: &str,
+        grammar_sha1: &str,
+        git_ref: &str,
+        requested_target: Target,
+    ) -> bool {
         match self.get(parser_name) {
             None => {
                 debug!("No cache entry for {}, rebuild needed", parser_name);
@@ -78,12 +84,13 @@ impl Cache {
             Some(entry) => {
                 let sha_matches = entry.grammar_sha1 == grammar_sha1;
                 let ref_matches = entry.git_ref == git_ref;
-                let cond = !(sha_matches && ref_matches);
+                let target_covers = entry.target.covers(requested_target);
+                let cond = !(sha_matches && ref_matches && target_covers);
 
                 if cond {
                     debug!(
-                        "Cache mismatch for {}: sha1={} (cached={}), ref={} (cached={})",
-                        parser_name, grammar_sha1, entry.grammar_sha1, git_ref, entry.git_ref
+                        "Cache mismatch for {}: sha1={} (cached={}), ref={} (cached={}), target_covers={}",
+                        parser_name, grammar_sha1, entry.grammar_sha1, git_ref, entry.git_ref, target_covers
                     );
                 } else {
                     debug!("Cache hit for {}, no rebuild needed", parser_name);
@@ -156,5 +163,173 @@ pub fn sha1_grammar_dir(dir: &Path) -> TsdlResult<String> {
             "No grammar.js found in {}",
             dir.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_target_covers_all_covers_native() {
+        assert!(Target::All.covers(Target::Native));
+    }
+
+    #[test]
+    fn test_target_covers_all_covers_wasm() {
+        assert!(Target::All.covers(Target::Wasm));
+    }
+
+    #[test]
+    fn test_target_covers_all_covers_all() {
+        assert!(Target::All.covers(Target::All));
+    }
+
+    #[test]
+    fn test_target_covers_native_covers_native() {
+        assert!(Target::Native.covers(Target::Native));
+    }
+
+    #[test]
+    fn test_target_covers_native_not_covers_wasm() {
+        assert!(!Target::Native.covers(Target::Wasm));
+    }
+
+    #[test]
+    fn test_target_covers_native_not_covers_all() {
+        assert!(!Target::Native.covers(Target::All));
+    }
+
+    #[test]
+    fn test_target_covers_wasm_covers_wasm() {
+        assert!(Target::Wasm.covers(Target::Wasm));
+    }
+
+    #[test]
+    fn test_target_covers_wasm_not_covers_native() {
+        assert!(!Target::Wasm.covers(Target::Native));
+    }
+
+    #[test]
+    fn test_target_covers_wasm_not_covers_all() {
+        assert!(!Target::Wasm.covers(Target::All));
+    }
+
+    #[test]
+    fn test_needs_rebuild_no_entry() {
+        let cache = Cache::default();
+        assert!(cache.needs_rebuild("test-parser", "abc123", "master", Target::Native));
+    }
+
+    #[test]
+    fn test_needs_rebuild_sha1_mismatch() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "master".to_string(),
+                target: Target::All,
+            },
+        );
+
+        assert!(cache.needs_rebuild("test-parser", "def456", "master", Target::Native));
+    }
+
+    #[test]
+    fn test_needs_rebuild_git_ref_mismatch() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "master".to_string(),
+                target: Target::All,
+            },
+        );
+
+        assert!(cache.needs_rebuild("test-parser", "abc123", "v1.0.0", Target::Native));
+    }
+
+    #[test]
+    fn test_needs_rebuild_target_not_covered() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "master".to_string(),
+                target: Target::Native,
+            },
+        );
+
+        assert!(cache.needs_rebuild("test-parser", "abc123", "master", Target::Wasm));
+    }
+
+    #[test]
+    fn test_needs_rebuild_cache_hit_all_covers_native() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "master".to_string(),
+                target: Target::All,
+            },
+        );
+
+        assert!(!cache.needs_rebuild("test-parser", "abc123", "master", Target::Native));
+    }
+
+    #[test]
+    fn test_needs_rebuild_cache_hit_all_covers_wasm() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "master".to_string(),
+                target: Target::All,
+            },
+        );
+
+        assert!(!cache.needs_rebuild("test-parser", "abc123", "master", Target::Wasm));
+    }
+
+    #[test]
+    fn test_needs_rebuild_cache_hit_native_exact() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "master".to_string(),
+                target: Target::Native,
+            },
+        );
+
+        assert!(!cache.needs_rebuild("test-parser", "abc123", "master", Target::Native));
+    }
+
+    #[test]
+    fn test_needs_rebuild_cache_hit_wasm_exact() {
+        let mut cache = Cache::default();
+        cache.set(
+            "test-parser".to_string(),
+            CacheEntry {
+                grammar_sha1: "abc123".to_string(),
+                timestamp: 1_234_567_890,
+                git_ref: "v1.0.0".to_string(),
+                target: Target::Wasm,
+            },
+        );
+
+        assert!(!cache.needs_rebuild("test-parser", "abc123", "v1.0.0", Target::Wasm));
     }
 }
