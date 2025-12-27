@@ -443,99 +443,87 @@ impl Language {
         }
 
         let build_dir = self.build_dir.clone();
-        let name = self.name.clone();
         let git_ref = self.git_ref.to_string();
 
         // Compute grammar hashes in a blocking task
-        let grammar_result =
-            tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir, &name))
-                .await
-                .map_err(|e| {
-                    TsdlError::context(
-                        "Failed to compute grammar hashes in blocking task".to_string(),
-                        e,
-                    )
-                })?;
+        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
+            .await
+            .map_err(|e| {
+                TsdlError::context(
+                    "Failed to compute grammar hashes in blocking task".to_string(),
+                    e,
+                )
+            })?;
 
         // If no grammars exist in build_dir yet, can't skip (need to clone first)
-        if grammar_result.is_none() {
+        let Some(sha1) = sha1 else {
+            // FIXME: this should probably be an error?
             return Ok(false);
-        }
-
-        let (_grammar_paths, grammar_sha1) = grammar_result.unwrap();
+        };
 
         // Check cache
         let cache_guard = self.cache.lock().expect("cache mutex poisoned");
-        Ok(!cache_guard.needs_rebuild(&self.name, &grammar_sha1, &git_ref))
+        Ok(!cache_guard.needs_rebuild(&self.name, &sha1, &git_ref))
     }
 
     /// Update cache with successful build by computing grammar SHA1
     async fn update_cache_after_build(&self) -> TsdlResult<()> {
         // Compute grammar SHA1 from the build directory
         let build_dir = self.build_dir.clone();
-        let name = self.name.clone();
 
-        let grammar_sha1 =
-            tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir, &name))
-                .await
-                .map_err(|e| {
-                    TsdlError::context(
-                        "Failed to compute grammar hash in blocking task".to_string(),
-                        e,
-                    )
-                })?;
+        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
+            .await
+            .map_err(|e| {
+                TsdlError::context(
+                    "Failed to compute grammar hash in blocking task".to_string(),
+                    e,
+                )
+            })?;
 
-        if let Some((_paths, sha1)) = grammar_sha1 {
-            let mut cache_guard = self.cache.lock().expect("cache mutex poisoned");
-            let targets = vec![
-                self.target.native().then_some(Target::Native),
-                self.target.wasm().then_some(Target::Wasm),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
+        let Some(sha1) = sha1 else {
+            // FIXME: this should probably be an error?
+            return Ok(());
+        };
 
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            cache_guard.set(
-                self.name.clone(),
-                CacheEntry {
-                    grammar_sha1: sha1,
-                    timestamp,
-                    git_ref: self.git_ref.to_string(),
-                    targets,
-                },
-            );
-        }
+        let mut cache_guard = self.cache.lock().expect("cache mutex poisoned");
+        let targets = vec![
+            self.target.native().then_some(Target::Native),
+            self.target.wasm().then_some(Target::Wasm),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        cache_guard.set(
+            self.name.clone(),
+            CacheEntry {
+                grammar_sha1: sha1,
+                timestamp,
+                git_ref: self.git_ref.to_string(),
+                targets,
+            },
+        );
         Ok(())
     }
 }
 
-/// Compute SHA1 of grammar files for a parser (before clone)
+/// Compute SHA1 of grammar files for a parser
 /// Returns (`grammar_paths`, `sha1_hash`) if `build_dir` exists and has grammar files, None if `build_dir` doesn't exist yet
-fn compute_grammar_hashes(build_dir: &Path, _parser_name: &str) -> Option<(Vec<PathBuf>, String)> {
+fn compute_grammar_hashes(build_dir: &Path) -> Option<String> {
     // Only useful if the build_dir already exists (i.e., parser was previously built)
     if !build_dir.exists() {
         return None;
     }
 
-    let grammars = collect_grammars(build_dir);
-    if grammars.is_empty() {
-        return None;
-    }
-
     // For now, compute hash of the first grammar.js found (parser dir)
     // In future, could combine hashes if multiple grammars
-    if let Some(first_grammar_dir) = grammars.first() {
-        match cache::sha1_grammar_dir(first_grammar_dir) {
-            Ok(sha1) => Some((grammars, sha1)),
-            Err(_) => None, // Grammar file missing, force rebuild
-        }
-    } else {
-        None
-    }
+    collect_grammars(build_dir)
+        .first()
+        .and_then(|dir| cache::sha1_grammar_dir(dir).ok())
 }
 
 /// Standalone function for collecting grammars to avoid lifetime issues

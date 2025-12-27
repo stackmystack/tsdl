@@ -216,11 +216,17 @@ pub fn column(input: &str, indent: &str, width: usize) -> TsdlResult<Output> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|e| TsdlError::context("Failed to write to git column stdin", e))?;
-    }
+
+    let Some(mut stdin) = child.stdin.take() else {
+        return child
+            .wait_with_output()
+            .map_err(|e| TsdlError::context("git column did not finish normally", e));
+    };
+
+    stdin
+        .write_all(input.as_bytes())
+        .map_err(|e| TsdlError::context("Failed to write to git column stdin", e))?;
+
     child
         .wait_with_output()
         .map_err(|e| TsdlError::context("git column did not finish normally", e))

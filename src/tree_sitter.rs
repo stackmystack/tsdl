@@ -3,22 +3,15 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 
 use async_compression::tokio::bufread::GzipDecoder;
-use tokio::process::Command;
-use tokio::{fs, io};
+use tokio::{fs, io, process::Command};
 use tracing::trace;
 use url::Url;
 
 use crate::git::{self, Ref};
 use crate::SafeCanonicalize;
-use crate::{
-    args::BuildCommand,
-    display::{Handle, Progress, ProgressState},
-    git::Tag,
-    sh::Exec,
-};
+use crate::{args::BuildCommand, display::Handle, git::Tag, sh::Exec};
 use crate::{display::ProgressHandle, error::TsdlError, TsdlResult};
 
 #[allow(clippy::missing_panics_doc)]
@@ -37,10 +30,11 @@ fn parse_refs(stdout: &str) -> HashMap<String, String> {
     for line in stdout.lines() {
         let ref_line = line.split('\t').map(str::trim).collect::<Vec<_>>();
         let (sha1, full_ref) = (ref_line[0], ref_line[1]);
-        if let Some(tag) = full_ref.split('/').next_back() {
-            trace!("insert {tag} -> {sha1}");
-            refs.insert(tag.to_string(), sha1.to_string());
-        }
+        let Some(tag) = full_ref.split('/').next_back() else {
+            continue;
+        };
+        trace!("insert {tag} -> {sha1}");
+        refs.insert(tag.to_string(), sha1.to_string());
     }
     refs
 }
@@ -136,13 +130,7 @@ async fn chmod_x(prog: &Path) -> TsdlResult<()> {
         .map_err(|e| TsdlError::context(format!("chmod +x {}", prog.display()), e))
 }
 
-pub async fn prepare(args: &BuildCommand, progress: Arc<Mutex<Progress>>) -> TsdlResult<PathBuf> {
-    let mut handle = {
-        progress
-            .lock()
-            .map(|mut lock| lock.register("tree-sitter-cli", 3))
-            .or(Err(TsdlError::message("Acquiring progress lock")))?
-    };
+pub async fn prepare(args: &BuildCommand, mut handle: ProgressHandle) -> TsdlResult<PathBuf> {
     let repo = Url::parse(&args.tree_sitter.repo)
         .map_err(|e| TsdlError::context("Parsing the tree-sitter URL", e))?;
     let git_ref = &args.tree_sitter.git_ref;
