@@ -179,7 +179,7 @@ fn force_flag_reinstalls_hardlink() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stderr(p::str::contains("--force"));
+        .stderr(p::str::contains("Reinstalled"));
 
     let final_inode_out = binary.metadata().unwrap().ino();
     let final_inode_build = build_binary.metadata().unwrap().ino();
