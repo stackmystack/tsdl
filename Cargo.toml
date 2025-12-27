@@ -22,11 +22,11 @@ path = "src/main.rs"
 [package.metadata.tsdl]
 build-dir = "tmp"
 cache-file = "cache.toml"
-config = "parsers.toml"
+config-file = "parsers.toml"
 force = false
 fresh = false
 from = "https://github.com/tree-sitter/tree-sitter-"
-out = "parsers"
+out-dir = "parsers"
 prefix = "libtree-sitter-"
 ref = "master"
 show-config = false
