@@ -261,7 +261,7 @@ fn multi_parsers_cmd() {
     let mut assert = sandbox.cmd.args(["build", typescript]).assert().success();
     for language in languages {
         assert = assert.stderr(p::str::contains(format!(
-            "{typescript}: Copying v{version} parser: {language}"
+            "{typescript}: Installing v{version} parser: {language}"
         )));
     }
     for language in languages {

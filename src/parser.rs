@@ -204,8 +204,8 @@ impl Language {
             self.build(&dir, WASM_EXTENSION).await?;
         }
         self.handle
-            .msg(format!("Copying {} parser: {}", self.git_ref, dir_name,));
-        self.copy(&dir).await?;
+            .msg(format!("Installing {} parser: {}", self.git_ref, dir_name,));
+        self.install(&dir).await?;
         Ok(())
     }
 
@@ -236,17 +236,17 @@ impl Language {
         Ok(())
     }
 
-    async fn copy(&self, dir: &Path) -> TsdlResult<()> {
+    async fn install(&self, dir: &Path) -> TsdlResult<()> {
         if self.target.native() {
-            self.do_copy(dir, DLL_EXTENSION).await?;
+            self.do_install(dir, DLL_EXTENSION).await?;
         }
         if self.target.wasm() {
-            self.do_copy(dir, WASM_EXTENSION).await?;
+            self.do_install(dir, WASM_EXTENSION).await?;
         }
         Ok(())
     }
 
-    async fn do_copy(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
+    async fn do_install(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
         let dll = self.find_dll_files(dir, ext).await?;
         let name = self.parser_name_and_ext(dir, ext)?;
         let dst = self.out_dir.clone().join(name);
@@ -267,71 +267,63 @@ impl Language {
 
     /// Install binary via hard-link with inode checking
     fn install_via_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
-        // Case 1: Destination doesn't exist → create hard-link
-        if !dst.exists() {
+        let do_link = || {
             std_fs::hard_link(src, dst).map_err(|e| {
-                TsdlError::context(
-                    format!(
-                        "Creating hard-link from {} to {}",
-                        src.display(),
+                TsdlError::context(format!("Linking {} -> {}", src.display(), dst.display()), e)
+            })
+        };
+
+        // Check destination state first to determine action
+        match std_fs::metadata(dst) {
+            // Case 1: Destination missing -> Fresh install
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                do_link()?;
+                self.handle
+                    .msg(format!("Installed {} -> {}", src.display(), dst.display()));
+                Ok(())
+            }
+
+            // Unexpected filesystem error
+            Err(e) => Err(TsdlError::context(
+                format!("Reading metadata {}", dst.display()),
+                e,
+            )),
+
+            // Case 2: Destination exists
+            Ok(dst_meta) => {
+                let src_meta = std_fs::metadata(src).map_err(|e| {
+                    TsdlError::context(format!("Reading metadata {}", src.display()), e)
+                })?;
+
+                // If inodes match, we are done
+                if src_meta.ino() == dst_meta.ino() {
+                    self.handle
+                        .msg(format!("Skipped {} (same inode)", dst.display()));
+                    return Ok(());
+                }
+
+                // --force
+                if !self.force {
+                    return Err(TsdlError::message(format!(
+                        "Binary differs at {}. Use --force to overwrite",
                         dst.display()
-                    ),
-                    e,
-                )
-            })?;
-            self.handle.msg(format!(
-                "Installed {} → {} (hard-link)",
-                src.display(),
-                dst.display()
-            ));
-            return Ok(());
-        }
+                    )));
+                }
 
-        // Case 2: Destination exists → check inodes
-        let src_meta = std_fs::metadata(src).map_err(|e| {
-            TsdlError::context(format!("Reading metadata for {}", src.display()), e)
-        })?;
-        let dst_meta = std_fs::metadata(dst).map_err(|e| {
-            TsdlError::context(format!("Reading metadata for {}", dst.display()), e)
-        })?;
+                // Clean up old file and re-link
+                std_fs::remove_file(dst)
+                    .map_err(|e| TsdlError::context(format!("Removing {}", dst.display()), e))?;
 
-        let src_ino = src_meta.ino();
-        let dst_ino = dst_meta.ino();
+                do_link()?;
 
-        if src_ino == dst_ino {
-            // Same inode → already installed, nothing to do
-            self.handle
-                .msg(format!("Already installed {} (same inode)", dst.display()));
-            return Ok(());
-        }
+                self.handle.msg(format!(
+                    "Reinstalled {} -> {}",
+                    src.display(),
+                    dst.display()
+                ));
 
-        // Different inode → binary changed or was replaced
-        if self.force {
-            // Remove old file and hard-link new one
-            std_fs::remove_file(dst).map_err(|e| {
-                TsdlError::context(format!("Removing existing {}", dst.display()), e)
-            })?;
-            std_fs::hard_link(src, dst).map_err(|e| {
-                TsdlError::context(
-                    format!(
-                        "Creating hard-link from {} to {}",
-                        src.display(),
-                        dst.display()
-                    ),
-                    e,
-                )
-            })?;
-            self.handle.msg(format!(
-                "Reinstalled {} → {} (hard-link, --force)",
-                src.display(),
-                dst.display()
-            ));
-            Ok(())
-        } else {
-            Err(TsdlError::message(format!(
-                "Binary differs at {}. Use --force to overwrite",
-                dst.display()
-            )))
+                Ok(())
+            }
         }
     }
 
