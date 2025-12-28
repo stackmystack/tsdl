@@ -51,6 +51,7 @@
 
 use std::{
     env,
+    io::{self, Write},
     path::{Path, PathBuf},
     time,
 };
@@ -68,6 +69,7 @@ pub mod consts;
 pub mod display;
 pub mod error;
 pub mod git;
+pub mod lock;
 pub mod logging;
 pub mod parser;
 #[macro_use]
@@ -117,3 +119,22 @@ pub fn relative_to_cwd(dir: &Path) -> PathBuf {
 
 /// Result type for tsdl operations
 pub type TsdlResult<T> = Result<T, error::TsdlError>;
+
+/// Prompt user for confirmation with default behavior
+pub fn prompt_user(question: &str, default_yes: bool) -> TsdlResult<bool> {
+    let options = if default_yes { "[Y/n]" } else { "[y/N]" };
+    eprint!("{question} {options}: ");
+    let _ = io::stderr().flush();
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| TsdlError::context("Reading user input", e))?;
+
+    let input = input.trim().to_lowercase();
+    if input.is_empty() {
+        return Ok(default_yes);
+    }
+
+    Ok(input == "y")
+}
