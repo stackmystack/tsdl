@@ -283,6 +283,9 @@ fn format_languages_inner(w: &mut impl fmt::Write, langs: &[Language]) -> fmt::R
 /// Main error type for tsdl operations
 #[derive(Debug)]
 pub enum TsdlError {
+    /// Build errors
+    Build(Vec<TsdlError>),
+
     /// Command execution failed
     Command(Command),
 
@@ -314,6 +317,13 @@ pub enum TsdlError {
 impl fmt::Display for TsdlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            TsdlError::Build(errs) => {
+                write!(f, "Failed to build all languages:")?;
+                for e in errs {
+                    write!(f, "  \n{}", e)?;
+                }
+                Ok(())
+            }
             TsdlError::Command(e) => write!(f, "{e}"),
             TsdlError::LanguageCollection(e) => write!(f, "{e}"),
             TsdlError::Language(e) => write!(f, "{e}"),
@@ -337,7 +347,7 @@ impl std::error::Error for TsdlError {
             TsdlError::Step(e) => Some(e),
             TsdlError::Io(e) => Some(e),
             TsdlError::Context(kind) => Some(&kind.error),
-            TsdlError::Config(_) | TsdlError::Message(_) => None,
+            TsdlError::Build(_) | TsdlError::Config(_) | TsdlError::Message(_) => None,
         }
     }
 }
@@ -488,6 +498,15 @@ impl TsdlError {
     fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         match self {
+            TsdlError::Build(errs) => {
+                for (i, e) in errs.iter().enumerate() {
+                    e.format_inner(w, indent)?;
+                    if i < errs.len() - 1 {
+                        writeln!(w)?;
+                    }
+                }
+                Ok(())
+            }
             TsdlError::Command(e) => e.format_inner(w, indent),
             TsdlError::LanguageCollection(e) => write!(w, "{prefix}{e}"),
             TsdlError::Language(e) => e.format_inner(w, indent),

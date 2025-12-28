@@ -11,7 +11,7 @@ use url::Url;
 use crate::{
     app::App,
     args::ParserConfig,
-    cache::{self, Cache},
+    cache::Cache,
     consts::TSDL_FROM,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
     error::{self, TsdlError},
@@ -102,29 +102,31 @@ fn build_impl(app: &App) -> TsdlResult<()> {
         .register("Preparing tree-sitter-cli", 3);
     let ts_cli = rt.block_on(tree_sitter::prepare(&app.command, handle))?;
 
-    // Load cache from disk
-    let cache = Cache::load(&app.command.build_dir)?;
-    let cache = Arc::new(Mutex::new(cache));
-
     let languages = collect_languages(
         app,
         ts_cli,
         app.command.languages.as_ref(),
         app.command.parsers.as_ref(),
-        &cache,
     )?;
     create_dir_all(&app.command.out_dir)?;
 
     // Build and then save cache
-    let result = rt.block_on(async {
-        let result = build_languages(languages).await;
+    let result = rt.block_on(async move {
+        let cache = Arc::new(Cache::load(&app.command.build_dir)?);
+        let (updates, errs) = build_languages(languages, cache.clone()).await?;
 
+        let mut cache = Arc::unwrap_or_clone(cache);
         // Save cache to disk after build completes (success or failure)
-        if let Ok(cache_guard) = cache.try_lock() {
-            cache_guard.save(&app.command.build_dir).ok();
+        for update in updates {
+            cache.set(update.name, update.entry);
         }
+        cache.save(&app.command.build_dir).ok();
 
-        result
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(error::TsdlError::Build(errs))
+        }
     });
 
     result
@@ -147,9 +149,8 @@ fn collect_languages(
     ts_cli: PathBuf,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-    cache: &Arc<Mutex<cache::Cache>>,
 ) -> Result<Vec<Language>, error::LanguageCollection> {
-    let results = unique_languages(app, ts_cli, requested_languages, defined_parsers, cache);
+    let results = unique_languages(app, ts_cli, requested_languages, defined_parsers);
     let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     if err.is_empty() {
@@ -166,7 +167,6 @@ fn unique_languages(
     ts_cli: PathBuf,
     requested_languages: Option<&Vec<String>>,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-    cache: &Arc<Mutex<cache::Cache>>,
 ) -> Vec<Result<Language, error::Language>> {
     let ts_cli = Arc::new(ts_cli);
     let final_languages = match requested_languages {
@@ -198,7 +198,6 @@ fn unique_languages(
                 repo,
                 app.command.target,
                 ts_cli.clone(),
-                cache.clone(),
             )),
             Err(err) => Err(error::Language::new(language, err)),
         };
