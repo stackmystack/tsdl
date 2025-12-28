@@ -146,7 +146,7 @@ fn unique_languages(
                     .canon()
                     .unwrap(),
                 build_script,
-                app.command.force,
+                app.command.force || app.command.fresh,
                 git_ref,
                 app.progress.lock().unwrap().register(&language, NUM_STEPS),
                 language.clone(),
