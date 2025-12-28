@@ -1,6 +1,5 @@
 use std::{
     env::consts::DLL_EXTENSION,
-    fs as std_fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -251,8 +250,7 @@ impl Language {
         let name = self.parser_name_and_ext(dir, ext)?;
         let dst = self.out_dir.clone().join(name);
 
-        // Use hard-link installation logic
-        self.install_via_hardlink(&dll, &dst).map_err(|err| {
+        self.install_via_hardlink(&dll, &dst).await.map_err(|err| {
             error::TsdlError::Step(error::Step::new(
                 self.name.clone(),
                 error::ParserOp::Copy {
@@ -266,18 +264,19 @@ impl Language {
     }
 
     /// Install binary via hard-link with inode checking
-    fn install_via_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
-        let do_link = || {
-            std_fs::hard_link(src, dst).map_err(|e| {
+    async fn install_via_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
+        // Helper to avoid lifetime issues in closure
+        async fn do_link(src: &Path, dst: &Path) -> TsdlResult<()> {
+            fs::hard_link(src, dst).await.map_err(|e| {
                 TsdlError::context(format!("Linking {} -> {}", src.display(), dst.display()), e)
             })
-        };
+        }
 
         // Check destination state first to determine action
-        match std_fs::metadata(dst) {
             // Case 1: Destination missing -> Fresh install
+        match fs::metadata(dst).await {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                do_link()?;
+                do_link(src, dst).await?;
                 self.handle
                     .msg(format!("Installed {} -> {}", src.display(), dst.display()));
                 Ok(())
@@ -291,7 +290,7 @@ impl Language {
 
             // Case 2: Destination exists
             Ok(dst_meta) => {
-                let src_meta = std_fs::metadata(src).map_err(|e| {
+                let src_meta = fs::metadata(src).await.map_err(|e| {
                     TsdlError::context(format!("Reading metadata {}", src.display()), e)
                 })?;
 
@@ -311,10 +310,11 @@ impl Language {
                 }
 
                 // Clean up old file and re-link
-                std_fs::remove_file(dst)
+                fs::remove_file(dst)
+                    .await
                     .map_err(|e| TsdlError::context(format!("Removing {}", dst.display()), e))?;
 
-                do_link()?;
+                do_link(src, dst).await?;
 
                 self.handle.msg(format!(
                     "Reinstalled {} -> {}",
@@ -482,7 +482,6 @@ impl Language {
 }
 
 /// Compute SHA1 of grammar files for a parser
-/// Returns (`grammar_paths`, `sha1_hash`) if `build_dir` exists and has grammar files, None if `build_dir` doesn't exist yet
 fn compute_grammar_hashes(build_dir: &Path) -> Option<String> {
     // Only useful if the build_dir already exists (i.e., parser was previously built)
     if !build_dir.exists() {
