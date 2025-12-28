@@ -14,25 +14,6 @@ use crate::{
     git, TsdlResult,
 };
 
-pub fn run(app: &App, command: &ConfigCommand) -> TsdlResult<()> {
-    match command {
-        ConfigCommand::Current => {
-            let config: BuildCommand = current(&app.config_path, None)?;
-            println!(
-                "{}",
-                toml::to_string(&config)
-                    .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
-            );
-        }
-        ConfigCommand::Default => println!(
-            "{}",
-            toml::to_string(&BuildCommand::default())
-                .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
-        ),
-    }
-    Ok(())
-}
-
 pub fn current(config: &Path, command: Option<&BuildCommand>) -> TsdlResult<BuildCommand> {
     let from_default = BuildCommand::default();
     let mut from_file: BuildCommand = Figment::new()
@@ -63,6 +44,25 @@ pub fn current(config: &Path, command: Option<&BuildCommand>) -> TsdlResult<Buil
 
 pub fn print_indent(s: &str, indent: &str) {
     s.lines().for_each(|line| println!("{indent}{line}"));
+}
+
+pub fn run(app: &App, command: &ConfigCommand) -> TsdlResult<()> {
+    match command {
+        ConfigCommand::Current => {
+            let config: BuildCommand = current(&app.config_path, None)?;
+            println!(
+                "{}",
+                toml::to_string(&config)
+                    .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
+            );
+        }
+        ConfigCommand::Default => println!(
+            "{}",
+            toml::to_string(&BuildCommand::default())
+                .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
+        ),
+    }
+    Ok(())
 }
 
 pub fn show(command: &BuildCommand) -> TsdlResult<()> {

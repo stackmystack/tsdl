@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use derive_more::derive::Display;
 
@@ -14,10 +15,10 @@ macro_rules! step_error {
 /// Represents a single layer in the context chain
 #[derive(Debug)]
 pub struct ContextKind {
-    /// The context message
-    pub message: String,
     /// The wrapped error
     pub error: TsdlError,
+    /// The context message
+    pub message: String,
 }
 
 impl fmt::Display for ContextKind {
@@ -37,12 +38,12 @@ impl std::error::Error for Command {}
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format_inner(f, 0)
+        self.format(f, 0)
     }
 }
 
 impl Command {
-    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
+    fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         write!(w, "{}$ {}", prefix, self.msg)?;
 
@@ -91,7 +92,7 @@ impl Command {
     #[must_use]
     pub fn format_with_indent(&self, indent: usize) -> String {
         let mut s = String::new();
-        let _ = self.format_inner(&mut s, indent);
+        let _ = self.format(&mut s, indent);
         s
     }
 }
@@ -118,19 +119,19 @@ pub struct Language {
 
 impl fmt::Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format_inner(f, 0)
+        self.format(f, 0)
     }
 }
 
 impl Language {
-    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
+    fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         write!(
             w,
             "{}{}\n{}",
             prefix,
             self.name,
-            self.source.format_with_indent(indent + 2)
+            self.source.format_indent(indent + 2)
         )
     }
 
@@ -141,9 +142,10 @@ impl Language {
     /// This function will panic if writing to the string fails, which should never happen
     /// since we're writing to a String which doesn't fail.
     #[must_use]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    pub fn format_indent(&self, indent: usize) -> String {
         let mut s = String::new();
-        self.format_inner(&mut s, indent).unwrap();
+        self.format(&mut s, indent)
+            .expect("Failed to format with indent");
         s
     }
 }
@@ -170,17 +172,18 @@ pub struct Parser {
 
 impl fmt::Display for Parser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format_inner(f, 0)
+        self.format(f, 0)
     }
 }
 
+// TODO: review formatting; duplicates?
 impl Parser {
-    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
+    fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         write!(w, "{prefix}Could not build all parsers.")?;
 
         for err in &self.related {
-            write!(w, "\n\n{}", err.format_with_indent(indent + 2))?;
+            write!(w, "\n\n{}", err.format_indent(indent + 2))?;
         }
 
         Ok(())
@@ -193,9 +196,9 @@ impl Parser {
     /// This function will panic if writing to the string fails, which should never happen
     /// since we're writing to a String which doesn't fail.
     #[must_use]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    pub fn format_indent(&self, indent: usize) -> String {
         let mut s = String::new();
-        self.format_inner(&mut s, indent).unwrap();
+        self.format(&mut s, indent).unwrap();
         s
     }
 }
@@ -204,19 +207,19 @@ impl std::error::Error for Parser {}
 
 #[derive(Debug)]
 pub struct Step {
-    pub name: String,
+    pub name: Arc<str>,
     pub kind: ParserOp,
     pub source: Box<TsdlError>,
 }
 
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format_inner(f, 0)
+        self.format(f, 0)
     }
 }
 
 impl Step {
-    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
+    fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         write!(
             w,
@@ -224,7 +227,7 @@ impl Step {
             prefix,
             self.name,
             self.kind,
-            self.source.format_with_indent(indent + 2)
+            self.source.format_indent(indent + 4)
         )
     }
 
@@ -235,15 +238,15 @@ impl Step {
     /// This function will panic if writing to the string fails, which should never happen
     /// since we're writing to a String which doesn't fail.
     #[must_use]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    pub fn format_indent(&self, indent: usize) -> String {
         let mut s = String::new();
-        self.format_inner(&mut s, indent).unwrap();
+        self.format(&mut s, indent).unwrap();
         s
     }
 }
 
 impl Step {
-    pub fn new(name: String, kind: ParserOp, source: impl Into<TsdlError>) -> Step {
+    pub fn new(name: Arc<str>, kind: ParserOp, source: impl Into<TsdlError>) -> Step {
         Step {
             name,
             kind,
@@ -289,6 +292,18 @@ pub enum TsdlError {
     /// Command execution failed
     Command(Command),
 
+    /// Configuration error
+    Config(String),
+
+    /// Context chain (linked list of context layers)
+    Context(Box<ContextKind>),
+
+    /// Generic IO error
+    Io(std::io::Error),
+
+    /// Simple error message
+    Message(String),
+
     /// Language collection failed
     LanguageCollection(LanguageCollection),
 
@@ -300,39 +315,27 @@ pub enum TsdlError {
 
     /// Specific step failed
     Step(Step),
-
-    /// Generic IO error
-    Io(std::io::Error),
-
-    /// Configuration error
-    Config(String),
-
-    /// Context chain (linked list of context layers)
-    Context(Box<ContextKind>),
-
-    /// Simple error message
-    Message(String),
 }
 
 impl fmt::Display for TsdlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TsdlError::Build(errs) => {
-                write!(f, "Failed to build all languages:")?;
+                write!(f, "Could not build all parsers.")?;
                 for e in errs {
-                    write!(f, "  \n{}", e)?;
+                    write!(f, "\n\n{}", e.format_indent(2))?;
                 }
                 Ok(())
             }
             TsdlError::Command(e) => write!(f, "{e}"),
-            TsdlError::LanguageCollection(e) => write!(f, "{e}"),
-            TsdlError::Language(e) => write!(f, "{e}"),
-            TsdlError::Parser(e) => write!(f, "{e}"),
-            TsdlError::Step(e) => write!(f, "{e}"),
-            TsdlError::Io(e) => write!(f, "IO error: {e}"),
             TsdlError::Config(msg) => write!(f, "Configuration error: {msg}"),
             TsdlError::Context(kind) => write!(f, "{kind}"),
+            TsdlError::Io(e) => write!(f, "IO error: {e}"),
+            TsdlError::Language(e) => write!(f, "{e}"),
+            TsdlError::LanguageCollection(e) => write!(f, "{e}"),
             TsdlError::Message(msg) => write!(f, "{msg}"),
+            TsdlError::Parser(e) => write!(f, "{e}"),
+            TsdlError::Step(e) => write!(f, "{e}"),
         }
     }
 }
@@ -340,14 +343,14 @@ impl fmt::Display for TsdlError {
 impl std::error::Error for TsdlError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            TsdlError::Build(_) | TsdlError::Config(_) | TsdlError::Message(_) => None,
             TsdlError::Command(e) => Some(e),
-            TsdlError::LanguageCollection(e) => Some(e),
+            TsdlError::Context(kind) => Some(&kind.error),
+            TsdlError::Io(e) => Some(e),
             TsdlError::Language(e) => Some(e),
+            TsdlError::LanguageCollection(e) => Some(e),
             TsdlError::Parser(e) => Some(e),
             TsdlError::Step(e) => Some(e),
-            TsdlError::Io(e) => Some(e),
-            TsdlError::Context(kind) => Some(&kind.error),
-            TsdlError::Build(_) | TsdlError::Config(_) | TsdlError::Message(_) => None,
         }
     }
 }
@@ -489,30 +492,25 @@ impl TsdlError {
     /// This function will panic if writing to the string fails, which should never happen
     /// since we're writing to a String which doesn't fail.
     #[must_use]
-    pub fn format_with_indent(&self, indent: usize) -> String {
+    pub fn format_indent(&self, indent: usize) -> String {
         let mut s = String::new();
-        self.format_inner(&mut s, indent).unwrap();
+        self.format(&mut s, indent).unwrap();
         s
     }
 
-    fn format_inner(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
+    fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         match self {
             TsdlError::Build(errs) => {
                 for (i, e) in errs.iter().enumerate() {
-                    e.format_inner(w, indent)?;
+                    e.format(w, indent)?;
                     if i < errs.len() - 1 {
                         writeln!(w)?;
                     }
                 }
                 Ok(())
             }
-            TsdlError::Command(e) => e.format_inner(w, indent),
-            TsdlError::LanguageCollection(e) => write!(w, "{prefix}{e}"),
-            TsdlError::Language(e) => e.format_inner(w, indent),
-            TsdlError::Parser(e) => e.format_inner(w, indent),
-            TsdlError::Step(e) => e.format_inner(w, indent),
-            TsdlError::Io(e) => write!(w, "{prefix}IO error: {e}"),
+            TsdlError::Command(e) => e.format(w, indent),
             TsdlError::Config(msg) => write!(w, "{prefix}Configuration error: {msg}"),
             TsdlError::Context(kind) => {
                 write!(
@@ -523,12 +521,17 @@ impl TsdlError {
                     TsdlError::format_context_error(&kind.error, indent + 2)
                 )
             }
+            TsdlError::Io(e) => write!(w, "{prefix}IO error: {e}"),
+            TsdlError::Language(e) => e.format(w, indent),
+            TsdlError::LanguageCollection(e) => write!(w, "{prefix}{e}"),
             TsdlError::Message(msg) => write!(w, "{prefix}{msg}"),
+            TsdlError::Parser(e) => e.format(w, indent),
+            TsdlError::Step(e) => e.format(w, indent),
         }
     }
 
     fn format_context_error(err: &TsdlError, indent: usize) -> String {
-        err.format_with_indent(indent)
+        err.format_indent(indent)
     }
 }
 
@@ -547,7 +550,7 @@ mod tests {
         };
 
         let step_error = Step {
-            name: "jsonxxx".to_string(),
+            name: "jsonxxx".into(),
             kind: ParserOp::Clone {
                 dir: PathBuf::from(
                     "/home/firas/src/github.com/stackmystack/tsdl/tmp/tree-sitter-jsonxxx",
@@ -561,14 +564,14 @@ mod tests {
         };
 
         let tsdl_error = TsdlError::Parser(parser_error);
-        let formatted = tsdl_error.format_with_indent(0);
+        let formatted = tsdl_error.format_indent(0);
 
         let expected = r"Could not build all parsers.
 
   jsonxxx: Could not clone to /home/firas/src/github.com/stackmystack/tsdl/tmp/tree-sitter-jsonxxx.
-    $ git fetch origin --depth 1 HEAD failed with exit status 128.
-    remote: Repository not found.
-    fatal: repository 'https://github.com/tree-sitter/tree-sitter-jsonxxx/' not found";
+      $ git fetch origin --depth 1 HEAD failed with exit status 128.
+      remote: Repository not found.
+      fatal: repository 'https://github.com/tree-sitter/tree-sitter-jsonxxx/' not found";
 
         assert_eq!(formatted, expected);
     }
