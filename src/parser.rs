@@ -6,7 +6,7 @@ use std::{
 };
 
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
-use tokio::{fs, process::Command, sync::mpsc};
+use tokio::{fs, process::Command, task::JoinSet};
 use tracing::warn;
 use url::Url;
 
@@ -24,25 +24,23 @@ pub const NUM_STEPS: usize = 3;
 pub const WASM_EXTENSION: &str = "wasm";
 
 pub async fn build_languages(languages: Vec<Language>) -> TsdlResult<()> {
-    let buffer = if languages.is_empty() {
-        64
-    } else {
-        languages.len()
-    };
-    let (tx, mut rx) = mpsc::channel(buffer);
+    let mut set = JoinSet::new();
+
     for mut language in languages {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            language.process(tx).await;
-        });
+        set.spawn(async move { language.process().await });
     }
-    drop(tx);
+
     let mut errs = Vec::new();
-    while let Some(msg) = rx.recv().await {
-        if let Err(err) = msg {
-            errs.push(err);
+
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Err(e)) => errs.push(e),
+            // Propagate panics if they occur in tasks
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            _ => {}
         }
     }
+
     if errs.is_empty() {
         Ok(())
     } else {
@@ -101,20 +99,20 @@ impl Language {
         }
     }
 
-    async fn process(&mut self, tx: mpsc::Sender<TsdlResult<()>>) {
+    async fn process(&mut self) -> TsdlResult<()> {
         let res = self.steps().await;
-        if res.is_err() {
-            let _ = tx.send(res).await;
-            self.handle.err(self.git_ref.to_string());
-        } else {
-            let msg = if self.cache_hit {
-                format!("{} (cached)", self.git_ref)
-            } else {
-                self.git_ref.to_string()
-            };
-            self.handle.fin(msg);
-            let _ = tx.send(Ok(())).await;
+        match &res {
+            Err(_) => self.handle.err(self.git_ref.to_string()),
+            Ok(_) => {
+                let msg = if self.cache_hit {
+                    format!("{} (cached)", self.git_ref)
+                } else {
+                    self.git_ref.to_string()
+                };
+                self.handle.fin(msg);
+            }
         }
+        res
     }
 
     async fn steps(&mut self) -> TsdlResult<()> {
@@ -272,8 +270,6 @@ impl Language {
             })
         }
 
-        // Check destination state first to determine action
-            // Case 1: Destination missing -> Fresh install
         match fs::metadata(dst).await {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 do_link(src, dst).await?;
@@ -309,7 +305,6 @@ impl Language {
                     )));
                 }
 
-                // Clean up old file and re-link
                 fs::remove_file(dst)
                     .await
                     .map_err(|e| TsdlError::context(format!("Removing {}", dst.display()), e))?;
