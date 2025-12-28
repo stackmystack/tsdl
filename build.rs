@@ -66,6 +66,7 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
     let tsdl_force = tsdl.get("force").unwrap().as_bool().unwrap();
     let tsdl_fresh = tsdl.get("fresh").unwrap().as_bool().unwrap();
     let tsdl_from = tsdl.get("from").unwrap().as_str().unwrap();
+    let tsdl_lock_file = tsdl.get("lock-file").unwrap().as_str().unwrap();
     let tsdl_out_dir = tsdl.get("out-dir").unwrap().as_str().unwrap();
     let tsdl_prefix = tsdl.get("prefix").unwrap().as_str().unwrap();
     let tsdl_ref = tsdl.get("ref").unwrap().as_str().unwrap();
@@ -81,6 +82,7 @@ fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir:
               pub const TSDL_FORCE: bool = {tsdl_force};
               pub const TSDL_FRESH: bool = {tsdl_fresh};
               pub const TSDL_FROM: &str = "{tsdl_from}";
+              pub const TSDL_LOCK_FILE: &str = "{tsdl_lock_file}";
               pub const TSDL_OUT_DIR: &str = "{tsdl_out_dir}";
               pub const TSDL_PREFIX: &str = "{tsdl_prefix}";
               pub const TSDL_REF: &str = "{tsdl_ref}";

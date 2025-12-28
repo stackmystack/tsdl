@@ -14,17 +14,60 @@ use crate::{
     cache::{self, Cache},
     consts::TSDL_FROM,
     display::{Handle, Progress, ProgressState, TICK_CHARS},
-    error,
-    error::TsdlError,
+    error::{self, TsdlError},
     git::Ref,
+    lock::{Lock, LockStatus},
     parser::{build_languages, Language, NUM_STEPS},
-    tree_sitter, SafeCanonicalize, TsdlResult,
+    prompt_user, tree_sitter, SafeCanonicalize, TsdlResult,
 };
 
 pub fn run(app: &App) -> TsdlResult<()> {
     if app.command.show_config {
         crate::config::show(&app.command)?;
     }
+
+    // Initialize the manager first with the build directory
+    let lock_manager = Lock::new(&app.command.build_dir);
+
+    if app.command.unlock {
+        lock_manager.force_unlock()?;
+    }
+
+    // Check lock status before clearing anything
+
+    let _lock = match lock_manager.try_acquire()? {
+        LockStatus::Acquired(lock) => lock,
+        LockStatus::LockedBy { pid, exe } => {
+            eprintln!("Lock owned by different process: PID {pid} ({exe})");
+            if prompt_user("Proceed anyway?", false)? {
+                // Use the manager instance to force acquire
+                lock_manager.force_acquire()?
+            } else {
+                return Err(TsdlError::message("Lock acquisition cancelled by user"));
+            }
+        }
+        LockStatus::Cyclic => {
+            eprintln!("Lock already held by this process. This should not happen.");
+            return Err(TsdlError::message("1+ lock acquisition"));
+        }
+        LockStatus::Stale(pid) => {
+            eprintln!("Found stale lock from PID {pid} (process no longer exists)");
+            if prompt_user("Take over lock?", true)? {
+                lock_manager.force_acquire()?
+            } else {
+                return Err(TsdlError::message("Lock acquisition cancelled by user"));
+            }
+        }
+        LockStatus::Unknown { pid, reason } => {
+            eprintln!("Could not verify lock owner PID {pid}: {reason}",);
+            if prompt_user("Take over lock?", false)? {
+                lock_manager.force_acquire()?
+            } else {
+                return Err(TsdlError::message("Lock acquisition cancelled by user"));
+            }
+        }
+    };
+
     clear(app)?;
     build_impl(app)?;
     Ok(())

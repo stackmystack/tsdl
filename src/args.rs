@@ -197,6 +197,11 @@ pub struct BuildCommand {
     #[serde(default)]
     pub force: bool,
 
+    /// Force unlock the build directory.
+    #[arg(long, default_value_t = false)]
+    #[serde(default)]
+    pub unlock: bool,
+
     #[command(flatten)]
     #[serde(default)]
     pub tree_sitter: TreeSitter,
@@ -215,6 +220,7 @@ impl Default for BuildCommand {
             prefix: String::from(TSDL_PREFIX),
             show_config: TSDL_SHOW_CONFIG,
             target: Target::default(),
+            unlock: false,
             tree_sitter: TreeSitter::default(),
         }
     }
