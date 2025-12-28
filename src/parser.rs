@@ -302,7 +302,7 @@ impl Language {
                     return Ok(());
                 }
 
-                // --force
+                // --force or --fresh
                 if !self.force {
                     return Err(TsdlError::message(format!(
                         "Binary differs at {}. Use --force to overwrite",
