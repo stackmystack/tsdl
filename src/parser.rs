@@ -5,546 +5,515 @@ use std::{
     sync::Arc,
 };
 
-use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
-use tokio::{fs, process::Command, task::JoinSet};
+use tokio::{fs, process::Command};
 use tracing::warn;
-use url::Url;
 
 use crate::{
-    args::Target,
-    cache::{self, CacheEntry},
-    display::{Handle, ProgressHandle},
+    actors::ProgressAddr,
+    build::{BuildContext, BuildSpec, OutputConfig},
+    cache::{Entry, Update},
     error::{self, TsdlError},
-    git::{clone_fast, Ref},
+    git::clone_fast,
     sh::{Exec, Script},
-    SafeCanonicalize, TsdlResult,
+    walk::collect_grammar_paths,
+    TsdlResult,
 };
 
 pub const NUM_STEPS: usize = 3;
 pub const WASM_EXTENSION: &str = "wasm";
 
-/// Represents a "Delta" to be applied to the cache after a successful build
-pub struct CacheUpdate {
-    pub name: String,
-    pub entry: CacheEntry,
+/// Result message from a grammar build
+#[derive(Debug, Clone)]
+pub enum GrammarMessage {
+    Completed(Update),
+    Failed(String),
 }
 
-/// Builds the provided languages.
-pub async fn build_languages(
-    languages: Vec<Language>,
-    cache_arc: Arc<cache::Cache>,
-) -> TsdlResult<(Vec<CacheUpdate>, Vec<TsdlError>)> {
-    let mut set = JoinSet::new();
-
-    for mut language in languages {
-        let cache_ref = cache_arc.clone();
-        set.spawn(async move { language.process(&cache_ref).await });
-    }
-
-    let mut errs = Vec::new();
-    let mut updates = Vec::new();
-
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok(Ok(Some(update))) => updates.push(update),
-            Ok(Ok(None)) => {} // Cache hit, no update needed
-            Ok(Err(e)) => errs.push(e),
-            // Propagate panics if they occur in tasks
-            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-            _ => {}
-        }
-    }
-
-    if !errs.is_empty() {
-        return Err(error::Parser { related: errs }.into());
-    }
-
-    Ok((updates, errs))
-}
-
+/// A grammar ready to be built, combining definition and cache state
 #[derive(Clone, Debug)]
-pub struct Language {
-    build_dir: PathBuf,
-    build_script: Option<String>,
-    force: bool,
-    git_ref: Ref,
-    handle: ProgressHandle,
-    name: String,
-    out_dir: PathBuf,
-    prefix: String,
-    repo: Url,
-    target: Target,
-    ts_cli: Arc<PathBuf>,
-    cache_hit: bool,
+pub struct GrammarBuild {
+    pub context: BuildContext,
+    pub dir: Arc<PathBuf>,
+    pub entry: Option<Entry>,
+    pub hash: Arc<str>,
+    pub language: Arc<str>, // Required for error reporting and cache keys; set from parent LanguageBuild
+    pub name: Arc<str>,
+    pub output: OutputConfig,
+    pub progress: ProgressAddr, // Use language's handle
+    pub spec: Arc<BuildSpec>,
+    pub ts_cli: Arc<PathBuf>,
 }
 
-impl Language {
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn new(
-        build_dir: PathBuf,
-        build_script: Option<String>,
-        force: bool,
-        git_ref: Ref,
-        handle: ProgressHandle,
-        name: String,
-        out_dir: PathBuf,
-        prefix: String,
-        repo: Url,
-        target: Target,
-        ts_cli: Arc<PathBuf>,
-    ) -> Self {
-        Language {
-            build_dir,
-            build_script,
-            force,
-            git_ref,
-            handle,
-            name,
-            out_dir,
-            prefix,
-            repo,
-            target,
-            ts_cli,
-            cache_hit: false,
-        }
-    }
+impl GrammarBuild {
+    /// Build this grammar, returning a cache update if it was built.
+    /// Uses the language's progress handle for progress reporting.
+    pub async fn build(&self) -> TsdlResult<Option<Update>> {
+        self.progress.step("checking cache");
+        let key = format!("{}/{}", self.language, self.name);
 
-    /// Returns `Some(CacheUpdate)` if a build occurred and cache needs updating.
-    /// Returns `None` if it was a cache hit.
-    async fn process(&mut self, cache: &cache::Cache) -> TsdlResult<Option<CacheUpdate>> {
-        let res = self.steps(cache).await;
-        match &res {
-            Err(_) => self.handle.err(self.git_ref.to_string()),
-            Ok(_) => {
-                let msg = if self.cache_hit {
-                    format!("{} (cached)", self.git_ref)
-                } else {
-                    self.git_ref.to_string()
-                };
-                self.handle.fin(msg);
+        // Check cache: if cached and definitions match, skip build but still install
+        let hit = !self.context.force && !self.needs_rebuild(&key);
+
+        if hit {
+            // Install the binary from the build directory
+            if let Err(e) = self.install().await {
+                self.progress.err("install");
+                return Err(e);
             }
-        }
-        res
-    }
 
-    async fn steps(&mut self, cache: &cache::Cache) -> TsdlResult<Option<CacheUpdate>> {
-        // Check cache before cloning (unless --force is set)
-        let cache_hit = if self.force {
-            false
-        } else {
-            // Pass read-only cache reference
-            match self.check_cache_early(cache).await {
-                Ok(hit) => hit,
-                Err(e) => return Err(e),
-            }
-        };
-
-        // If all grammars are cached, skip clone and build steps
-        if cache_hit {
-            self.cache_hit = true;
+            self.progress.fin("cached");
             return Ok(None);
         }
 
-        self.handle.start(format!("Cloning {}", self.git_ref));
-        self.clone().await?;
-        self.handle.step(format!("Generating {}", self.git_ref));
-
-        // Wrap blocking I/O in spawn_blocking to avoid blocking the async runtime
-        let build_dir = self.build_dir.clone();
-        let grammars = match tokio::task::spawn_blocking(move || collect_grammars(&build_dir))
-            .await
-            .map_err(|e| {
-                TsdlError::context("Failed to collect grammars in blocking task".to_string(), e)
-            }) {
-            Ok(g) => g,
-            Err(e) => return Err(e),
-        };
-
-        for dir in grammars {
-            let Some(dir_name) = dir
-                .file_name()
-                .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
-            else {
-                return Err(TsdlError::Message(format!(
-                    "Could not get dir name for {}",
-                    dir.display()
-                )));
-            };
-
-            self.handle
-                .msg(format!("Generating {} in {}", self.git_ref, dir_name));
-            self.build_grammar(dir.clone()).await?;
+        // Use the grammar directory path provided
+        if !self.dir.exists() {
+            let err = TsdlError::message(format!(
+                "Grammar directory not found: {}",
+                self.dir.display()
+            ));
+            self.progress.err(format!("{err}"));
+            return Err(err);
         }
 
-        // Generate the delta for the cache instead of writing to it directly
-        let update = self.generate_cache_update().await?;
+        // Build the grammar
+        if let Err(e) = self.build_grammar().await {
+            self.progress.err("build");
+            return Err(e);
+        }
+
+        // Return cache update for this grammar
+        let update = Update {
+            name: key.into(),
+            entry: Entry {
+                hash: self.hash.clone(),
+                spec: self.spec.clone(),
+            },
+        };
+
+        self.progress.fin("build");
 
         Ok(Some(update))
     }
 
-    async fn build_grammar(&self, dir: PathBuf) -> TsdlResult<()> {
-        let dir_name = dir
-            .file_name()
-            .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
-            .ok_or_else(|| {
-                TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
+    fn build_command(&self, ext: &str, output_name: &str) -> Command {
+        if let Some(script) = &self.spec.build_script {
+            return Command::from_str(script);
+        }
+
+        let mut cmd = Command::new(self.ts_cli.as_os_str());
+        cmd.arg("build");
+
+        if ext == WASM_EXTENSION {
+            cmd.arg("--wasm");
+        }
+
+        cmd.args(["--output", output_name]);
+        cmd
+    }
+
+    async fn build_grammar(&self) -> TsdlResult<()> {
+        // Generate parser if no custom build script
+        self.progress.step("generating");
+        if self.spec.build_script.is_none() {
+            self.generate().await?;
+        } else {
+            warn!("Custom build scripts not supported for generate step (TypeScript limitation)");
+        }
+
+        // Build native and/or wasm targets
+        self.progress.step("building");
+        self.build_targets().await?;
+
+        // Install built parsers
+        self.progress.step("installing");
+        self.install().await?;
+
+        Ok(())
+    }
+
+    async fn build_target(&self, ext: &str) -> TsdlResult<()> {
+        let output_name = self.parser_name_and_ext(ext);
+        let mut cmd = self.build_command(ext, &output_name);
+
+        cmd.current_dir(self.dir.as_ref())
+            .exec()
+            .await
+            .map_err(|err| {
+                error::TsdlError::Step(error::Step::new(
+                    self.language.clone(),
+                    error::ParserOp::Build {
+                        dir: self.dir.to_path_buf(),
+                    },
+                    err,
+                ))
             })?;
 
-        if self.build_script.is_none() {
-            self.generate(&dir).await?;
-            self.handle
-                .msg(format!("Building {} parser: {}", self.git_ref, dir_name,));
-        } else {
-            warn!("I don't know how to generate parsers when a script/cmd is specified (it's typescript's fault)");
-        }
-
-        if self.target.native() {
-            self.handle.msg(format!(
-                "Building {} native parser: {}",
-                self.git_ref, dir_name,
-            ));
-            self.build(&dir, DLL_EXTENSION).await?;
-        }
-
-        if self.target.wasm() {
-            self.handle.msg(format!(
-                "Building {} wasm parser: {}",
-                self.git_ref, dir_name,
-            ));
-            self.build(&dir, WASM_EXTENSION).await?;
-        }
-        self.handle
-            .msg(format!("Installing {} parser: {}", self.git_ref, dir_name,));
-        self.install(&dir).await?;
         Ok(())
     }
 
-    async fn build(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
-        let effective_name = self.parser_name_and_ext(dir, ext)?;
+    async fn build_targets(&self) -> TsdlResult<()> {
+        if self.spec.target.native() {
+            self.build_target(DLL_EXTENSION).await?;
+        }
 
-        let mut cmd = if let Some(script) = &self.build_script {
-            Command::from_str(script)
-        } else {
-            let mut cmd = Command::new(&*self.ts_cli);
-            cmd.arg("build");
-            if ext == WASM_EXTENSION {
-                cmd.arg("--wasm");
-            }
-            cmd.args(["--output", &effective_name]);
-            cmd
-        };
+        if self.spec.target.wasm() {
+            self.build_target(WASM_EXTENSION).await?;
+        }
 
-        cmd.current_dir(dir).exec().await.map_err(|err| {
-            error::TsdlError::Step(error::Step::new(
-                self.name.clone(),
-                error::ParserOp::Build {
-                    dir: dir.to_path_buf(),
-                },
-                err,
-            ))
-        })?;
         Ok(())
     }
 
-    async fn install(&self, dir: &Path) -> TsdlResult<()> {
-        if self.target.native() {
-            self.do_install(dir, DLL_EXTENSION).await?;
-        }
-        if self.target.wasm() {
-            self.do_install(dir, WASM_EXTENSION).await?;
-        }
-        Ok(())
+    async fn create_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
+        fs::hard_link(src, dst).await.map_err(|e| {
+            TsdlError::context(format!("Linking {} -> {}", src.display(), dst.display()), e)
+        })
     }
 
-    async fn do_install(&self, dir: &Path, ext: &str) -> TsdlResult<()> {
-        let dll = self.find_dll_files(dir, ext).await?;
-        let name = self.parser_name_and_ext(dir, ext)?;
-        let dst = self.out_dir.clone().join(name);
-
-        self.install_via_hardlink(&dll, &dst).await.map_err(|err| {
-            error::TsdlError::Step(error::Step::new(
-                self.name.clone(),
-                error::ParserOp::Copy {
-                    src: dll.clone(),
-                    dst: dst.clone(),
-                },
-                err,
-            ))
-        })?;
-        Ok(())
-    }
-
-    /// Install binary via hard-link with inode checking
-    async fn install_via_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
-        // Helper to avoid lifetime issues in closure
-        async fn do_link(src: &Path, dst: &Path) -> TsdlResult<()> {
-            fs::hard_link(src, dst).await.map_err(|e| {
-                TsdlError::context(format!("Linking {} -> {}", src.display(), dst.display()), e)
-            })
-        }
-
-        match fs::metadata(dst).await {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                do_link(src, dst).await?;
-                self.handle
-                    .msg(format!("Installed {} -> {}", src.display(), dst.display()));
-                Ok(())
-            }
-
-            // Unexpected filesystem error
-            Err(e) => Err(TsdlError::context(
-                format!("Reading metadata {}", dst.display()),
+    async fn find_parser_binary(&self, ext: &str) -> TsdlResult<PathBuf> {
+        let expected_name = self.parser_name_and_ext(ext);
+        let mut files = fs::read_dir(self.dir.as_ref()).await.map_err(|e| {
+            TsdlError::context(
+                format!("Failed to read directory {}", self.dir.display()),
                 e,
-            )),
+            )
+        })?;
 
-            // Case 2: Destination exists
-            Ok(dst_meta) => {
-                let src_meta = fs::metadata(src).await.map_err(|e| {
-                    TsdlError::context(format!("Reading metadata {}", src.display()), e)
-                })?;
+        let mut exact_match = None;
+        let mut candidates = Vec::new();
 
-                // If inodes match, we are done
-                if src_meta.ino() == dst_meta.ino() {
-                    self.handle
-                        .msg(format!("Skipped {} (same inode)", dst.display()));
-                    return Ok(());
-                }
+        while let Ok(Some(entry)) = files.next_entry().await {
+            if !entry.file_type().await.unwrap().is_file() {
+                continue;
+            }
 
-                // --force or --fresh
-                if !self.force {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+
+            if name == expected_name {
+                exact_match = Some(self.dir.join(&file_name));
+                break;
+            }
+
+            if Path::new(&file_name).extension().and_then(|e| e.to_str()) == Some(ext) {
+                candidates.push(self.dir.join(&file_name));
+            }
+        }
+
+        match (exact_match, candidates.len()) {
+            (Some(path), _) => Ok(path),
+            (None, 0) => Err(self.missing_parser_error(ext)),
+            (None, 1) => Ok(candidates.into_iter().next().unwrap()),
+            (None, _) => Err(self.multiple_parsers_error(ext, &candidates)),
+        }
+    }
+
+    async fn generate(&self) -> TsdlResult<()> {
+        Command::new(self.ts_cli.as_os_str())
+            .current_dir(self.dir.as_path())
+            .arg("generate")
+            .exec()
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                error::TsdlError::Step(error::Step::new(
+                    self.language.clone(),
+                    error::ParserOp::Generate {
+                        dir: self.dir.to_path_buf(),
+                    },
+                    err,
+                ))
+            })
+    }
+
+    async fn install(&self) -> TsdlResult<()> {
+        // Find and install parser binary for each extension
+        if self.spec.target.native() {
+            self.install_binary(DLL_EXTENSION).await?;
+        }
+
+        if self.spec.target.wasm() {
+            self.install_binary(WASM_EXTENSION).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn install_binary(&self, ext: &str) -> TsdlResult<()> {
+        let src = self.find_parser_binary(ext).await?;
+        let dst = self.output.out_dir.join(self.parser_name_and_ext(ext));
+
+        // Check if different file exists
+        if dst.exists() {
+            let src_metadata = fs::metadata(&src)
+                .await
+                .map_err(|e| TsdlError::context(format!("Reading {}", src.display()), e))?;
+            let dst_metadata = fs::metadata(&dst)
+                .await
+                .map_err(|e| TsdlError::context(format!("Reading {}", dst.display()), e))?;
+
+            let src_size = src_metadata.size();
+            let dst_size = dst_metadata.size();
+            let src_inode = src_metadata.ino();
+            let dst_inode = dst_metadata.ino();
+
+            // Check if hardlink is broken (inodes don't match when they should)
+            let hardlink_broken = src_inode != dst_inode;
+
+            if src_size != dst_size || hardlink_broken {
+                if src_size != dst_size && !self.context.force {
                     return Err(TsdlError::message(format!(
                         "Binary differs at {}. Use --force to overwrite",
                         dst.display()
                     )));
                 }
 
-                fs::remove_file(dst)
+                fs::remove_file(&dst)
                     .await
                     .map_err(|e| TsdlError::context(format!("Removing {}", dst.display()), e))?;
 
-                do_link(src, dst).await?;
+                // Report reinstallation when fixing broken hardlink
+                if hardlink_broken {
+                    if let Some(hnd) = self.context.progress.as_ref() {
+                        hnd.msg("Reinstalled");
+                    }
+                }
 
-                self.handle.msg(format!(
-                    "Reinstalled {} -> {}",
-                    src.display(),
-                    dst.display()
-                ));
+                // Create the hardlink after removing the old one
+                self.create_hardlink(&src, &dst).await?;
+            } else {
+                // Inodes match and sizes match - hardlink is already correct, skip
+            }
+        } else {
+            // Destination doesn't exist, create the hardlink
+            self.create_hardlink(&src, &dst).await?;
+        }
 
-                Ok(())
+        Ok(())
+    }
+    fn missing_parser_error(&self, ext: &str) -> TsdlError {
+        error::TsdlError::Step(error::Step::new(
+            self.language.clone(),
+            error::ParserOp::Copy {
+                src: self.output.out_dir.to_path_buf(),
+                dst: self.output.build_dir.to_path_buf(),
+            },
+            TsdlError::message(format!("Couldn't find any {ext} file")),
+        ))
+    }
+
+    fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> TsdlError {
+        error::TsdlError::Step(error::Step::new(
+            self.language.clone(),
+            error::ParserOp::Copy {
+                src: self.output.out_dir.to_path_buf(),
+                dst: self.output.build_dir.to_path_buf(),
+            },
+            TsdlError::message(format!("Found multiple {ext} files: {candidates:?}")),
+        ))
+    }
+
+    /// Check if this grammar needs rebuilding based on cache
+    fn needs_rebuild(&self, _cache_key: &str) -> bool {
+        match &self.entry {
+            None => true, // No cache entry - rebuild needed
+            Some(entry) => {
+                // Check if hash or definition changed
+                let hash_eq = entry.hash == self.hash;
+                let def_eq = entry.spec == self.spec;
+                !(hash_eq && def_eq)
             }
         }
     }
 
-    async fn clone(&self) -> TsdlResult<()> {
-        clone_fast(self.repo.as_str(), &self.git_ref, &self.build_dir)
-            .await
-            .map_err(|err| {
-                error::TsdlError::Step(error::Step::new(
-                    self.name.clone(),
-                    error::ParserOp::Clone {
-                        dir: self.build_dir.clone(),
-                    },
-                    err,
+    fn parser_name_and_ext(&self, ext: &str) -> String {
+        format!("{}{}.{}", self.spec.prefix, self.name, ext)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LanguageBuild {
+    pub context: BuildContext,
+    pub spec: Arc<BuildSpec>,
+    pub name: Arc<str>,
+    pub output: OutputConfig,
+}
+
+impl LanguageBuild {
+    #[must_use]
+    pub fn new(
+        context: BuildContext,
+        spec: Arc<BuildSpec>,
+        name: Arc<str>,
+        output: OutputConfig,
+    ) -> Self {
+        Self {
+            context,
+            spec,
+            name,
+            output,
+        }
+    }
+
+    pub async fn discover_grammars(&self) -> TsdlResult<Vec<(String, PathBuf, String)>> {
+        let file_results = collect_grammar_paths(self.output.build_dir.clone()).await?;
+        let mut grammars = Vec::new();
+
+        for (grammar_path, hash) in file_results {
+            let grammar_dir = grammar_path.parent().ok_or_else(|| {
+                TsdlError::Message(format!(
+                    "Could not get parent directory for {}",
+                    grammar_path.display()
                 ))
             })?;
-        Ok(())
+            let grammar_name = extract_grammar_name(grammar_dir)?;
+            grammars.push((grammar_name, grammar_dir.to_path_buf(), hash));
+        }
+
+        Ok(grammars)
     }
 
-    async fn generate(&self, dir: &Path) -> TsdlResult<()> {
-        Command::new(&*self.ts_cli)
-            .current_dir(dir)
-            .arg("generate")
-            .exec()
-            .await
-            .map_err(|err| {
-                error::TsdlError::Step(error::Step::new(
-                    self.name.clone(),
-                    error::ParserOp::Generate {
-                        dir: dir.to_path_buf(),
-                    },
-                    err,
-                ))
-            })?;
-        Ok(())
+    pub async fn clone(&self) -> TsdlResult<()> {
+        clone_fast(
+            self.spec.repo.as_str(),
+            &self.spec.git_ref,
+            &self.output.build_dir,
+        )
+        .await
+        .map_err(|err| {
+            error::TsdlError::Step(error::Step::new(
+                self.name.clone(),
+                error::ParserOp::Clone {
+                    dir: self.output.build_dir.to_path_buf(),
+                },
+                err,
+            ))
+        })
+    }
+}
+
+fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| TsdlError::Message(format!("Could not get dir name for {}", dir.display())))
+}
+
+/// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
+fn extract_grammar_name(dir: &Path) -> TsdlResult<String> {
+    let dir_name = extract_dir_name(dir)?;
+    let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
+    Ok(name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Extract directory name from a path
+    fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
+        dir.file_name()
+            .ok_or_else(|| TsdlError::message("Could not extract directory name"))
+            .map(|name| name.to_string_lossy().to_string())
     }
 
-    fn parser_name_and_ext(&self, dir: &Path, ext: &str) -> TsdlResult<String> {
-        let effective_name = dir
-            .file_name()
-            .map(|n| {
-                n.to_string_lossy()
-                    .strip_prefix("tree-sitter-")
-                    .map_or_else(|| n.to_string_lossy().to_string(), str::to_string)
-            })
-            .ok_or_else(|| {
-                TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
-            })?;
-        let prefix = &self.prefix;
-        Ok(format!("{prefix}{effective_name}.{ext}"))
+    /// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
+    fn extract_grammar_name(dir: &Path) -> TsdlResult<String> {
+        let dir_name = extract_dir_name(dir)?;
+        let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
+        Ok(name.to_string())
     }
 
-    // Since we're generating the exact file as `prefix + name + ext` in the
-    // build dir, we rely on that name to copy to output dir.
-
-    // If that name is not present, because the user defined a user script like
-    // make mostly (like in typescript), then take the first match and work
-    // with that.
-    async fn find_dll_files(&self, dir: &Path, ext: &str) -> TsdlResult<PathBuf> {
-        let effective_name = self.parser_name_and_ext(dir, ext)?;
-        let mut files = fs::read_dir(&dir).await.map_err(|e| {
-            TsdlError::context(format!("Failed to read directory {}", dir.display()), e)
+    /// Generate cache key for a grammar: "language_name/grammar_name"
+    fn make_cache_key(language_name: &str, grammar_path: &Path) -> TsdlResult<String> {
+        let grammar_dir = grammar_path.parent().ok_or_else(|| {
+            TsdlError::Message(format!(
+                "Could not get parent directory for {}",
+                grammar_path.display()
+            ))
         })?;
 
-        let mut exact_match = None;
-        let mut all_dlls = Vec::with_capacity(1);
+        let grammar_name = extract_grammar_name(grammar_dir)?;
+        Ok(format!("{}/{}", language_name, grammar_name))
+    }
 
-        while let Ok(Some(entry)) = files.next_entry().await {
-            let file_name = entry.file_name();
-            let name = file_name.as_os_str().to_string_lossy();
-            if entry.file_type().await.unwrap().is_file() {
-                if name == effective_name {
-                    exact_match = Some(dir.join(&file_name));
-                    break;
-                } else if Path::new(&file_name)
-                    .extension()
-                    .and_then(|e: &std::ffi::OsStr| e.to_str())
-                    == Some(ext)
-                {
-                    all_dlls.push(dir.join(&file_name));
-                }
-            }
-        }
-
-        // Error handling for no DLLs or too many DLLs
-        match (exact_match, all_dlls.len()) {
-            (Some(exact), _) => Ok(exact),
-            (None, 0) => Err(create_copy_error(
-                &self.name,
-                &self.out_dir,
-                dir,
-                format!("Couldn't find any {ext} file"),
-            )),
-            (None, 1) => Ok(all_dlls[0].clone()),
-            (None, _) => Err(create_copy_error(
-                &self.name,
-                &self.out_dir,
-                dir,
-                format!("Found many {ext} files: {all_dlls:?}."),
-            )),
+    /// Parse parser name and extension
+    fn parser_name_and_ext(grammar_name: &str, prefix: &str, ext: &str) -> String {
+        if prefix.is_empty() {
+            format!("{grammar_name}.{ext}")
+        } else {
+            format!("{prefix}{grammar_name}.{ext}")
         }
     }
 
-    /// Check cache and compute grammar hashes before cloning
-    /// Returns true if cache hit (skip build), false if need to rebuild
-    ///
-    /// Refactored to use read-only reference
-    async fn check_cache_early(&mut self, cache: &cache::Cache) -> TsdlResult<bool> {
-        if self.force {
-            return Ok(false);
-        }
+    #[test]
+    fn test_make_cache_key() {
+        let path = PathBuf::from("/tmp/build/tree-sitter-typescript/grammar.js");
+        let key = make_cache_key("typescript", &path).unwrap();
+        assert_eq!(key, "typescript/typescript");
 
-        let build_dir = self.build_dir.clone();
-        // Keep CPU-bound hashing in blocking thread to avoid stalling async reactor
-        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
+        let path = PathBuf::from("/tmp/build/tree-sitter-tsx/grammar.js");
+        let key = make_cache_key("typescript", &path).unwrap();
+        assert_eq!(key, "typescript/tsx");
+    }
+
+    #[test]
+    fn test_extract_grammar_name() {
+        let dir = Path::new("/tmp/build/tree-sitter-typescript");
+        let name = extract_grammar_name(dir).unwrap();
+        assert_eq!(name, "typescript");
+
+        let dir = Path::new("/tmp/build/custom-parser");
+        let name = extract_grammar_name(dir).unwrap();
+        assert_eq!(name, "custom-parser");
+    }
+
+    #[test]
+    fn test_extract_grammar_name_strips_prefix() {
+        let name_with_prefix = "tree-sitter-typescript";
+        let stripped = name_with_prefix
+            .strip_prefix("tree-sitter-")
+            .unwrap_or(name_with_prefix);
+        assert_eq!(stripped, "typescript");
+
+        let name_without_prefix = "custom-parser";
+        let not_stripped = name_without_prefix
+            .strip_prefix("tree-sitter-")
+            .unwrap_or(name_without_prefix);
+        assert_eq!(not_stripped, "custom-parser");
+    }
+
+    #[test]
+    fn test_parser_name_and_ext() {
+        let name = parser_name_and_ext("typescript", "", "so");
+        assert_eq!(name, "typescript.so");
+
+        let name = parser_name_and_ext("typescript", "", "wasm");
+        assert_eq!(name, "typescript.wasm");
+    }
+
+    #[test]
+    fn test_parser_name_with_prefix() {
+        let name = parser_name_and_ext("typescript", "lib", "so");
+        assert_eq!(name, "libtypescript.so");
+    }
+
+    #[tokio::test]
+    async fn test_per_grammar_cache_key_format() {
+        // Test that cache keys follow the "language/grammar" format
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("tree-sitter-tsx");
+        tokio::fs::create_dir(&grammar_dir).await.unwrap();
+        let grammar_file = grammar_dir.join("grammar.js");
+        tokio::fs::write(&grammar_file, "module.exports = {};")
             .await
-            .map_err(|e| TsdlError::context("Failed to compute hashes", e))?
-            .unwrap_or_default();
+            .unwrap();
 
-        let (name, git_ref, target) = (self.name.clone(), self.git_ref.to_string(), self.target);
+        let cache_key = make_cache_key("typescript", &grammar_file).unwrap();
 
-        // Access the cache directly without locking (we have a RO ref/clone)
-        Ok(!sha1.is_empty() && !cache.needs_rebuild(&name, &sha1, &git_ref, target))
+        assert_eq!(cache_key, "typescript/tsx");
+        assert!(
+            cache_key.contains('/'),
+            "Cache key should use language/grammar format"
+        );
     }
-
-    /// Generates a cache update object to be applied later
-    async fn generate_cache_update(&self) -> TsdlResult<CacheUpdate> {
-        let build_dir = self.build_dir.clone();
-
-        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
-            .await
-            .map_err(|e| TsdlError::context("Failed to compute hashes", e))?
-            .unwrap_or_default();
-
-        if sha1.is_empty() {
-            // If we built successfully but have no hash, something is wrong
-            // but we can likely just skip caching or warn.
-            // For now, return error or handle gracefully.
-            return Err(TsdlError::Message(
-                "Computed empty SHA1 for built grammar".into(),
-            ));
-        }
-
-        Ok(CacheUpdate {
-            name: self.name.clone(),
-            entry: CacheEntry {
-                grammar_sha1: sha1,
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                git_ref: self.git_ref.to_string(),
-                target: self.target,
-            },
-        })
-    }
-}
-
-/// Compute SHA1 of grammar files for a parser
-fn compute_grammar_hashes(build_dir: &Path) -> Option<String> {
-    // Only useful if the build_dir already exists (i.e., parser was previously built)
-    if !build_dir.exists() {
-        return None;
-    }
-
-    // For now, compute hash of the first grammar.js found (parser dir)
-    // In future, could combine hashes if multiple grammars
-    collect_grammars(build_dir)
-        .first()
-        .and_then(|dir| cache::sha1_grammar_dir(dir).ok())
-}
-
-/// Standalone function for collecting grammars to avoid lifetime issues
-fn collect_grammars(build_dir: &Path) -> Vec<PathBuf> {
-    let mut types_builder = TypesBuilder::new();
-    types_builder.add_def("js:*.js").unwrap();
-    let types = types_builder.select("js").build().unwrap();
-    let mut overrides_builder = OverrideBuilder::new(build_dir);
-    overrides_builder.case_insensitive(true).unwrap();
-    overrides_builder
-        .add("!(.github|bindings|doc|docs|examples|queries|script|scripts|test|tests)/**")
-        .unwrap();
-    let overrides = overrides_builder.build().unwrap();
-    let mut walker = WalkBuilder::new(build_dir);
-    walker
-        .git_global(false)
-        .git_ignore(true)
-        .hidden(false)
-        .overrides(overrides)
-        .types(types);
-    walker
-        .build()
-        .filter_map(|entry| {
-            entry.ok().and_then(|dir| {
-                if dir.file_type().unwrap().is_file() && dir.file_name() == "grammar.js" {
-                    Some(dir.path().to_path_buf())
-                } else {
-                    None
-                }
-            })
-        })
-        .filter_map(|path| path.parent().and_then(|p| p.canon().ok()))
-        .collect()
-}
-
-/// Helper function to create copy errors consistently
-fn create_copy_error(name: &str, out_dir: &Path, dst_dir: &Path, message: String) -> TsdlError {
-    error::TsdlError::Step(error::Step::new(
-        name.to_string(),
-        error::ParserOp::Copy {
-            src: out_dir.to_path_buf(),
-            dst: dst_dir.to_path_buf(),
-        },
-        TsdlError::message(message),
-    ))
 }

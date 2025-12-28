@@ -35,8 +35,8 @@ fn cache_hit_skips_build() {
         .arg("json")
         .assert()
         .success()
-        .stderr(p::str::contains("json HEAD (cached)"))
-        .stderr(p::str::contains("Cloning").not());
+        .stdout(p::str::contains("cached done"))
+        .stdout(p::str::contains("cloning").not());
 
     let second_inode = binary.metadata().unwrap().ino();
     assert_eq!(
@@ -68,8 +68,8 @@ fn cache_miss_on_grammar_modification() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stderr(p::str::contains("json Cloning"))
-        .stderr(p::str::contains("(cached)").not());
+        .stdout(p::str::contains("HEAD cloning"))
+        .stdout(p::str::contains("(cached)").not());
 }
 
 #[rstest]
@@ -128,8 +128,8 @@ fn force_flag_bypasses_cache() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stderr(p::str::contains("json Cloning"))
-        .stderr(p::str::contains("(cached)").not());
+        .stdout(p::str::contains("HEAD cloning"))
+        .stdout(p::str::contains("(cached)").not());
 
     let second_inode = binary.metadata().unwrap().ino();
     assert_ne!(
@@ -179,7 +179,7 @@ fn force_flag_reinstalls_hardlink() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stderr(p::str::contains("Reinstalled"));
+        .stdout(p::str::contains("json/json HEAD installing"));
 
     let final_inode_out = binary.metadata().unwrap().ino();
     let final_inode_build = build_binary.metadata().unwrap().ino();
@@ -202,7 +202,7 @@ fn multi_parser_independent_cache(#[case] languages: Vec<&str>) {
     let cache_content = std::fs::read_to_string(cache_file.path()).unwrap();
     for lang in &languages {
         assert!(
-            cache_content.contains(&format!("[parsers.{lang}]")),
+            cache_content.contains(&format!("[parsers.\"{lang}/{lang}\"]")),
             "Cache should contain entry for {lang}",
         );
     }
@@ -213,7 +213,7 @@ fn multi_parser_independent_cache(#[case] languages: Vec<&str>) {
     let mut output = cmd.arg("build").args(&languages).assert().success();
 
     for lang in &languages {
-        output = output.stderr(p::str::contains(format!("{lang} HEAD (cached)")));
+        output = output.stdout(p::str::contains(format!("{lang} HEAD cached done")));
     }
 }
 
@@ -237,23 +237,19 @@ fn cache_file_structure() {
 
     // Verify TOML structure contains expected entries
     assert!(
-        cache_content.contains("[parsers.json]"),
+        cache_content.contains("[parsers.\"json/json\"]"),
         "Cache should have json entry"
     );
     assert!(
-        cache_content.contains("[parsers.python]"),
+        cache_content.contains("[parsers.\"python/python\"]"),
         "Cache should have python entry"
     );
     assert!(
-        cache_content.contains("grammar_sha1"),
-        "Cache should have grammar_sha1 field"
+        cache_content.contains("hash"),
+        "Cache should have hash field"
     );
     assert!(
         cache_content.contains("git_ref"),
         "Cache should have git_ref field"
-    );
-    assert!(
-        cache_content.contains("timestamp"),
-        "Cache should have timestamp field"
     );
 }

@@ -5,14 +5,7 @@ use self_update::self_replace;
 use semver::Version;
 use tracing::{error, info};
 
-use tsdl::{
-    app::App,
-    args,
-    consts::TREE_SITTER_PLATFORM,
-    display::{Handle, ProgressState},
-    error::TsdlError,
-    logging, TsdlResult,
-};
+use tsdl::{app::App, args, consts::TREE_SITTER_PLATFORM, error::TsdlError, logging, TsdlResult};
 
 fn main() -> ExitCode {
     set_panic_hook();
@@ -49,9 +42,9 @@ fn selfupdate(app: &App) -> TsdlResult<()> {
     let tsdl = env!("CARGO_BIN_NAME");
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| TsdlError::context("Failed to parse current version", e))?;
-    let mut handle = progress.register("selfupdate", 4);
+    let handle = progress.register("selfupdate".into(), "".into(), 4);
 
-    handle.start("fetching releases".to_string());
+    handle.step("fetching releases");
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
@@ -71,7 +64,7 @@ fn selfupdate(app: &App) -> TsdlResult<()> {
     let latest_version = Version::parse(&releases[0].version)
         .map_err(|e| TsdlError::context("Failed to parse latest version", e))?;
     if latest_version <= current_version {
-        handle.msg("already at the latest version".to_string());
+        handle.msg("already at the latest version");
         return Ok(());
     }
 

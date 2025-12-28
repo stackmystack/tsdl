@@ -14,7 +14,7 @@ fn build_no_args_should_log_to_default_path() {
         .cmd
         .assert()
         .success()
-        .stderr(p::str::contains(format!(
+        .stdout(p::str::contains(format!(
             "tree-sitter-cli v{TREE_SITTER_REF} done"
         )));
     assert!(!sandbox.is_empty());
@@ -38,7 +38,7 @@ fn build_w_specific_log_path(#[case] log: &str) {
         .cmd
         .assert()
         .success()
-        .stderr(p::str::contains(format!(
+        .stdout(p::str::contains(format!(
             "tree-sitter-cli v{TREE_SITTER_REF} done"
         )));
     sandbox

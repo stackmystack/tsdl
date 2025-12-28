@@ -123,6 +123,14 @@ pub enum Target {
 
 impl Target {
     #[must_use]
+    pub fn covers(&self, other: Target) -> bool {
+        matches!(
+            (self, other),
+            (Target::All, _) | (Target::Native, Target::Native) | (Target::Wasm, Target::Wasm)
+        )
+    }
+
+    #[must_use]
     pub fn native(&self) -> bool {
         matches!(self, Self::All | Self::Native)
     }
@@ -130,15 +138,6 @@ impl Target {
     #[must_use]
     pub fn wasm(&self) -> bool {
         matches!(self, Self::All | Self::Wasm)
-    }
-
-    /// Check if this target covers (is a superset of) another target
-    #[must_use]
-    pub fn covers(&self, other: Target) -> bool {
-        matches!(
-            (self, other),
-            (Target::All, _) | (Target::Native, Target::Native) | (Target::Wasm, Target::Wasm)
-        )
     }
 }
 
@@ -149,34 +148,39 @@ impl Target {
 ))]
 #[serde(rename_all = "kebab-case")]
 pub struct BuildCommand {
-    /// Parsers to compile.
-    #[serde(skip_serializing, skip_deserializing)]
-    #[arg(verbatim_doc_comment)]
-    pub languages: Option<Vec<String>>,
-
-    /// Configured Parsers.
-    #[clap(skip)]
-    pub parsers: Option<BTreeMap<String, ParserConfig>>,
-
     /// Build Directory.
     #[serde(default)]
     #[arg(short, long, env = "TSDL_BUILD_DIR", default_value = TSDL_BUILD_DIR)]
     pub build_dir: PathBuf,
 
-    /// Number of threads; defaults to the number of available CPUs.
-    #[arg(short, long, env = "TSDL_NCPUS", default_value_t = num_cpus::get())]
+    /// Force clone the repository and rebuild, bypassing cache checks. Overwrites existing binaries.
+    #[arg(long, default_value_t = false)]
     #[serde(default)]
-    pub ncpus: usize,
+    pub force: bool,
 
     /// Clears the `build-dir` and starts a fresh build.
     #[arg(short, long, default_value_t = TSDL_FRESH)]
     #[serde(default)]
     pub fresh: bool,
 
+    /// Parsers to compile.
+    #[serde(skip_serializing, skip_deserializing)]
+    #[arg(verbatim_doc_comment)]
+    pub languages: Option<Vec<String>>,
+
+    /// Number of threads; defaults to the number of available CPUs.
+    #[arg(short, long, env = "TSDL_NCPUS", default_value_t = num_cpus::get())]
+    #[serde(default)]
+    pub jobs: usize,
+
     /// Output Directory.
     #[arg(short, long, env = "TSDL_OUT_DIR", default_value = TSDL_OUT_DIR)]
     #[serde(default)]
     pub out_dir: PathBuf,
+
+    /// Configured Parsers.
+    #[clap(skip)]
+    pub parsers: Option<BTreeMap<String, ParserConfig>>,
 
     /// Prefix parser names.
     #[arg(short, long, env = "TSDL_PREFIX", default_value = TSDL_PREFIX)]
@@ -192,36 +196,31 @@ pub struct BuildCommand {
     #[arg(short, long, value_enum, default_value_t = Target::default())]
     pub target: Target,
 
-    /// Force installation by overwriting existing binaries.
-    #[arg(long, default_value_t = false)]
+    #[command(flatten)]
     #[serde(default)]
-    pub force: bool,
+    pub tree_sitter: TreeSitter,
 
     /// Force unlock the build directory.
     #[arg(long, default_value_t = false)]
     #[serde(default)]
     pub unlock: bool,
-
-    #[command(flatten)]
-    #[serde(default)]
-    pub tree_sitter: TreeSitter,
 }
 
 impl Default for BuildCommand {
     fn default() -> Self {
         Self {
             build_dir: PathBuf::from(TSDL_BUILD_DIR),
-            fresh: TSDL_FRESH,
             force: TSDL_FORCE,
+            fresh: TSDL_FRESH,
             languages: None,
-            ncpus: num_cpus::get(),
+            jobs: num_cpus::get(),
             out_dir: PathBuf::from(TSDL_OUT_DIR),
             parsers: None,
             prefix: String::from(TSDL_PREFIX),
             show_config: TSDL_SHOW_CONFIG,
             target: Target::default(),
-            unlock: false,
             tree_sitter: TreeSitter::default(),
+            unlock: false,
         }
     }
 }
@@ -236,15 +235,13 @@ pub enum ParserConfig {
     Full {
         #[serde(alias = "cmd", alias = "script")]
         build_script: Option<String>,
-        #[serde(rename = "ref")]
-        #[diff(attr(
-            #[derive(Debug, PartialEq)]
-        ))]
-        git_ref: String,
-        #[diff(attr(
-            #[derive(Debug, PartialEq)]
-        ))]
+
+        #[diff(attr(#[derive(Debug, PartialEq)]))]
         from: Option<String>,
+
+        #[serde(rename = "ref")]
+        #[diff(attr(#[derive(Debug, PartialEq)]))]
+        git_ref: String,
     },
     Ref(String),
 }
@@ -259,21 +256,21 @@ pub struct TreeSitter {
     #[serde(rename = "git-ref")]
     pub git_ref: String,
 
-    /// Tree-sitter repo.
-    #[arg(short = 'R', long = "tree-sitter-repo", default_value = TREE_SITTER_REPO)]
-    pub repo: String,
-
     /// Tree-sitter platform to build. Change at your own risk.
     #[clap(long = "tree-sitter-platform", default_value = TREE_SITTER_PLATFORM)]
     pub platform: String,
+
+    /// Tree-sitter repo.
+    #[arg(short = 'R', long = "tree-sitter-repo", default_value = TREE_SITTER_REPO)]
+    pub repo: String,
 }
 
 impl Default for TreeSitter {
     fn default() -> Self {
         Self {
             git_ref: TREE_SITTER_REF.to_string(),
-            repo: TREE_SITTER_REPO.to_string(),
             platform: TREE_SITTER_PLATFORM.to_string(),
+            repo: TREE_SITTER_REPO.to_string(),
         }
     }
 }

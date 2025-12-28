@@ -6,9 +6,9 @@ use tracing::{error, trace};
 use crate::{error, TsdlResult};
 
 pub trait Exec {
-    fn exec(&mut self) -> impl std::future::Future<Output = TsdlResult<Output>>;
     fn display(&self) -> TsdlResult<String>;
     fn display_full(&self) -> TsdlResult<String>;
+    fn exec(&mut self) -> impl std::future::Future<Output = TsdlResult<Output>>;
 }
 
 pub trait Script {
@@ -16,6 +16,34 @@ pub trait Script {
 }
 
 impl Exec for Command {
+    fn display(&self) -> TsdlResult<String> {
+        let program = self.as_std().get_program().to_string_lossy();
+        let args = self.as_std().get_args();
+        let mut res = String::new();
+
+        write!(res, "{program} ").map_err(|e| {
+            error::TsdlError::context("Failed to write program to display string", e)
+        })?;
+
+        for arg in args {
+            write!(res, "{} ", arg.to_string_lossy()).map_err(|e| {
+                error::TsdlError::context("Failed to write argument to display string", e)
+            })?;
+        }
+
+        Ok(res.trim_end().to_string())
+    }
+
+    fn display_full(&self) -> TsdlResult<String> {
+        let cwd = self.as_std().get_current_dir();
+        let base = self.display()?;
+
+        match cwd {
+            Some(path) => Ok(format!("[{}] {}", path.display(), base)),
+            None => Ok(base),
+        }
+    }
+
     #[tracing::instrument(skip(self))]
     async fn exec(&mut self) -> TsdlResult<Output> {
         let cmd_full = self.display_full()?;
@@ -51,34 +79,6 @@ impl Exec for Command {
             stdout,
         }
         .into())
-    }
-
-    fn display(&self) -> TsdlResult<String> {
-        let program = self.as_std().get_program().to_string_lossy();
-        let args = self.as_std().get_args();
-        let mut res = String::new();
-
-        write!(res, "{program} ").map_err(|e| {
-            error::TsdlError::context("Failed to write program to display string", e)
-        })?;
-
-        for arg in args {
-            write!(res, "{} ", arg.to_string_lossy()).map_err(|e| {
-                error::TsdlError::context("Failed to write argument to display string", e)
-            })?;
-        }
-
-        Ok(res.trim_end().to_string())
-    }
-
-    fn display_full(&self) -> TsdlResult<String> {
-        let cwd = self.as_std().get_current_dir();
-        let base = self.display()?;
-
-        match cwd {
-            Some(path) => Ok(format!("[{}] {}", path.display(), base)),
-            None => Ok(base),
-        }
     }
 }
 

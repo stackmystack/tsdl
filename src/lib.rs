@@ -60,6 +60,7 @@ use crate::error::TsdlError;
 
 extern crate log;
 
+pub mod actors;
 pub mod app;
 pub mod args;
 pub mod build;
@@ -75,6 +76,7 @@ pub mod parser;
 #[macro_use]
 pub mod sh;
 pub mod tree_sitter;
+pub mod walk;
 
 pub trait SafeCanonicalize {
     fn canon(&self) -> TsdlResult<PathBuf>;
@@ -100,6 +102,7 @@ impl SafeCanonicalize for PathBuf {
 fn format_duration(duration: time::Duration) -> String {
     let total_seconds = duration.as_secs();
     let milliseconds = duration.subsec_millis();
+
     if total_seconds < 60 {
         format!("{total_seconds}.{milliseconds:#02}s")
     } else {
@@ -110,6 +113,7 @@ fn format_duration(duration: time::Duration) -> String {
 pub fn relative_to_cwd(dir: &Path) -> PathBuf {
     let canon = dir.canon().unwrap_or_else(|_| dir.to_path_buf());
     let cwd = env::current_dir().unwrap_or_else(|_| dir.to_path_buf());
+
     if canon != cwd && canon.starts_with(&cwd) {
         dir.strip_prefix(cwd).map_or(canon, Path::to_path_buf)
     } else {
@@ -123,15 +127,18 @@ pub type TsdlResult<T> = Result<T, error::TsdlError>;
 /// Prompt user for confirmation with default behavior
 pub fn prompt_user(question: &str, default_yes: bool) -> TsdlResult<bool> {
     let options = if default_yes { "[Y/n]" } else { "[y/N]" };
-    eprint!("{question} {options}: ");
-    let _ = io::stderr().flush();
 
+    eprint!("{question} {options}: ");
+
+    let _ = io::stderr().flush();
     let mut input = String::new();
+
     io::stdin()
         .read_line(&mut input)
         .map_err(|e| TsdlError::context("Reading user input", e))?;
 
     let input = input.trim().to_lowercase();
+
     if input.is_empty() {
         return Ok(default_yes);
     }

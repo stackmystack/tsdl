@@ -10,8 +10,8 @@ use crate::{args::Args, args::BuildCommand, config, display, TsdlResult};
 /// Application containing all resolved configuration and state.
 pub struct App {
     pub command: BuildCommand,
-    pub progress: Arc<Mutex<display::Progress>>,
     pub config_path: PathBuf,
+    pub progress: Arc<Mutex<display::Progress>>,
     pub verbose: Verbosity<InfoLevel>,
 }
 

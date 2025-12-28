@@ -2,24 +2,92 @@ use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, create_dir_all},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
+use serde::{Deserialize, Serialize};
 use tokio::time;
 use url::Url;
 
 use crate::{
+    actors::{self, CacheActor, DisplayActor},
     app::App,
-    args::ParserConfig,
-    cache::Cache,
+    args::{ParserConfig, Target, TreeSitter},
+    cache::Db,
     consts::TSDL_FROM,
-    display::{Handle, Progress, ProgressState, TICK_CHARS},
+    display::{self, Progress, ProgressBar, TICK_CHARS},
     error::{self, TsdlError},
-    git::Ref,
+    git::GitRef,
     lock::{Lock, LockStatus},
-    parser::{build_languages, Language, NUM_STEPS},
-    prompt_user, tree_sitter, SafeCanonicalize, TsdlResult,
+    parser::LanguageBuild,
+    prompt_user, SafeCanonicalize, TsdlResult,
 };
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildSpec {
+    pub build_script: Option<String>,
+    pub git_ref: GitRef,
+    pub prefix: String,
+    pub repo: Url,
+    pub target: Target,
+    pub tree_sitter: TreeSitter,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutputConfig {
+    pub build_dir: Arc<PathBuf>,
+    pub out_dir: Arc<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuildContext {
+    pub cache_hit: bool,
+    pub force: bool,
+    pub progress: Option<display::ProgressBar>,
+}
+
+impl BuildContext {
+    pub fn err(&self, msg: &str) {
+        if let Some(ref progress) = self.progress {
+            progress.err(msg);
+        }
+    }
+
+    pub fn fin(&self, msg: &str) {
+        if let Some(ref progress) = self.progress {
+            progress.fin(msg);
+        }
+    }
+
+    pub fn msg(&self, msg: &str) {
+        if let Some(ref progress) = self.progress {
+            progress.msg(msg);
+        }
+    }
+
+    pub fn step(&self, msg: &str) {
+        if let Some(ref progress) = self.progress {
+            progress.step(msg);
+        }
+    }
+
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.progress.as_ref().is_none_or(ProgressBar::is_done)
+    }
+
+    pub fn start(&mut self, msg: &str) {
+        if let Some(ref mut progress) = self.progress {
+            progress.step(msg);
+        }
+    }
+
+    pub fn tick(&self) {
+        if let Some(ref progress) = self.progress {
+            progress.tick();
+        }
+    }
+}
 
 pub fn run(app: &App) -> TsdlResult<()> {
     if app.command.show_config {
@@ -27,41 +95,45 @@ pub fn run(app: &App) -> TsdlResult<()> {
     }
 
     // Initialize the manager first with the build directory
-    let lock_manager = Lock::new(&app.command.build_dir);
+    let lock = Lock::new(&app.command.build_dir);
 
     if app.command.unlock {
-        lock_manager.force_unlock()?;
+        lock.force_unlock()?;
     }
 
     // Check lock status before clearing anything
 
-    let _lock = match lock_manager.try_acquire()? {
+    let _guard = match lock.try_acquire()? {
         LockStatus::Acquired(lock) => lock,
-        LockStatus::LockedBy { pid, exe } => {
-            eprintln!("Lock owned by different process: PID {pid} ({exe})");
-            if prompt_user("Proceed anyway?", false)? {
-                // Use the manager instance to force acquire
-                lock_manager.force_acquire()?
-            } else {
-                return Err(TsdlError::message("Lock acquisition cancelled by user"));
-            }
-        }
+
         LockStatus::Cyclic => {
             eprintln!("Lock already held by this process. This should not happen.");
             return Err(TsdlError::message("1+ lock acquisition"));
         }
-        LockStatus::Stale(pid) => {
-            eprintln!("Found stale lock from PID {pid} (process no longer exists)");
-            if prompt_user("Take over lock?", true)? {
-                lock_manager.force_acquire()?
+
+        LockStatus::LockedBy { pid, exe } => {
+            eprintln!("Lock owned by different process: PID {pid} ({exe})");
+            if prompt_user("Proceed anyway?", false)? {
+                // Use the manager instance to force acquire
+                lock.force_acquire()?
             } else {
                 return Err(TsdlError::message("Lock acquisition cancelled by user"));
             }
         }
+
+        LockStatus::Stale(pid) => {
+            eprintln!("Found stale lock from PID {pid} (process no longer exists)");
+            if prompt_user("Take over lock?", true)? {
+                lock.force_acquire()?
+            } else {
+                return Err(TsdlError::message("Lock acquisition cancelled by user"));
+            }
+        }
+
         LockStatus::Unknown { pid, reason } => {
             eprintln!("Could not verify lock owner PID {pid}: {reason}",);
             if prompt_user("Take over lock?", false)? {
-                lock_manager.force_acquire()?
+                lock.force_acquire()?
             } else {
                 return Err(TsdlError::message("Lock acquisition cancelled by user"));
             }
@@ -69,7 +141,7 @@ pub fn run(app: &App) -> TsdlResult<()> {
     };
 
     clear(app)?;
-    build_impl(app)?;
+    ignite(app)?;
     Ok(())
 }
 
@@ -79,78 +151,18 @@ fn clear(app: &App) -> TsdlResult<()> {
             .progress
             .lock()
             .map_err(|e| TsdlError::message(format!("Failed to acquire progress lock: {e}")))?;
-        let handle = progress.register("Fresh Build", 1);
-        let disp = &app.command.build_dir.display();
+        let bar = progress.register("Fresh Build".into(), "".into(), 1);
         fs::remove_dir_all(&app.command.build_dir)?;
-        handle.fin(format!("Cleaned {disp}"));
+        bar.fin(format!("Cleaned {}", app.command.build_dir.display()));
     }
+
     fs::create_dir_all(&app.command.build_dir)?;
+
     Ok(())
 }
 
-fn build_impl(app: &App) -> TsdlResult<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(app.command.ncpus)
-        .build()?;
-    let _guard = rt.enter();
-    rt.spawn(update_screen(app.progress.clone()));
-    let handle = app
-        .progress
-        .lock()
-        .expect("Failed to acquire progress lock")
-        .register("Preparing tree-sitter-cli", 3);
-    let ts_cli = rt.block_on(tree_sitter::prepare(&app.command, handle))?;
-
-    let languages = collect_languages(
-        app,
-        ts_cli,
-        app.command.languages.as_ref(),
-        app.command.parsers.as_ref(),
-    )?;
-    create_dir_all(&app.command.out_dir)?;
-
-    // Build and then save cache
-    let result = rt.block_on(async move {
-        let cache = Arc::new(Cache::load(&app.command.build_dir)?);
-        let (updates, errs) = build_languages(languages, cache.clone()).await?;
-
-        let mut cache = Arc::unwrap_or_clone(cache);
-        // Save cache to disk after build completes (success or failure)
-        for update in updates {
-            cache.set(update.name, update.entry);
-        }
-        cache.save(&app.command.build_dir).ok();
-
-        if errs.is_empty() {
-            Ok(())
-        } else {
-            Err(error::TsdlError::Build(errs))
-        }
-    });
-
-    result
-}
-
-async fn update_screen(progress: Arc<Mutex<Progress>>) {
-    let mut interval = time::interval(time::Duration::from_millis(
-        1000 / TICK_CHARS.chars().count() as u64,
-    ));
-    loop {
-        interval.tick().await;
-        if let Ok(s) = progress.try_lock() {
-            s.tick();
-        }
-    }
-}
-
-fn collect_languages(
-    app: &App,
-    ts_cli: PathBuf,
-    requested_languages: Option<&Vec<String>>,
-    defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-) -> Result<Vec<Language>, error::LanguageCollection> {
-    let results = unique_languages(app, ts_cli, requested_languages, defined_parsers);
+fn collect_languages(app: &App) -> Result<Vec<LanguageBuild>, error::LanguageCollection> {
+    let results = unique_languages(app);
     let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     if err.is_empty() {
@@ -162,55 +174,16 @@ fn collect_languages(
     }
 }
 
-fn unique_languages(
-    app: &App,
-    ts_cli: PathBuf,
-    requested_languages: Option<&Vec<String>>,
-    defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-) -> Vec<Result<Language, error::Language>> {
-    let ts_cli = Arc::new(ts_cli);
-    let final_languages = match requested_languages {
-        Some(langs) if !langs.is_empty() => langs.clone(),
-        _ => defined_parsers
-            .map(|parsers| parsers.keys().cloned().collect())
-            .unwrap_or_default(),
-    };
-
-    let unique = final_languages.into_iter().collect::<HashSet<_>>();
-    let mut results = Vec::new();
-
-    for language in unique {
-        let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
-        let result = match url {
-            Ok(repo) => Ok(Language::new(
-                app.command
-                    .build_dir
-                    .join(format!("tree-sitter-{}", &language)) // make sure it follows this format because the cli takes advantage of that.
-                    .canon()
-                    .unwrap(),
-                build_script,
-                app.command.force || app.command.fresh,
-                git_ref,
-                app.progress.lock().unwrap().register(&language, NUM_STEPS),
-                language.clone(),
-                app.command.out_dir.canon().unwrap(),
-                app.command.prefix.clone(),
-                repo,
-                app.command.target,
-                ts_cli.clone(),
-            )),
-            Err(err) => Err(error::Language::new(language, err)),
-        };
-        results.push(result);
-    }
-
-    results
+fn default_repo(language: &str) -> TsdlResult<Url> {
+    let url = format!("{TSDL_FROM}{language}");
+    Url::parse(&url)
+        .map_err(|e| TsdlError::context(format!("Creating url {url} for {language}"), e))
 }
 
 fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-) -> (Option<String>, Ref, TsdlResult<Url>) {
+) -> (Option<String>, GitRef, TsdlResult<Url>) {
     // Attempt to find the config; defaults to None if map or key is missing
     let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
@@ -234,26 +207,126 @@ fn get_language_coords(
             (build_script.clone(), resolve_git_ref(git_ref), url_result)
         }
 
-        None => (None, String::from("HEAD").into(), default_repo(language)),
+        None => (None, GitRef::from("HEAD"), default_repo(language)),
     }
 }
 
-fn resolve_git_ref(git_ref: &str) -> Ref {
+fn ignite(app: &App) -> TsdlResult<()> {
+    create_dir_all(&app.command.out_dir)?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    let guard = rt.enter();
+
+    let db = Db::load(&app.command.build_dir)?;
+    let languages = collect_languages(app)?;
+    let progress = app.progress.clone();
+
+    let result = rt.block_on(async move {
+        let cache = CacheActor::spawn(db, app.command.force);
+        let display = DisplayActor::spawn(progress.clone());
+
+        tokio::spawn(async { update_screen(progress).await });
+
+        actors::run(
+            &app.command.build_dir,
+            cache,
+            display,
+            app.command.jobs,
+            languages,
+            &app.command.tree_sitter,
+        )
+        .await?;
+
+        Ok(())
+    });
+
+    drop(guard);
+
+    result
+}
+
+fn resolve_git_ref(git_ref: &str) -> GitRef {
     let is_sha1 = git_ref.len() == 40 && git_ref.chars().all(|c| c.is_ascii_hexdigit());
 
     if is_sha1 || git_ref.starts_with('v') {
-        return git_ref.to_string().into();
+        return GitRef::from(git_ref);
     }
 
     if git_ref.split('.').all(|part| part.parse::<u32>().is_ok()) {
-        format!("v{git_ref}").into()
+        GitRef::from(format!("v{git_ref}"))
     } else {
-        git_ref.to_string().into()
+        GitRef::from(git_ref)
     }
 }
 
-fn default_repo(language: &str) -> TsdlResult<Url> {
-    let url = format!("{TSDL_FROM}{language}");
-    Url::parse(&url)
-        .map_err(|e| TsdlError::context(format!("Creating url {url} for {language}"), e))
+fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
+    let requested_languages = &app.command.languages;
+    let defined_parsers = app.command.parsers.as_ref();
+
+    let final_languages = match requested_languages {
+        Some(langs) if !langs.is_empty() => langs.clone(),
+        _ => defined_parsers
+            .map(|parsers| parsers.keys().cloned().collect())
+            .unwrap_or_default(),
+    };
+
+    let unique = final_languages.into_iter().collect::<HashSet<_>>();
+    let mut results = Vec::new();
+
+    for language in unique {
+        let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
+        let result = match url {
+            Ok(repo) => Ok(LanguageBuild::new(
+                BuildContext {
+                    force: app.command.force || app.command.fresh,
+                    cache_hit: false,
+                    progress: None, // Progress is handled by DisplayActor
+                },
+                Arc::new(BuildSpec {
+                    build_script,
+                    git_ref,
+                    repo,
+                    tree_sitter: app.command.tree_sitter.clone(),
+                    prefix: app.command.prefix.clone(),
+                    target: app.command.target,
+                }),
+                language.clone().into(),
+                OutputConfig {
+                    build_dir: app
+                        .command
+                        .build_dir
+                        .join(format!("tree-sitter-{}", &language))
+                        .canon()
+                        .expect("Build dir canonicalization failed")
+                        .into(),
+                    out_dir: app
+                        .command
+                        .out_dir
+                        .canon()
+                        .expect("Out dir canonicalization failed")
+                        .into(),
+                },
+            )),
+            Err(err) => Err(error::Language::new(language, err)),
+        };
+        results.push(result);
+    }
+
+    results
+}
+
+async fn update_screen(progress: Arc<std::sync::Mutex<Progress>>) {
+    let mut interval = time::interval(time::Duration::from_millis(
+        1000 / TICK_CHARS.chars().count() as u64,
+    ));
+
+    loop {
+        interval.tick().await;
+        if let Ok(s) = progress.try_lock() {
+            s.tick();
+        }
+    }
 }

@@ -14,10 +14,10 @@ use crate::{consts::TSDL_LOCK_FILE, error::TsdlError, TsdlResult};
 pub enum LockStatus {
     /// Lock acquired successfully
     Acquired(LockGuard),
-    /// Lock exists from a different process
-    LockedBy { pid: Pid, exe: String },
     /// Acquired lock is cyclic (same process)
     Cyclic,
+    /// Lock exists from a different process
+    LockedBy { pid: Pid, exe: String },
     /// Lock exists from a stale (dead) process
     Stale(Pid),
     /// Not enough privileges to check process status
@@ -39,11 +39,12 @@ impl Drop for LockGuard {
 
 /// Manages lock configuration and acquisition.
 pub struct Lock {
-    lock_path: PathBuf,
     current_pid: Pid,
+    lock_path: PathBuf,
 }
 
 impl Lock {
+    #[must_use]
     pub fn new(build_dir: &Path) -> Self {
         Self {
             lock_path: build_dir.join(TSDL_LOCK_FILE),
@@ -51,13 +52,20 @@ impl Lock {
         }
     }
 
-    /// Check lock status and acquire if available.
-    pub fn try_acquire(&self) -> TsdlResult<LockStatus> {
-        if !self.lock_path.exists() {
-            return self.acquire().map(LockStatus::Acquired);
+    /// Acquire a new lock by creating the lock file with current PID.
+    fn acquire(&self) -> TsdlResult<LockGuard> {
+        if let Some(parent) = self.lock_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                TsdlError::context(format!("Creating build directory {}", parent.display()), e)
+            })?;
         }
 
-        self.check_existing_lock()
+        self.write()?;
+
+        info!("Acquired lock on build directory");
+        Ok(LockGuard {
+            lock: self.lock_path.clone(),
+        })
     }
 
     /// Force acquire a lock, overwriting any existing lock.
@@ -87,38 +95,9 @@ impl Lock {
         Ok(())
     }
 
-    /// Acquire a new lock by creating the lock file with current PID.
-    fn acquire(&self) -> TsdlResult<LockGuard> {
-        if let Some(parent) = self.lock_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                TsdlError::context(format!("Creating build directory {}", parent.display()), e)
-            })?;
-        }
-
-        self.write_lock_file()?;
-
-        info!("Acquired lock on build directory");
-        Ok(LockGuard {
-            lock: self.lock_path.clone(),
-        })
-    }
-
-    fn write_lock_file(&self) -> TsdlResult<()> {
-        fs::write(&self.lock_path, self.current_pid.as_u32().to_string()).map_err(|e| {
-            TsdlError::context(
-                format!(
-                    "Writing lock file {} with PID {}",
-                    self.lock_path.display(),
-                    self.current_pid
-                ),
-                e,
-            )
-        })
-    }
-
     /// Helper for checking process status and determining lock conflicts
-    fn check_existing_lock(&self) -> TsdlResult<LockStatus> {
-        let lock_pid = self.read_pid_from_lock()?;
+    fn lock_status(&self) -> TsdlResult<LockStatus> {
+        let lock_pid = self.read()?;
 
         if lock_pid == self.current_pid {
             return Ok(LockStatus::Cyclic);
@@ -152,7 +131,7 @@ impl Lock {
         }
     }
 
-    fn read_pid_from_lock(&self) -> TsdlResult<Pid> {
+    fn read(&self) -> TsdlResult<Pid> {
         let content = fs::read_to_string(&self.lock_path).map_err(|e| {
             TsdlError::context(format!("Reading lock file {}", self.lock_path.display()), e)
         })?;
@@ -166,5 +145,27 @@ impl Lock {
         })?;
 
         Ok(Pid::from(pid))
+    }
+
+    /// Check lock status and acquire if available.
+    pub fn try_acquire(&self) -> TsdlResult<LockStatus> {
+        if !self.lock_path.exists() {
+            return self.acquire().map(LockStatus::Acquired);
+        }
+
+        self.lock_status()
+    }
+
+    fn write(&self) -> TsdlResult<()> {
+        fs::write(&self.lock_path, self.current_pid.as_u32().to_string()).map_err(|e| {
+            TsdlError::context(
+                format!(
+                    "Writing lock file {} with PID {}",
+                    self.lock_path.display(),
+                    self.current_pid
+                ),
+                e,
+            )
+        })
     }
 }

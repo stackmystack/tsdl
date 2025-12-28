@@ -1,354 +1,328 @@
-//! The API is not nice, and I can't change the number of steps on the fly.
-//! Which I need for repos declaring multiple parsers like php. I can't
-//! change what's in the tick position easily too. And let's not mention
-//! code duplication …
-//!
-//! What Ineed is a single class that handles plain and fancy progress strategies,
-//! instead of having to handle them with static dispatch via `enum_dispatch`.
-//!
-//! PS: What' _"bad"_ about working with `enum_dispatch` is the language server.
-//! Any modification to the trait you're dispatching will not properly propagate
-//! and your diagnostics will be behind reality.
-//!
-//! TODO: Get rid of the stupid progress bar crate.
 use std::{
-    borrow::Cow,
-    fmt::Display,
-    sync::{Arc, Mutex},
+    sync::atomic::Ordering,
+    sync::{atomic::AtomicU64, Arc},
     time,
 };
 
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use console::style;
-use enum_dispatch::enum_dispatch;
 use log::Level;
+use tokio::sync::OnceCell;
 
-use crate::{args::ProgressStyle, error::TsdlError, format_duration, TsdlResult};
+use crate::{args::ProgressStyle, error::TsdlError, format_duration, git::GitRef, TsdlResult};
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateKind {
+    Msg,
+    Step,
+    Fin,
+    Err,
+}
 
 /// Spinning sprite.
 pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";
 
-#[must_use]
-pub fn current(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Progress {
-    verbose.log_level().map_or_else(
-        || current_style(progress),
-        |level| match level {
-            Level::Debug | Level::Trace => Progress::Plain(Plain::default()),
-            _ => current_style(progress),
-        },
-    )
-}
-
-fn current_style(progress: &ProgressStyle) -> Progress {
-    if match progress {
-        ProgressStyle::Auto => atty::is(atty::Stream::Stdout),
-        ProgressStyle::Fancy => true,
-        ProgressStyle::Plain => false,
-    } {
-        Progress::Fancy(Fancy::default())
-    } else {
-        Progress::Plain(Plain::default())
-    }
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mode {
+    Fancy,
+    Plain,
 }
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(ProgressState)]
-pub enum Progress {
-    Plain(Plain),
-    Fancy(Fancy),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Plain {
-    handles: Vec<PlainHandle>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Fancy {
-    handles: Vec<FancyHandle>,
+pub struct Progress {
     multi: indicatif::MultiProgress,
+    mode: Mode,
+    // We store handles to ensure they aren't dropped prematurely if needed,
+    // mimicking the original `handles` vectors.
+    handles: Vec<ProgressBar>,
 }
 
-#[enum_dispatch]
-pub trait ProgressState {
-    fn clear(&self) -> TsdlResult<()>;
-    fn register(&mut self, name: impl Into<String>, num_tasks: usize) -> ProgressHandle;
-    fn tick(&self);
-    fn is_done(&self) -> bool;
-}
-
-#[derive(Debug, Clone)]
-#[enum_dispatch(Handle)]
-pub enum ProgressHandle {
-    Plain(PlainHandle),
-    Fancy(FancyHandle),
-}
-
-#[derive(Debug, Clone)]
-pub struct PlainHandle {
-    cur_task: Arc<Mutex<usize>>,
-    name: Arc<String>,
-    num_tasks: usize,
-    t_start: Option<time::Instant>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FancyHandle {
-    bar: indicatif::ProgressBar,
-    name: Arc<String>,
-    num_tasks: usize,
-    t_start: Option<time::Instant>,
-}
-
-pub trait HandleMessage: Into<Cow<'static, str>> + Display {}
-impl<T> HandleMessage for T where T: Into<Cow<'static, str>> + Display {}
-
-#[enum_dispatch]
-pub trait Handle {
-    /// Declares end of execution with an error.
-    fn err(&self, msg: impl HandleMessage);
-    /// Declares end of execution with an success.
-    fn fin(&self, msg: impl HandleMessage);
-    /// Changes the displayed message for the current step.
-    fn msg(&self, msg: impl HandleMessage);
-    /// Declares transition to next step.
-    fn step(&self, msg: impl HandleMessage);
-    /// Through err or fin.
-    fn is_done(&self) -> bool;
-    /// Declares transition to first strp.
-    fn start(&mut self, msg: impl HandleMessage);
-    /// Useful for `Fancy` to redraw time and ticker.
-    fn tick(&self);
-}
-
-// Implementations.
-
-impl Fancy {
-    #[must_use]
-    pub fn new() -> Self {
-        Fancy::default()
-    }
-}
-
-impl Drop for Fancy {
-    fn drop(&mut self) {
-        for handle in &self.handles {
-            handle.bar.finish();
-        }
-    }
-}
-
-impl ProgressState for Fancy {
-    fn clear(&self) -> TsdlResult<()> {
-        self.multi
-            .clear()
-            .map_err(|e| TsdlError::context("Clearing the multi-progress bar", e))
-    }
-
-    fn register(&mut self, name: impl Into<String>, num_tasks: usize) -> ProgressHandle {
-        let style =
-            indicatif::ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
-                .unwrap()
-                .tick_chars(TICK_CHARS);
-        let bar = self
-            .multi
-            .add(indicatif::ProgressBar::new(num_tasks as u64));
-        bar.set_prefix(format!("[?/{num_tasks}]"));
-        bar.set_style(style);
-        let handle = FancyHandle {
-            name: Arc::new(name.into()),
-            bar,
-            num_tasks,
-            t_start: None,
-        };
-        self.handles.push(handle.clone());
-        ProgressHandle::Fancy(handle)
-    }
-
-    fn tick(&self) {
-        for bar in &self.handles {
-            bar.tick();
+impl Progress {
+    fn new(mode: Mode) -> Self {
+        Self {
+            multi: indicatif::MultiProgress::new(),
+            mode,
+            handles: Vec::new(),
         }
     }
 
-    fn is_done(&self) -> bool {
-        self.handles.iter().all(Handle::is_done)
-    }
-}
-
-impl ProgressState for Plain {
-    fn clear(&self) -> TsdlResult<()> {
+    pub fn clear(&self) -> TsdlResult<()> {
+        if self.mode == Mode::Fancy {
+            self.multi
+                .clear()
+                .map_err(|e| TsdlError::context("Clearing the multi-progress bar", e))?;
+        }
         Ok(())
     }
 
-    fn register(&mut self, name: impl Into<String>, num_tasks: usize) -> ProgressHandle {
-        let handle = PlainHandle {
-            cur_task: Arc::new(Mutex::new(0)),
-            name: Arc::new(name.into()),
+    /// # Panics
+    ///
+    /// Will panic indicatif errs.
+    pub fn register(&mut self, name: Arc<str>, git_ref: GitRef, num_tasks: usize) -> ProgressBar {
+        let bar = match self.mode {
+            Mode::Fancy => {
+                let bar = indicatif::ProgressBar::new(num_tasks as u64);
+                let bar = self.multi.add(bar);
+                let style = indicatif::ProgressStyle::with_template(
+                    "{prefix:.bold.dim} {spinner} {wide_msg}",
+                )
+                .unwrap_or_else(|_| {
+                    panic!("cannot create spinner [?/{num_tasks}] {name} @ {git_ref}")
+                })
+                .tick_chars(TICK_CHARS);
+                bar.set_style(style);
+                bar.set_prefix(format!("[?/{num_tasks}]"));
+                Some(bar)
+            }
+            Mode::Plain => None,
+        };
+
+        let handle = ProgressBar {
+            bar,
+            name,
+            git_ref,
             num_tasks,
-            t_start: None,
+            t_start: OnceCell::new(),
+            mode: self.mode,
+            current_step: Arc::new(AtomicU64::new(0)),
         };
+
         self.handles.push(handle.clone());
-        ProgressHandle::Plain(handle)
+        handle
     }
 
-    fn tick(&self) {}
+    pub fn tick(&self) {
+        // Only necessary for fancy bars in some terminals/configs, plain bars do nothing
+        if self.mode == Mode::Fancy {
+            for handle in &self.handles {
+                handle.tick();
+            }
+        }
+    }
 
-    fn is_done(&self) -> bool {
-        self.handles.iter().all(Handle::is_done)
+    pub fn is_done(&self) -> bool {
+        self.handles.iter().all(ProgressBar::is_done)
     }
 }
 
-impl FancyHandle {
+// Ensure bars are finished on drop
+impl Drop for Progress {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            if !handle.is_done() {
+                if let Some(bar) = &handle.bar {
+                    bar.finish();
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressBar {
+    bar: Option<indicatif::ProgressBar>,
+    pub name: Arc<str>,
+    git_ref: GitRef,
+    num_tasks: usize,
+    t_start: OnceCell<time::Instant>,
+    mode: Mode,
+    current_step: Arc<AtomicU64>,
+}
+
+impl PartialEq for ProgressBar {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.git_ref == other.git_ref
+            && self.num_tasks == other.num_tasks
+    }
+}
+
+impl ProgressBar {
     fn format_elapsed(&self) -> String {
         self.t_start
+            .get()
             .map(|start| {
-                format!(
-                    " in {}",
-                    style(format_duration(time::Instant::now().duration_since(start))).yellow()
-                )
+                let dur = format_duration(time::Instant::now().duration_since(*start));
+                if self.mode == Mode::Fancy {
+                    format!(" in {}", style(dur).yellow())
+                } else {
+                    format!(" in {dur}")
+                }
             })
             .unwrap_or_default()
     }
-}
 
-impl Handle for FancyHandle {
-    fn err(&self, msg: impl HandleMessage) {
-        self.bar.abandon_with_message(format!(
-            "{} {} {}{}",
-            *self.name,
-            style(msg.into()).blue(),
-            style("failed").red(),
-            self.format_elapsed()
-        ));
+    fn name_with_version(&self) -> String {
+        if self.git_ref.is_empty() {
+            self.name.to_string()
+        } else {
+            format!("{} {}", self.name, style(&self.git_ref).blue())
+        }
     }
 
-    fn fin(&self, msg: impl HandleMessage) {
-        self.bar.inc(1);
-        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
-        let position = position.min(self.num_tasks);
-        self.bar
-            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
-        self.bar.finish_with_message(format!(
-            "{} {} {}{}",
-            *self.name,
-            style(msg).blue(),
-            style("done").green(),
-            self.format_elapsed()
-        ));
-    }
-
-    fn msg(&self, msg: impl HandleMessage) {
-        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
-        let position = position.min(self.num_tasks);
-        self.bar
-            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
-        self.bar.set_message(format!("{} {}", *self.name, msg));
-    }
-
-    fn step(&self, msg: impl HandleMessage) {
-        self.bar.inc(1);
-        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
-        let position = position.min(self.num_tasks);
-        self.bar
-            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
-        self.bar.set_message(format!("{}: {}", *self.name, msg));
-    }
-
-    fn is_done(&self) -> bool {
-        self.bar.is_finished()
-    }
-
-    fn start(&mut self, msg: impl HandleMessage) {
-        self.t_start = Some(time::Instant::now());
-        self.bar.inc(1);
-        let position = usize::try_from(self.bar.position()).unwrap_or(self.num_tasks);
-        let position = position.min(self.num_tasks);
-        self.bar
-            .set_prefix(format!("[{}/{}]", position, self.num_tasks));
-        self.bar.set_message(format!("{} {}", *self.name, msg));
-    }
-
-    fn tick(&self) {
-        self.bar.tick();
+    /// Helper to print log lines in Plain mode (using bar.println to coordinate with `MultiProgress`)
+    fn println(&self, msg: String) {
+        match &self.bar {
+            Some(bar) => bar.println(msg),
+            None => println!("{msg}"),
+        }
     }
 }
 
-impl PlainHandle {
-    fn format_elapsed(&self) -> String {
-        self.t_start
-            .map(|start| {
+impl ProgressBar {
+    pub fn err(&self, msg: impl AsRef<str>) {
+        if let Some(bar) = &self.bar {
+            bar.abandon_with_message(format!(
+                "{} {} {}{}",
+                self.name_with_version(),
+                style(msg.as_ref()).blue(),
+                style("failed").red(),
+                self.format_elapsed()
+            ));
+        } else {
+            let cur = self.current_step.load(Ordering::SeqCst);
+            self.println(format!(
+                "[{}/{}] {} {} {}{}",
+                cur,
+                self.num_tasks,
+                self.name_with_version(),
+                msg.as_ref(),
+                style("failed").red(),
+                self.format_elapsed()
+            ));
+        }
+    }
+
+    pub fn fin(&self, msg: impl AsRef<str>) {
+        if let Some(bar) = &self.bar {
+            bar.inc(1);
+        } else {
+            self.current_step.fetch_add(1, Ordering::SeqCst);
+        }
+
+        if let Some(bar) = &self.bar {
+            let position = usize::try_from(bar.position())
+                .unwrap_or(self.num_tasks)
+                .min(self.num_tasks);
+            bar.set_prefix(format!("[{}/{}]", position, self.num_tasks));
+
+            let message = if msg.as_ref().is_empty() {
                 format!(
-                    " in {}",
-                    format_duration(time::Instant::now().duration_since(start))
+                    "{} {}{}",
+                    self.name_with_version(),
+                    style("done").green(),
+                    self.format_elapsed()
                 )
-            })
-            .unwrap_or_default()
+            } else {
+                format!(
+                    "{} {} {}{}",
+                    self.name_with_version(),
+                    msg.as_ref(),
+                    style("done").green(),
+                    self.format_elapsed()
+                )
+            };
+            bar.finish_with_message(message);
+        } else {
+            let cur = self.current_step.load(Ordering::SeqCst);
+            if msg.as_ref().is_empty() {
+                self.println(format!(
+                    "[{}/{}] {} {}{}",
+                    cur,
+                    self.num_tasks,
+                    self.name_with_version(),
+                    style("done").green(),
+                    self.format_elapsed()
+                ));
+            } else {
+                self.println(format!(
+                    "[{}/{}] {} {} {}{}",
+                    cur,
+                    self.num_tasks,
+                    self.name_with_version(),
+                    style(msg.as_ref()).blue(),
+                    style("done").green(),
+                    self.format_elapsed()
+                ));
+            }
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.bar
+            .as_ref()
+            .is_some_and(indicatif::ProgressBar::is_finished)
+    }
+
+    pub fn msg(&self, msg: impl AsRef<str>) {
+        if let Some(bar) = &self.bar {
+            let position = usize::try_from(bar.position())
+                .unwrap_or(self.num_tasks)
+                .min(self.num_tasks);
+            bar.set_prefix(format!("[{}/{}]", position, self.num_tasks));
+            bar.set_message(format!("{} {}", self.name_with_version(), msg.as_ref()));
+        } else {
+            let cur = self.current_step.load(Ordering::SeqCst);
+            self.println(format!(
+                "[{}/{}] {}: {}",
+                cur,
+                self.num_tasks,
+                self.name_with_version(),
+                msg.as_ref()
+            ));
+        }
+    }
+
+    pub fn step(&self, msg: impl AsRef<str>) {
+        let _ = self.t_start.set(time::Instant::now());
+        if let Some(bar) = &self.bar {
+            bar.inc(1);
+        } else {
+            self.current_step.fetch_add(1, Ordering::SeqCst);
+        }
+
+        if let Some(bar) = &self.bar {
+            let position = usize::try_from(bar.position())
+                .unwrap_or(self.num_tasks)
+                .min(self.num_tasks);
+            bar.set_prefix(format!("[{}/{}]", position, self.num_tasks));
+            bar.set_message(format!("{}: {}", self.name_with_version(), msg.as_ref()));
+        } else {
+            let cur = self.current_step.load(Ordering::SeqCst);
+            self.println(format!(
+                "[{}/{}] {} {}",
+                cur,
+                self.num_tasks,
+                self.name_with_version(),
+                msg.as_ref()
+            ));
+        }
+    }
+
+    pub fn tick(&self) {
+        if let Some(bar) = &self.bar {
+            bar.tick();
+        }
     }
 }
 
-impl Handle for PlainHandle {
-    fn err(&self, msg: impl HandleMessage) {
-        eprintln!(
-            "[{}/{}] {} {} {}{}",
-            self.cur_task.lock().unwrap(),
-            self.num_tasks,
-            *self.name,
-            style(msg.into()).blue(),
-            style("failed").red(),
-            self.format_elapsed()
-        );
+#[must_use]
+pub fn current(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Progress {
+    let mut mode = match progress {
+        ProgressStyle::Auto => {
+            if atty::is(atty::Stream::Stdout) {
+                Mode::Fancy
+            } else {
+                Mode::Plain
+            }
+        }
+        ProgressStyle::Fancy => Mode::Fancy,
+        ProgressStyle::Plain => Mode::Plain,
+    };
+
+    if matches!(verbose.log_level(), Some(Level::Debug | Level::Trace)) {
+        mode = Mode::Plain;
     }
 
-    fn fin(&self, msg: impl HandleMessage) {
-        let cur_task = {
-            let mut res = self.cur_task.lock().unwrap();
-            *res = res.saturating_add(1);
-            *res
-        };
-        eprintln!(
-            "[{}/{}] {} {} {}{}",
-            cur_task,
-            self.num_tasks,
-            *self.name,
-            style(msg).blue(),
-            style("done").green(),
-            self.format_elapsed()
-        );
-    }
-
-    fn msg(&self, msg: impl HandleMessage) {
-        eprintln!(
-            "[{}/{}] {}: {}",
-            self.cur_task.lock().unwrap(),
-            self.num_tasks,
-            *self.name,
-            msg
-        );
-    }
-
-    fn step(&self, msg: impl HandleMessage) {
-        let cur_task = {
-            let mut res = self.cur_task.lock().unwrap();
-            *res = res.saturating_add(1);
-            *res
-        };
-        eprintln!("[{}/{}] {} {}", cur_task, self.num_tasks, *self.name, msg);
-    }
-
-    fn is_done(&self) -> bool {
-        *self.cur_task.lock().unwrap() != self.num_tasks
-    }
-
-    fn start(&mut self, msg: impl HandleMessage) {
-        self.t_start = Some(time::Instant::now());
-        let cur_task = {
-            let mut res = self.cur_task.lock().unwrap();
-            *res = res.saturating_add(1);
-            *res
-        };
-        eprintln!("[{}/{}] {} {}", cur_task, self.num_tasks, *self.name, msg);
-    }
-
-    fn tick(&self) {}
+    Progress::new(mode)
 }
