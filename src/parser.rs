@@ -2,7 +2,7 @@ use std::{
     env::consts::DLL_EXTENSION,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
@@ -23,17 +23,31 @@ use crate::{
 pub const NUM_STEPS: usize = 3;
 pub const WASM_EXTENSION: &str = "wasm";
 
-pub async fn build_languages(languages: Vec<Language>) -> TsdlResult<()> {
+/// Represents a "Delta" to be applied to the cache after a successful build
+pub struct CacheUpdate {
+    pub name: String,
+    pub entry: CacheEntry,
+}
+
+/// Builds the provided languages.
+pub async fn build_languages(
+    languages: Vec<Language>,
+    cache_arc: Arc<cache::Cache>,
+) -> TsdlResult<(Vec<CacheUpdate>, Vec<TsdlError>)> {
     let mut set = JoinSet::new();
 
     for mut language in languages {
-        set.spawn(async move { language.process().await });
+        let cache_ref = cache_arc.clone();
+        set.spawn(async move { language.process(&cache_ref).await });
     }
 
     let mut errs = Vec::new();
+    let mut updates = Vec::new();
 
     while let Some(res) = set.join_next().await {
         match res {
+            Ok(Ok(Some(update))) => updates.push(update),
+            Ok(Ok(None)) => {} // Cache hit, no update needed
             Ok(Err(e)) => errs.push(e),
             // Propagate panics if they occur in tasks
             Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
@@ -41,11 +55,11 @@ pub async fn build_languages(languages: Vec<Language>) -> TsdlResult<()> {
         }
     }
 
-    if errs.is_empty() {
-        Ok(())
-    } else {
-        Err(error::Parser { related: errs }.into())
+    if !errs.is_empty() {
+        return Err(error::Parser { related: errs }.into());
     }
+
+    Ok((updates, errs))
 }
 
 #[derive(Clone, Debug)]
@@ -61,7 +75,6 @@ pub struct Language {
     repo: Url,
     target: Target,
     ts_cli: Arc<PathBuf>,
-    cache: Arc<Mutex<cache::Cache>>,
     cache_hit: bool,
 }
 
@@ -80,7 +93,6 @@ impl Language {
         repo: Url,
         target: Target,
         ts_cli: Arc<PathBuf>,
-        cache: Arc<Mutex<cache::Cache>>,
     ) -> Self {
         Language {
             build_dir,
@@ -94,13 +106,14 @@ impl Language {
             repo,
             target,
             ts_cli,
-            cache,
             cache_hit: false,
         }
     }
 
-    async fn process(&mut self) -> TsdlResult<()> {
-        let res = self.steps().await;
+    /// Returns `Some(CacheUpdate)` if a build occurred and cache needs updating.
+    /// Returns `None` if it was a cache hit.
+    async fn process(&mut self, cache: &cache::Cache) -> TsdlResult<Option<CacheUpdate>> {
+        let res = self.steps(cache).await;
         match &res {
             Err(_) => self.handle.err(self.git_ref.to_string()),
             Ok(_) => {
@@ -115,12 +128,13 @@ impl Language {
         res
     }
 
-    async fn steps(&mut self) -> TsdlResult<()> {
+    async fn steps(&mut self, cache: &cache::Cache) -> TsdlResult<Option<CacheUpdate>> {
         // Check cache before cloning (unless --force is set)
         let cache_hit = if self.force {
             false
         } else {
-            match self.check_cache_early().await {
+            // Pass read-only cache reference
+            match self.check_cache_early(cache).await {
                 Ok(hit) => hit,
                 Err(e) => return Err(e),
             }
@@ -129,7 +143,7 @@ impl Language {
         // If all grammars are cached, skip clone and build steps
         if cache_hit {
             self.cache_hit = true;
-            return Ok(());
+            return Ok(None);
         }
 
         self.handle.start(format!("Cloning {}", self.git_ref));
@@ -163,10 +177,10 @@ impl Language {
             self.build_grammar(dir.clone()).await?;
         }
 
-        // Update cache with grammar SHA1 after successful build
-        self.update_cache_after_build().await?;
+        // Generate the delta for the cache instead of writing to it directly
+        let update = self.generate_cache_update().await?;
 
-        Ok(())
+        Ok(Some(update))
     }
 
     async fn build_grammar(&self, dir: PathBuf) -> TsdlResult<()> {
@@ -421,11 +435,30 @@ impl Language {
         }
     }
 
-    /// Compute grammar hashes and lock cache for an operation
-    async fn with_cache<F, R>(&self, operation: F) -> TsdlResult<R>
-    where
-        F: FnOnce(&mut std::sync::MutexGuard<cache::Cache>, &str) -> R,
-    {
+    /// Check cache and compute grammar hashes before cloning
+    /// Returns true if cache hit (skip build), false if need to rebuild
+    ///
+    /// Refactored to use read-only reference
+    async fn check_cache_early(&mut self, cache: &cache::Cache) -> TsdlResult<bool> {
+        if self.force {
+            return Ok(false);
+        }
+
+        let build_dir = self.build_dir.clone();
+        // Keep CPU-bound hashing in blocking thread to avoid stalling async reactor
+        let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
+            .await
+            .map_err(|e| TsdlError::context("Failed to compute hashes", e))?
+            .unwrap_or_default();
+
+        let (name, git_ref, target) = (self.name.clone(), self.git_ref.to_string(), self.target);
+
+        // Access the cache directly without locking (we have a RO ref/clone)
+        Ok(!sha1.is_empty() && !cache.needs_rebuild(&name, &sha1, &git_ref, target))
+    }
+
+    /// Generates a cache update object to be applied later
+    async fn generate_cache_update(&self) -> TsdlResult<CacheUpdate> {
         let build_dir = self.build_dir.clone();
 
         let sha1 = tokio::task::spawn_blocking(move || compute_grammar_hashes(&build_dir))
@@ -433,46 +466,27 @@ impl Language {
             .map_err(|e| TsdlError::context("Failed to compute hashes", e))?
             .unwrap_or_default();
 
-        let mut cache = self.cache.lock().expect("cache mutex poisoned");
-        Ok(operation(&mut cache, &sha1))
-    }
-
-    /// Check cache and compute grammar hashes before cloning
-    /// Returns true if cache hit (skip build), false if need to rebuild
-    async fn check_cache_early(&mut self) -> TsdlResult<bool> {
-        if self.force {
-            return Ok(false);
+        if sha1.is_empty() {
+            // If we built successfully but have no hash, something is wrong
+            // but we can likely just skip caching or warn.
+            // For now, return error or handle gracefully.
+            return Err(TsdlError::Message(
+                "Computed empty SHA1 for built grammar".into(),
+            ));
         }
 
-        let (name, git_ref, target) = (self.name.clone(), self.git_ref.to_string(), self.target);
-
-        self.with_cache(move |cache, sha1| {
-            // Cache is valid if hash exists AND rebuild is NOT needed
-            !sha1.is_empty() && !cache.needs_rebuild(&name, sha1, &git_ref, target)
+        Ok(CacheUpdate {
+            name: self.name.clone(),
+            entry: CacheEntry {
+                grammar_sha1: sha1,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                git_ref: self.git_ref.to_string(),
+                target: self.target,
+            },
         })
-        .await
-    }
-
-    async fn update_cache_after_build(&self) -> TsdlResult<()> {
-        self.with_cache(|cache, sha1| {
-            if sha1.is_empty() {
-                return;
-            }
-
-            cache.set(
-                self.name.clone(),
-                CacheEntry {
-                    grammar_sha1: sha1.to_string(),
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                    git_ref: self.git_ref.to_string(),
-                    target: self.target,
-                },
-            );
-        })
-        .await
     }
 }
 
