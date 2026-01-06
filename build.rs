@@ -1,13 +1,10 @@
-use std::env;
-use std::ffi::OsString;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Command;
-
 use cargo_metadata::MetadataCommand;
-use indoc::formatdoc;
+use std::fmt::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::{env, fs};
 
+/// Maps targets to Tree Sitter platform strings.
 const TARGETS: &[(&str, &str)] = &[
     ("linux-arm", "arm-unknown-linux-gnueabi"),
     ("linux-arm64", "aarch64-unknown-linux-gnu"),
@@ -28,9 +25,50 @@ const fn platform_for_target(target: &str) -> &str {
     target
 }
 
+/// Generates a Rust file with `pub const` definitions.
+///
+/// Supports two sources:
+/// 1. `json(object, "key")`: Extracts value from `serde_json` Map.
+/// 2. `expr(value)`: Uses a raw Rust expression.
+macro_rules! generate_consts {
+    ($path:expr, $( $name:ident : $type:ident = $source:ident ( $($args:expr),* ) ),* $(,)?) => {
+        {
+            let mut buf = String::new();
+            $(
+                generate_consts!(@expand buf, $name, $type, $source($($args),*));
+            )*
+            std::fs::write($path, buf).expect("Failed to write consts file");
+        }
+    };
+
+    // Case: JSON String
+    (@expand $buf:expr, $name:ident, str, json($obj:expr, $key:literal)) => {
+        let val = $obj.get($key).expect(concat!("Key not found: ", $key))
+                      .as_str().expect(concat!("Key not a string: ", $key));
+        writeln!($buf, "pub const {}: &str = {:?};", stringify!($name), val).unwrap();
+    };
+
+    // Case: JSON Bool
+    (@expand $buf:expr, $name:ident, bool, json($obj:expr, $key:literal)) => {
+        let val = $obj.get($key).expect(concat!("Key not found: ", $key))
+                      .as_bool().expect(concat!("Key not a bool: ", $key));
+        writeln!($buf, "pub const {}: bool = {};", stringify!($name), val).unwrap();
+    };
+
+    // Case: Raw Expression (String)
+    (@expand $buf:expr, $name:ident, str, expr($val:expr)) => {
+        writeln!($buf, "pub const {}: &str = {:?};", stringify!($name), $val).unwrap();
+    };
+}
+
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+
     let out_dir = env::var_os("OUT_DIR").unwrap();
-    let build_target = env::var_os("TARGET").unwrap();
+    let build_target = env::var("TARGET").unwrap();
+
+    // 1. Get Metadata
     let metadata = MetadataCommand::new().exec().unwrap();
     let meta = metadata
         .root_package()
@@ -38,80 +76,63 @@ fn main() {
         .metadata
         .as_object()
         .unwrap();
-    write_tree_sitter_consts(meta, &build_target, &out_dir);
-    write_tsdl_consts(meta, &out_dir);
+
+    // 2. Prep dynamic values
+    let tsdl_bin_build_dir = PathBuf::from(file!())
+        .parent()
+        .unwrap()
+        .join("src")
+        .canonicalize()
+        .unwrap()
+        .join(""); // Ensure trailing slash logic if needed, or handle in string
+
+    // Note: User original code added a trailing slash via format string,
+    // we convert to string here for the macro.
+    let tsdl_bin_str = format!("{}/", tsdl_bin_build_dir.to_str().unwrap());
+
+    let ts_platform = platform_for_target(&build_target);
+
+    // 3. Generate TSDL Consts
+    let tsdl = meta.get("tsdl").expect("missing [metadata.tsdl]");
+    generate_consts!(
+        Path::new(&out_dir).join("tsdl_consts.rs"),
+        TSDL_BIN_BUILD_DIR : str  = expr(tsdl_bin_str),
+        TSDL_BUILD_DIR     : str  = json(tsdl, "build-dir"),
+        TSDL_CACHE_FILE    : str  = json(tsdl, "cache-file"),
+        TSDL_CONFIG_FILE   : str  = json(tsdl, "config-file"),
+        TSDL_FORCE         : bool = json(tsdl, "force"),
+        TSDL_FRESH         : bool = json(tsdl, "fresh"),
+        TSDL_FROM          : str  = json(tsdl, "from"),
+        TSDL_LOCK_FILE     : str  = json(tsdl, "lock-file"),
+        TSDL_OUT_DIR       : str  = json(tsdl, "out-dir"),
+        TSDL_PREFIX        : str  = json(tsdl, "prefix"),
+        TSDL_REF           : str  = json(tsdl, "ref"),
+        TSDL_SHOW_CONFIG   : bool = json(tsdl, "show-config"),
+    );
+
+    // 4. Generate Tree Sitter Consts
+    let tree_sitter = meta
+        .get("tree-sitter")
+        .expect("missing [metadata.tree-sitter]");
+    generate_consts!(
+        Path::new(&out_dir).join("tree_sitter_consts.rs"),
+        TREE_SITTER_PLATFORM : str = expr(ts_platform),
+        TREE_SITTER_REPO     : str = json(tree_sitter, "repo"),
+        TREE_SITTER_REF      : str = json(tree_sitter, "ref"),
+    );
+
+    // 5. Generate Version/SHA
     let sha1 = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|str| format!(" ({})", str.trim()))
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| format!(" ({})", s.trim()))
         .unwrap_or_default();
+
     fs::write(
         Path::new(&out_dir).join("tsdl.version"),
         format!("{}{}", env!("CARGO_PKG_VERSION"), sha1),
-    )
-    .unwrap();
-}
-
-fn write_tsdl_consts(meta: &serde_json::Map<String, serde_json::Value>, out_dir: &OsString) {
-    let root = PathBuf::from(file!());
-    let tsdl_bin_build_dir = root.parent().unwrap().join("src").canonicalize().unwrap();
-    let tsdl_bin_build_dir = tsdl_bin_build_dir.to_str().unwrap();
-    let tsdl = meta.get("tsdl").unwrap();
-    let tsdl_build_dir = tsdl.get("build-dir").unwrap().as_str().unwrap();
-    let tsdl_cache_file = tsdl.get("cache-file").unwrap().as_str().unwrap();
-    let tsdl_config_file = tsdl.get("config-file").unwrap().as_str().unwrap();
-    let tsdl_consts = Path::new(&out_dir).join("tsdl_consts.rs");
-    let tsdl_force = tsdl.get("force").unwrap().as_bool().unwrap();
-    let tsdl_fresh = tsdl.get("fresh").unwrap().as_bool().unwrap();
-    let tsdl_from = tsdl.get("from").unwrap().as_str().unwrap();
-    let tsdl_lock_file = tsdl.get("lock-file").unwrap().as_str().unwrap();
-    let tsdl_out_dir = tsdl.get("out-dir").unwrap().as_str().unwrap();
-    let tsdl_prefix = tsdl.get("prefix").unwrap().as_str().unwrap();
-    let tsdl_ref = tsdl.get("ref").unwrap().as_str().unwrap();
-    let tsdl_show_config = tsdl.get("show-config").unwrap().as_bool().unwrap();
-    fs::write(
-        tsdl_consts,
-        formatdoc!(
-            r#"
-              pub const TSDL_BIN_BUILD_DIR: &str = "{tsdl_bin_build_dir}/";
-              pub const TSDL_BUILD_DIR: &str = "{tsdl_build_dir}";
-              pub const TSDL_CACHE_FILE: &str = "{tsdl_cache_file}";
-              pub const TSDL_CONFIG_FILE: &str = "{tsdl_config_file}";
-              pub const TSDL_FORCE: bool = {tsdl_force};
-              pub const TSDL_FRESH: bool = {tsdl_fresh};
-              pub const TSDL_FROM: &str = "{tsdl_from}";
-              pub const TSDL_LOCK_FILE: &str = "{tsdl_lock_file}";
-              pub const TSDL_OUT_DIR: &str = "{tsdl_out_dir}";
-              pub const TSDL_PREFIX: &str = "{tsdl_prefix}";
-              pub const TSDL_REF: &str = "{tsdl_ref}";
-              pub const TSDL_SHOW_CONFIG: bool = {tsdl_show_config};
-            "#
-        ),
-    )
-    .unwrap();
-}
-
-fn write_tree_sitter_consts(
-    meta: &serde_json::Map<String, serde_json::Value>,
-    build_target: &OsString,
-    out_dir: &OsString,
-) {
-    let tree_sitter = meta.get("tree-sitter").unwrap();
-    let tree_sitter_ref = tree_sitter.get("ref").unwrap().as_str().unwrap();
-    let tree_sitter_repo = tree_sitter.get("repo").unwrap().as_str().unwrap();
-    let tree_sitter_platform = platform_for_target(build_target.to_str().unwrap());
-    let tree_sitter_consts = Path::new(out_dir).join("tree_sitter_consts.rs");
-    fs::write(
-        tree_sitter_consts,
-        formatdoc!(
-            r#"
-              pub const TREE_SITTER_PLATFORM: &str = "{tree_sitter_platform}";
-              pub const TREE_SITTER_REPO: &str = "{tree_sitter_repo}";
-              pub const TREE_SITTER_REF: &str = "{tree_sitter_ref}";
-            "#
-        ),
     )
     .unwrap();
 }
