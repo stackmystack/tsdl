@@ -10,7 +10,7 @@ use tokio::time;
 use url::Url;
 
 use crate::{
-    actors::{self, CacheActor, DisplayActor},
+    actors::{self, CacheActor, DisplayActor, DisplayAddr},
     app::App,
     args::{ParserConfig, Target, TreeSitter},
     cache::Db,
@@ -89,7 +89,7 @@ impl BuildContext {
     }
 }
 
-pub fn run(app: &App) -> TsdlResult<()> {
+pub fn run(app: &mut App) -> TsdlResult<()> {
     if app.command.show_config {
         crate::config::show(&app.command)?;
     }
@@ -145,13 +145,9 @@ pub fn run(app: &App) -> TsdlResult<()> {
     Ok(())
 }
 
-fn clear(app: &App) -> TsdlResult<()> {
+fn clear(app: &mut App) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
-        let mut progress = app
-            .progress
-            .lock()
-            .map_err(|e| TsdlError::message(format!("Failed to acquire progress lock: {e}")))?;
-        let bar = progress.register("Fresh Build".into(), "".into(), 1);
+        let bar = app.progress.register("Fresh Build".into(), "".into(), 1);
         fs::remove_dir_all(&app.command.build_dir)?;
         bar.fin(format!("Cleaned {}", app.command.build_dir.display()));
     }
@@ -222,13 +218,15 @@ fn ignite(app: &App) -> TsdlResult<()> {
 
     let db = Db::load(&app.command.build_dir)?;
     let languages = collect_languages(app)?;
-    let progress = app.progress.clone();
 
     let result = rt.block_on(async move {
         let cache = CacheActor::spawn(db, app.command.force);
-        let display = DisplayActor::spawn(progress.clone());
+        let display = DisplayActor::spawn(Progress::new(app.progress.mode));
 
-        tokio::spawn(async { update_screen(progress).await });
+        let display2 = display.clone();
+        tokio::spawn(async {
+            update_screen(display2).await;
+        });
 
         actors::run(
             &app.command.build_dir,
@@ -318,15 +316,13 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
     results
 }
 
-async fn update_screen(progress: Arc<std::sync::Mutex<Progress>>) {
+async fn update_screen(display: DisplayAddr) {
     let mut interval = time::interval(time::Duration::from_millis(
         1000 / TICK_CHARS.chars().count() as u64,
     ));
 
     loop {
         interval.tick().await;
-        if let Ok(s) = progress.try_lock() {
-            s.tick();
-        }
+        display.tick().await;
     }
 }

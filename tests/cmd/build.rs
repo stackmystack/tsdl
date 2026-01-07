@@ -146,9 +146,16 @@ Could not build all parsers.
             remaining_output = &remaining_output[idx + line.len()..];
         } else {
             panic!(
-                    "Output mismatch.\nCould not find expected line (or it is out of order):\n{:?}\n\nInside remaining output:\n{:?}\n\nOriginal full output:\n{}",
-                    line, remaining_output, error_part
-                );
+                "Output mismatch.\n\
+                 Could not find expected line (or it is out of order):\n\
+                 {line:?}\n\
+                 \n\
+                 Inside remaining output:\n\
+                 {remaining_output:?}\n\
+                 \n\
+                 Original full output:\n\
+                 {error_part}"
+            );
         }
     }
 }
@@ -287,10 +294,10 @@ fn multi_parsers_cmd() {
         .child(TSDL_CONFIG_FILE)
         .write_str(&config)
         .unwrap();
-    let mut _assert = sandbox.cmd.args(["build", typescript]).assert().success();
+    let assert = sandbox.cmd.args(["build", typescript]).assert().success();
     // Check for version in cloning step
     // TODO: dig for changes in this test and revert.
-    _assert = _assert.stdout(p::str::contains(format!("{typescript} v{version} cloning")));
+    _ = assert.stdout(p::str::contains(format!("{typescript} v{version} cloning")));
     for language in languages {
         let dylib = sandbox
             .tmp

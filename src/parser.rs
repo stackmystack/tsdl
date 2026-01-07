@@ -423,7 +423,7 @@ mod tests {
         Ok(name.to_string())
     }
 
-    /// Generate cache key for a grammar: "language_name/grammar_name"
+    /// Generate cache key for a grammar: `language_name/grammar_name`
     fn make_cache_key(language_name: &str, grammar_path: &Path) -> TsdlResult<String> {
         let grammar_dir = grammar_path.parent().ok_or_else(|| {
             TsdlError::Message(format!(
@@ -433,7 +433,7 @@ mod tests {
         })?;
 
         let grammar_name = extract_grammar_name(grammar_dir)?;
-        Ok(format!("{}/{}", language_name, grammar_name))
+        Ok(format!("{language_name}/{grammar_name}"))
     }
 
     /// Parse parser name and extension

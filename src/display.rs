@@ -23,7 +23,7 @@ pub enum UpdateKind {
 pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Mode {
+pub enum Mode {
     Fancy,
     Plain,
 }
@@ -31,14 +31,15 @@ enum Mode {
 #[derive(Debug, Clone)]
 pub struct Progress {
     multi: indicatif::MultiProgress,
-    mode: Mode,
+    pub mode: Mode,
     // We store handles to ensure they aren't dropped prematurely if needed,
     // mimicking the original `handles` vectors.
     handles: Vec<ProgressBar>,
 }
 
 impl Progress {
-    fn new(mode: Mode) -> Self {
+    #[must_use] 
+    pub fn new(mode: Mode) -> Self {
         Self {
             multi: indicatif::MultiProgress::new(),
             mode,
@@ -53,6 +54,14 @@ impl Progress {
                 .map_err(|e| TsdlError::context("Clearing the multi-progress bar", e))?;
         }
         Ok(())
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.handles.iter().all(ProgressBar::is_done)
+    }
+
+    pub fn prinltn(&self, msg: impl AsRef<str>) {
+        println!("{}", msg.as_ref());
     }
 
     /// # Panics
@@ -98,10 +107,6 @@ impl Progress {
                 handle.tick();
             }
         }
-    }
-
-    pub fn is_done(&self) -> bool {
-        self.handles.iter().all(ProgressBar::is_done)
     }
 }
 
@@ -161,7 +166,7 @@ impl ProgressBar {
     }
 
     /// Helper to print log lines in Plain mode (using bar.println to coordinate with `MultiProgress`)
-    fn println(&self, msg: String) {
+    pub fn println(&self, msg: String) {
         match &self.bar {
             Some(bar) => bar.println(msg),
             None => println!("{msg}"),

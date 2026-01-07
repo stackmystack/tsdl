@@ -142,7 +142,7 @@ pub async fn prepare(
             format!("v{TREE_SITTER_REF}").into(),
             3,
         )
-        .await?;
+        .await;
 
     let repo = Url::parse(&tree_sitter.repo)
         .map_err(|e| TsdlError::context("Parsing the tree-sitter URL", e))?;
