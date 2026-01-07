@@ -53,7 +53,7 @@ use std::{
     env,
     io::{self, Write},
     path::{Path, PathBuf},
-    time,
+    time::Duration,
 };
 
 use crate::error::TsdlError;
@@ -99,15 +99,40 @@ impl SafeCanonicalize for PathBuf {
         self.as_path().canon()
     }
 }
-fn format_duration(duration: time::Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let milliseconds = duration.subsec_millis();
 
+#[must_use] 
+pub fn format_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let millis = duration.subsec_millis();
+
+    // Base case: sub-minute gets full precision
     if total_seconds < 60 {
-        format!("{total_seconds}.{milliseconds:#02}s")
-    } else {
-        format!("{}mn {}s", total_seconds / 60, total_seconds % 60)
+        return format!("{total_seconds}.{millis:02}s");
     }
+
+    let seconds = total_seconds % 60;
+    let minutes = (total_seconds / 60) % 60;
+    let hours = total_seconds / 3600;
+
+    let mut parts = Vec::new();
+
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+
+    if minutes > 0 {
+        parts.push(format!("{minutes}mn"));
+    }
+
+    if seconds > 0 || millis > 0 {
+        if millis > 0 {
+            parts.push(format!("{seconds}.{millis:03}s"));
+        } else {
+            parts.push(format!("{seconds}s"));
+        }
+    }
+
+    parts.join(" ")
 }
 
 pub fn relative_to_cwd(dir: &Path) -> PathBuf {

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::ExitCode};
+use std::{fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use clap::Parser;
 use self_update::self_replace;
@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         info!("Starting");
-        match App::new(&args).and_then(|app| run(&app, &args)) {
+        match App::new(&args).and_then(|mut app| run(&mut app, &args)) {
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE
@@ -26,23 +26,23 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(app: &App, args: &args::Args) -> TsdlResult<()> {
+fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
     match &args.command {
-        args::Command::Build(_) => tsdl::build::run(app),
+        args::Command::Build(_) => {
+            let (result, duration) = time(|| tsdl::build::run(app));
+            println!("Done in {duration}");
+            result
+        }
         args::Command::Config { command } => tsdl::config::run(app, command),
         args::Command::Selfupdate => selfupdate(app),
     }
 }
 
-fn selfupdate(app: &App) -> TsdlResult<()> {
-    let mut progress = app
-        .progress
-        .lock()
-        .map_err(|e| TsdlError::message(format!("Failed to acquire progress lock: {e}")))?;
+fn selfupdate(app: &mut App) -> TsdlResult<()> {
     let tsdl = env!("CARGO_BIN_NAME");
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| TsdlError::context("Failed to parse current version", e))?;
-    let handle = progress.register("selfupdate".into(), "".into(), 4);
+    let handle = app.progress.register("selfupdate".into(), "".into(), 4);
 
     handle.step("fetching releases");
     let releases = self_update::backends::github::ReleaseList::configure()
@@ -127,4 +127,13 @@ pub fn set_panic_hook() {
         error!("{}", info);
         std::process::exit(1);
     }));
+}
+
+fn time<F, T>(f: F) -> (T, String)
+where
+    F: FnOnce() -> T,
+{
+    let start = Instant::now();
+    let result = f();
+    (result, tsdl::format_duration(start.elapsed()))
 }

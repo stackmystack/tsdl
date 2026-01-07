@@ -1,15 +1,10 @@
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     actors::{Addr, Response},
     display::{Progress, ProgressBar, UpdateKind},
-    error::TsdlError,
     git::GitRef,
     TsdlResult,
 };
@@ -27,7 +22,11 @@ pub enum DisplayMessage {
         git_ref: GitRef,
         name: Arc<str>,
         num_tasks: usize,
-        tx: oneshot::Sender<TsdlResult<ProgressAddr>>,
+        tx: oneshot::Sender<ProgressAddr>,
+    },
+
+    Println {
+        msg: Arc<str>,
     },
 
     RegisterGrammar {
@@ -35,7 +34,7 @@ pub enum DisplayMessage {
         language: Arc<str>,
         name: Arc<str>,
         num_tasks: usize,
-        tx: oneshot::Sender<TsdlResult<ProgressAddr>>,
+        tx: oneshot::Sender<ProgressAddr>,
     },
 
     UnregisterLanguage {
@@ -47,6 +46,7 @@ pub enum DisplayMessage {
         kind: UpdateKind,
         msg: String,
     },
+
     Tick,
 }
 
@@ -80,7 +80,7 @@ impl DisplayAddr {
         language: Arc<str>,
         name: Arc<str>,
         num_tasks: usize,
-    ) -> TsdlResult<ProgressAddr> {
+    ) -> ProgressAddr {
         self.request(|tx| DisplayMessage::RegisterGrammar {
             git_ref,
             language,
@@ -96,7 +96,7 @@ impl DisplayAddr {
         git_ref: GitRef,
         name: Arc<str>,
         num_tasks: usize,
-    ) -> TsdlResult<ProgressAddr> {
+    ) -> ProgressAddr {
         self.request(|tx| DisplayMessage::RegisterLanguage {
             git_ref,
             name,
@@ -106,9 +106,17 @@ impl DisplayAddr {
         .await
     }
 
+    pub async fn println(&self, msg: Arc<str>) {
+        self.fire(DisplayMessage::Println { msg }).await;
+    }
+
     pub async fn remove_language(&self, name: Arc<str>) -> TsdlResult<()> {
         self.fire(DisplayMessage::UnregisterLanguage { name }).await;
         Ok(())
+    }
+
+    pub async fn tick(&self) {
+        self.fire(DisplayMessage::Tick {}).await;
     }
 }
 
@@ -168,7 +176,7 @@ impl ProgressAddr {
 pub struct DisplayActor {
     handles: HashMap<u64, ProgressBar>,
     next_id: u64,
-    progress: Arc<Mutex<Progress>>,
+    progress: Progress,
     rx: mpsc::Receiver<DisplayMessage>,
     tx: mpsc::Sender<DisplayMessage>,
 }
@@ -212,6 +220,10 @@ impl DisplayActor {
                     .send(res);
                 }
 
+                DisplayMessage::Println { msg } => {
+                    self.progress.prinltn(msg);
+                }
+
                 DisplayMessage::RegisterGrammar {
                     git_ref,
                     ref language,
@@ -243,27 +255,19 @@ impl DisplayActor {
                 },
 
                 DisplayMessage::Tick => {
-                    if let Ok(p) = self.progress.lock() {
-                        p.tick();
-                    }
+                    self.progress.tick();
                 }
             }
         }
     }
 
     /// TODO: I'd really like to remove the Mutex.
-    fn register<F>(&mut self, create: F) -> TsdlResult<ProgressAddr>
+    fn register<F>(&mut self, create: F) -> ProgressAddr
     where
         F: FnOnce(&mut Progress) -> ProgressBar,
     {
         // 1. Create inner handle
-        let inner = {
-            let mut progress = self
-                .progress
-                .lock()
-                .map_err(|_| TsdlError::message("Lock poisoned"))?;
-            create(&mut progress)
-        };
+        let inner = create(&mut self.progress);
 
         // 2. Register in actor state
         let id = self.next_id;
@@ -271,13 +275,14 @@ impl DisplayActor {
         self.handles.insert(id, inner);
 
         // 3. Return client handle
-        Ok(ProgressAddr {
+        ProgressAddr {
             id,
             tx: self.tx.clone(),
-        })
+        }
     }
 
-    pub fn spawn(progress: Arc<Mutex<Progress>>) -> DisplayAddr {
+    #[must_use]
+    pub fn spawn(progress: Progress) -> DisplayAddr {
         let (tx, rx) = mpsc::channel(64);
         let actor = Self {
             handles: HashMap::new(),

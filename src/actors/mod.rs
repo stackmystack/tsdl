@@ -145,7 +145,7 @@ async fn discover_grammars(
 ) -> TsdlResult<Vec<crate::parser::GrammarBuild>> {
     let progress = display
         .add_language(language.spec.git_ref.clone(), language.name.clone(), 3)
-        .await?;
+        .await;
 
     // ... (Clone logic same as original) ...
     if cache
@@ -173,7 +173,7 @@ async fn discover_grammars(
                 language.name.clone(),
                 4,
             )
-            .await?;
+            .await;
 
         builds.push(GrammarBuild {
             context: language.context.clone(),

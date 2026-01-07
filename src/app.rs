@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::path::PathBuf;
 
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
@@ -11,7 +8,7 @@ use crate::{args::Args, args::BuildCommand, config, display, TsdlResult};
 pub struct App {
     pub command: BuildCommand,
     pub config_path: PathBuf,
-    pub progress: Arc<Mutex<display::Progress>>,
+    pub progress: display::Progress,
     pub verbose: Verbosity<InfoLevel>,
 }
 
@@ -20,7 +17,7 @@ impl App {
     /// This resolves and merges all configuration sources (CLI, config file, defaults).
     pub fn new(args: &Args) -> TsdlResult<Self> {
         let command = config::current(&args.config, args.command.as_build())?;
-        let progress = Arc::new(Mutex::new(display::current(&args.progress, &args.verbose)));
+        let progress = display::current(&args.progress, &args.verbose);
 
         Ok(Self {
             command,
