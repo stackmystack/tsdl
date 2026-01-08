@@ -68,7 +68,8 @@ impl CacheAddr {
         Self { tx }
     }
 
-    pub async fn get(&self, name: String) -> Option<Entry> {
+    /// Accepts any string type (String, &str, Arc<str>) with minimal cloning
+    pub async fn get<S: Into<Arc<str>>>(&self, name: S) -> Option<Entry> {
         self.request(|tx| CacheMessage::Get {
             name: name.into(),
             tx,
@@ -76,20 +77,24 @@ impl CacheAddr {
         .await
     }
 
-    pub async fn needs_clone(&self, language: Arc<str>, spec: Arc<BuildSpec>) -> bool {
-        self.request(|tx| CacheMessage::NeedsClone { language, spec, tx })
-            .await
+    pub async fn needs_clone<S: Into<Arc<str>>>(&self, language: S, spec: Arc<BuildSpec>) -> bool {
+        self.request(|tx| CacheMessage::NeedsClone {
+            language: language.into(),
+            spec,
+            tx,
+        })
+        .await
     }
 
-    pub async fn needs_rebuild(
+    pub async fn needs_rebuild<S: Into<Arc<str>>>(
         &self,
-        name: Arc<str>,
-        hash: Arc<str>,
+        name: S,
+        hash: S,
         spec: Arc<BuildSpec>,
     ) -> bool {
         self.request(|tx| CacheMessage::NeedsRebuild {
-            name,
-            hash,
+            name: name.into(),
+            hash: hash.into(),
             spec,
             tx,
         })

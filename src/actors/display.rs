@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -74,44 +74,45 @@ impl DisplayAddr {
         Self { tx }
     }
 
-    pub async fn add_grammar(
+    pub async fn add_grammar<S: Into<Arc<str>>>(
         &self,
         git_ref: GitRef,
-        language: Arc<str>,
-        name: Arc<str>,
+        language: S,
+        name: S,
         num_tasks: usize,
     ) -> ProgressAddr {
         self.request(|tx| DisplayMessage::RegisterGrammar {
             git_ref,
-            language,
-            name,
+            language: language.into(),
+            name: name.into(),
             num_tasks,
             tx,
         })
         .await
     }
 
-    pub async fn add_language(
+    pub async fn add_language<S: Into<Arc<str>>>(
         &self,
         git_ref: GitRef,
-        name: Arc<str>,
+        name: S,
         num_tasks: usize,
     ) -> ProgressAddr {
         self.request(|tx| DisplayMessage::RegisterLanguage {
             git_ref,
-            name,
+            name: name.into(),
             num_tasks,
             tx,
         })
         .await
     }
 
-    pub async fn println(&self, msg: Arc<str>) {
-        self.fire(DisplayMessage::Println { msg }).await;
+    pub async fn println<S: Into<Arc<str>>>(&self, msg: S) {
+        self.fire(DisplayMessage::Println { msg: msg.into() }).await;
     }
 
-    pub async fn remove_language(&self, name: Arc<str>) -> TsdlResult<()> {
-        self.fire(DisplayMessage::UnregisterLanguage { name }).await;
+    pub async fn remove_language<S: Into<Arc<str>>>(&self, name: S) -> TsdlResult<()> {
+        self.fire(DisplayMessage::UnregisterLanguage { name: name.into() })
+            .await;
         Ok(())
     }
 
@@ -128,47 +129,36 @@ pub struct ProgressAddr {
 }
 
 impl ProgressAddr {
-    pub fn msg<'a, S>(&self, msg: S)
-    where
-        S: Into<Cow<'a, str>>,
-    {
+    /// Takes Into<String> directly as the message must be owned to be sent
+    pub fn msg<S: Into<String>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Msg,
-            msg: msg.into().into_owned(),
+            msg: msg.into(),
         });
     }
 
-    pub fn step<'a, S>(&self, msg: S)
-    where
-        S: Into<Cow<'a, str>>,
-    {
+    pub fn step<S: Into<String>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Step,
-            msg: msg.into().into_owned(),
+            msg: msg.into(),
         });
     }
 
-    pub fn fin<'a, S>(&self, msg: S)
-    where
-        S: Into<Cow<'a, str>>,
-    {
+    pub fn fin<S: Into<String>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Fin,
-            msg: msg.into().into_owned(),
+            msg: msg.into(),
         });
     }
 
-    pub fn err<'a, S>(&self, msg: S)
-    where
-        S: Into<Cow<'a, str>>,
-    {
+    pub fn err<S: Into<String>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Err,
-            msg: msg.into().into_owned(),
+            msg: msg.into(),
         });
     }
 }
@@ -261,7 +251,6 @@ impl DisplayActor {
         }
     }
 
-    /// TODO: I'd really like to remove the Mutex.
     fn register<F>(&mut self, create: F) -> ProgressAddr
     where
         F: FnOnce(&mut Progress) -> ProgressBar,
