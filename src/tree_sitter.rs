@@ -139,7 +139,7 @@ pub async fn prepare(
     let progress = display
         .add_language(
             "Preparing tree-sitter-cli".into(),
-            format!("v{TREE_SITTER_REF}").into(),
+            format!("v{TREE_SITTER_REF}"),
             3,
         )
         .await;
