@@ -118,7 +118,7 @@ fn main() {
         Path::new(&out_dir).join("tree_sitter_consts.rs"),
         TREE_SITTER_PLATFORM : str = expr(ts_platform),
         TREE_SITTER_REPO     : str = json(tree_sitter, "repo"),
-        TREE_SITTER_REF      : str = json(tree_sitter, "ref"),
+        TREE_SITTER_VERSION  : str = json(tree_sitter, "version"),
     );
 
     // 5. Generate Version/SHA

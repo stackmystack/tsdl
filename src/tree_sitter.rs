@@ -11,7 +11,6 @@ use url::Url;
 
 use crate::actors::{DisplayAddr, ProgressAddr};
 use crate::args::TreeSitter;
-use crate::consts::TREE_SITTER_REF;
 use crate::git::{self, GitRef};
 use crate::SafeCanonicalize;
 use crate::{error::TsdlError, TsdlResult};
@@ -31,11 +30,10 @@ async fn chmod_x(prog: &Path) -> TsdlResult<()> {
 async fn cli(
     build_dir: &PathBuf,
     handle: &ProgressAddr,
+    platform: &str,
+    repo: &str,
     tag: &Tag,
-    tree_sitter: &TreeSitter,
 ) -> TsdlResult<PathBuf> {
-    let platform = &tree_sitter.platform;
-    let repo = &tree_sitter.repo;
     let tag = match tag {
         Tag::Exact { label, .. } => Cow::Borrowed(label),
         Tag::Ref(git_ref) => {
@@ -131,6 +129,7 @@ fn parse_refs(stdout: &str) -> HashMap<String, String> {
 
     refs
 }
+
 pub async fn prepare(
     build_dir: &PathBuf,
     display: DisplayAddr,
@@ -139,24 +138,32 @@ pub async fn prepare(
     let progress = display
         .add_language(
             "Preparing tree-sitter-cli".into(),
-            format!("v{TREE_SITTER_REF}"),
+            format!("v{}", tree_sitter.version),
             3,
         )
         .await;
 
     let repo = Url::parse(&tree_sitter.repo)
         .map_err(|e| TsdlError::context("Parsing the tree-sitter URL", e))?;
-    let git_ref = &tree_sitter.git_ref;
+    let git_ref = &tree_sitter.version;
 
     progress.step(format!("Figuring out tag from ref {git_ref}"));
     let tag = tag(repo.as_str(), git_ref).await?;
 
     progress.step(format!("Fetching {tag}",));
-    let cli = cli(build_dir, &progress, &tag, tree_sitter).await?;
+    let cli = cli(
+        build_dir,
+        &progress,
+        &tree_sitter.platform,
+        &tree_sitter.repo,
+        &tag,
+    )
+    .await?;
     progress.fin(format!("{tag}"));
 
     Ok(cli)
 }
+
 #[allow(clippy::missing_panics_doc)]
 pub async fn tag(repo: &str, version: &str) -> TsdlResult<Tag> {
     let output = Command::new("git")
