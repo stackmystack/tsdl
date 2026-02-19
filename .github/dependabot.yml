@@ -1,37 +1,16 @@
 version: 2
 updates:
   # Maintain dependencies for Cargo
-  - package-ecosystem: cargo
+  - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: daily
-    open-pull-requests-limit: 10
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-patch"]
-    groups:
-      dependencies:
-        update-types:
-          - "minor"
-          - "major"
-        patterns:
-          - "*"
-    allow:
-      - dependency-type: "direct"
+      interval: "daily"
+    # Disables regular version updates while allowing security PRs
+    open-pull-requests-limit: 0
 
   # Maintain dependencies for GitHub Actions
-  - package-ecosystem: github-actions
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-patch"]
-    groups:
-      github-actions:
-        update-types:
-          - "minor"
-          - "major"
-        patterns:
-          - "*"
+      interval: "weekly"
+    open-pull-requests-limit: 0

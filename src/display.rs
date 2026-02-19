@@ -38,7 +38,7 @@ pub struct Progress {
 }
 
 impl Progress {
-    #[must_use] 
+    #[must_use]
     pub fn new(mode: Mode) -> Self {
         Self {
             multi: indicatif::MultiProgress::new(),

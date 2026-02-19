@@ -100,7 +100,7 @@ impl SafeCanonicalize for PathBuf {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn format_duration(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
     let millis = duration.subsec_millis();
