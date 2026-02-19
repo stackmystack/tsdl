@@ -8,7 +8,7 @@ use tsdl::{
     args::BuildCommand,
     config,
     consts::{
-        TREE_SITTER_PLATFORM, TREE_SITTER_REF, TREE_SITTER_REPO, TSDL_BUILD_DIR, TSDL_FRESH,
+        TREE_SITTER_PLATFORM, TREE_SITTER_REPO, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_FRESH,
         TSDL_OUT_DIR, TSDL_SHOW_CONFIG,
     },
 };
@@ -68,7 +68,7 @@ fn current_default_is_default() -> Result<()> {
       TSDL_FRESH,
       TSDL_OUT_DIR,
       TSDL_SHOW_CONFIG,
-      TREE_SITTER_REF,
+      TREE_SITTER_VERSION,
       TREE_SITTER_REPO,
       TREE_SITTER_PLATFORM,
     };

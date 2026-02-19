@@ -8,7 +8,7 @@ use rstest::*;
 
 use tsdl::{
     consts::{
-        TREE_SITTER_PLATFORM, TREE_SITTER_REF, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
+        TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
         TSDL_PREFIX,
     },
     parser::WASM_EXTENSION,
@@ -25,7 +25,7 @@ fn no_args_should_download_tree_sitter_cli() {
         .assert()
         .success()
         .stdout(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_REF}"
+            "tree-sitter-cli v{TREE_SITTER_VERSION}"
         )));
     assert!(!sandbox.is_empty());
     let tree_sitter_cli = sandbox
@@ -45,8 +45,8 @@ fn no_args_should_download_tree_sitter_cli() {
 }
 
 #[rstest]
-#[case::no_leading_v("0.22.0", "v0.22.0", "0.22.0")]
-#[case::leading_v("v0.22.0", "v0.22.0", "0.22.0")]
+#[case::no_leading_v("0.25.6", "v0.25.6", "0.25.6")]
+#[case::leading_v("v0.25.6", "v0.25.6", "0.25.6")]
 #[case::sha1("636801770eea172d140e64b691815ff11f6b556f", "6368017", "0.22.6")]
 fn no_args_should_build_tree_sitter_with_specific_version(
     #[case] requested: &str,
@@ -54,7 +54,9 @@ fn no_args_should_build_tree_sitter_with_specific_version(
     #[case] cli_version: &str,
 ) {
     let mut sandbox = Sandbox::new();
-    sandbox.cmd.args(["build", "--tree-sitter-ref", requested]);
+    sandbox
+        .cmd
+        .args(["build", "--tree-sitter-version", requested]);
     sandbox
         .cmd
         .assert()

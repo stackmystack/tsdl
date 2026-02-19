@@ -34,7 +34,8 @@ show-config = false
 sys = false
 
 [package.metadata.tree-sitter]
-ref = "0.24.7"
+# TODO: make it accept true git refs. For now it only uses versions.
+version = "0.26.5"
 repo = "https://github.com/tree-sitter/tree-sitter"
 
 [dependencies]
