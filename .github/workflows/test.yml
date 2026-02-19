@@ -1,7 +1,6 @@
 name: Test
 
-on:
-  workflow_call
+on: workflow_call
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,18 +23,17 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - run: rustup toolchain install stable --profile minimal
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install emcc
+        uses: mymindstorm/setup-emsdk@v14
 
       - name: Install test tools
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,just
-
-      - name: Install emcc
-        uses: mymindstorm/setup-emsdk@v14
-      - name: Verify emcc
-        run: emcc -v
 
       - run: just test

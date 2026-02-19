@@ -6,13 +6,13 @@ use indoc::{formatdoc, indoc};
 use predicates::{self as p};
 use rstest::*;
 
-use tsdl::{
-    consts::{
-        TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
-        TSDL_PREFIX,
-    },
-    parser::WASM_EXTENSION,
+use tsdl::consts::{
+    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
+    TSDL_PREFIX,
 };
+
+#[cfg(enable_wasm_cases)]
+use tsdl::parser::WASM_EXTENSION;
 
 use crate::cmd::Sandbox;
 
@@ -311,9 +311,9 @@ fn multi_parsers_cmd() {
 
 #[rstest]
 #[case::default(None, &[DLL_EXTENSION])]
-#[case::all(Some("all"), &[DLL_EXTENSION, WASM_EXTENSION])]
+#[cfg_attr(enable_wasm_cases, case::all(Some("all"), &[DLL_EXTENSION, WASM_EXTENSION]))]
 #[case::native(Some("native"), &[DLL_EXTENSION])]
-#[case::wasm(Some("wasm"), &[WASM_EXTENSION])]
+#[cfg_attr(enable_wasm_cases, case::wasm(Some("wasm"), &[WASM_EXTENSION]))]
 fn build_target(#[case] target: Option<&str>, #[case] exts: &[&str]) {
     use std::fmt::Write as _;
 

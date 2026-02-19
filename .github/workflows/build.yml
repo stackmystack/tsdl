@@ -1,7 +1,6 @@
 name: Build
 
-on:
-  workflow_call
+on: workflow_call
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,12 +26,32 @@ jobs:
           # When adding a new `target`:
           # 1. Define a new platform alias above
           # 2. Add a new record to a matrix map in `cli/npm/install.js`
-          - { platform: linux-arm   , target: arm-unknown-linux-gnueabi , os: ubuntu-latest  }
-          - { platform: linux-arm64 , target: aarch64-unknown-linux-gnu , os: ubuntu-latest  }
-          - { platform: linux-x64   , target: x86_64-unknown-linux-gnu  , os: ubuntu-latest  }
-          - { platform: linux-x86   , target: i686-unknown-linux-gnu    , os: ubuntu-latest  }
-          - { platform: macos-arm64 , target: aarch64-apple-darwin      , os: macos-latest   }
-          - { platform: macos-x64   , target: x86_64-apple-darwin       , os: macos-13       }
+          - {
+              platform: linux-arm,
+              target: arm-unknown-linux-gnueabi,
+              os: ubuntu-latest,
+            }
+          - {
+              platform: linux-arm64,
+              target: aarch64-unknown-linux-gnu,
+              os: ubuntu-latest,
+            }
+          - {
+              platform: linux-x64,
+              target: x86_64-unknown-linux-gnu,
+              os: ubuntu-latest,
+            }
+          - {
+              platform: linux-x86,
+              target: i686-unknown-linux-gnu,
+              os: ubuntu-latest,
+            }
+          - {
+              platform: macos-arm64,
+              target: aarch64-apple-darwin,
+              os: macos-latest,
+            }
+          - { platform: macos-x64, target: x86_64-apple-darwin, os: macos-15 }
 
     env:
       BUILD_CMD: cargo
@@ -42,10 +61,12 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - run: rustup toolchain install stable --profile minimal
-      - run: rustup target add ${{ matrix.target }}
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
 
       - name: Install cross
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -66,7 +87,14 @@ jobs:
 
           echo "FROM ghcr.io/cross-rs/$target:edge"                              >> Dockerfile
           echo "RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"   >> Dockerfile
-          echo "RUN apt-get update && apt-get -y install nodejs"                 >> Dockerfile
+
+          # Add clang to bypass the GCC memcmp bug in rustls
+          echo "RUN apt-get update && apt-get -y install nodejs clang"           >> Dockerfile
+
+          # Explicitly set Clang as the fallback C/C++ compiler
+          echo "ENV CC=clang"                                                    >> Dockerfile
+          echo "ENV CXX=clang++"                                                 >> Dockerfile
+
           docker build -t $image .
 
       - name: Setup env extras
@@ -98,7 +126,7 @@ jobs:
       # So I abandoned it. We have to rely on the fact that tree-sitter-cli is well tested
       # on these platforms, and we need to make sure that tsdl itself runs well on linux/macOS.
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: tsdl.${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/tsdl
