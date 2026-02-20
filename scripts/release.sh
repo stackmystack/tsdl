@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -ex
 
 version=${1:-"$(git cliff --bumped-version)"}
 
@@ -10,7 +10,8 @@ just lint
 just test
 # update the version
 msg="# managed by release.sh"
-sed -E -i "s/^version = .*\s+$msg$/version = \"${version#v}\" $msg/" Cargo.toml
+sed -E "s/^version = .*[[:space:]]+$msg$/version = \"${version#v}\" $msg/" Cargo.toml > Cargo.toml.tmp
+mv Cargo.toml.tmp Cargo.toml
 # update the changelog
 git cliff --unreleased --tag "$version" --prepend CHANGELOG.md
 git add -A && git commit -m "chore(release): $version"
