@@ -28,10 +28,9 @@ fn no_args_should_download_tree_sitter_cli() {
             "tree-sitter-cli v{TREE_SITTER_VERSION}"
         )));
     assert!(!sandbox.is_empty());
-    let tree_sitter_cli = sandbox
-        .tmp
-        .child(TSDL_BUILD_DIR)
-        .child(format!("tree-sitter-{TREE_SITTER_PLATFORM}"));
+    let tree_sitter_cli = sandbox.tmp.child(TSDL_BUILD_DIR).child(format!(
+        "tree-sitter-{TREE_SITTER_PLATFORM}-v{TREE_SITTER_VERSION}"
+    ));
 
     tree_sitter_cli
         .assert(p::path::exists())
@@ -66,7 +65,7 @@ fn no_args_should_build_tree_sitter_with_specific_version(
         sandbox
             .tmp
             .child(TSDL_BUILD_DIR)
-            .child(format!("tree-sitter-{TREE_SITTER_PLATFORM}"))
+            .child(format!("tree-sitter-{TREE_SITTER_PLATFORM}-v{cli_version}"))
             .to_path_buf(),
     );
     tree_sitter_cli.arg("--version");

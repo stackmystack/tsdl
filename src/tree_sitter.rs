@@ -44,7 +44,10 @@ async fn cli(
         }
     };
     let cli = format!("tree-sitter-{platform}");
-    let res = PathBuf::new().join(build_dir).join(&cli).canon()?;
+    let res = PathBuf::new()
+        .join(build_dir)
+        .join(format!("{cli}-{tag}"))
+        .canon()?;
 
     if !res.exists() {
         handle.msg(format!("Downloading {tag}",));
@@ -74,7 +77,7 @@ async fn download(gz: &Path, url: &str) -> TsdlResult<()> {
 
 async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> TsdlResult<()> {
     download(gz, url).await?;
-    gunzip(gz).await?;
+    gunzip(gz, res).await?;
     chmod_x(res).await?;
     fs::remove_file(gz)
         .await
@@ -97,16 +100,16 @@ fn find_tag(refs: &HashMap<String, String>, version: &str) -> Tag {
         )
 }
 
-async fn gunzip(gz: &Path) -> TsdlResult<()> {
+async fn gunzip(gz: &Path, to: &Path) -> TsdlResult<()> {
     let file = fs::File::open(gz)
         .await
         .map_err(|e| TsdlError::context(format!("opening {}", gz.display()), e))?;
     let mut decompressor = GzipDecoder::new(tokio::io::BufReader::new(file));
-    let path = gz.with_extension("");
+    // let path = gz.with_extension("");
 
-    let mut file = tokio::fs::File::create(&path)
+    let mut file = tokio::fs::File::create(to)
         .await
-        .map_err(|e| TsdlError::context(format!("creating {}", path.display()), e))?;
+        .map_err(|e| TsdlError::context(format!("creating {}", to.display()), e))?;
 
     io::copy(&mut decompressor, &mut file)
         .await
