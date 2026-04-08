@@ -183,6 +183,7 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
 #[rstest]
 #[case::pinned_hash_and_from_cobol("cobol", "6a46906")]
 #[case::pinned_from_toml("toml", "v0.7.0")]
+#[case::pinned_from_rbs("rbs", "v0.2.2")]
 #[case::pinned_leading_v_java("java", "v0.21.0")]
 #[case::pinned_master_python("python", "master")]
 #[case::pinned_no_leading_v_json("json", "v0.21.0")]
@@ -197,6 +198,7 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &
         python = "master"
         typescript = { ref = "0.21.0", cmd = "make" }
         toml = { ref = "v0.7.0", from = "https://github.com/tree-sitter-grammars/tree-sitter-toml" }
+        rbs = { ref = "v0.2.2", from = "https://github.com/joker1007/tree-sitter-rbs" }
         cobol = { ref = "6a469068cacb5e3955bb16ad8dfff0dd792883c9", from = "https://github.com/yutaro-sakamoto/tree-sitter-cobol" }
       "#
     };
@@ -228,6 +230,7 @@ fn build_implicit_pinned_and_unpinned() {
         ("java", "v0.21.0"),
         ("python", "master"),
         ("json", "v0.21.0"),
+        ("rbs", "v0.2.2"),
         ("toml", "v0.7.0"),
         ("typescript", "v0.21.0"),
     ];
@@ -239,6 +242,7 @@ fn build_implicit_pinned_and_unpinned() {
         python = "master"
         typescript = { ref = "0.21.0", cmd = "make" }
         toml = { ref = "v0.7.0", from = "https://github.com/tree-sitter-grammars/tree-sitter-toml" }
+        rbs = { ref = "v0.2.2", from = "https://github.com/joker1007/tree-sitter-rbs" }
         cobol = { ref = "6a469068cacb5e3955bb16ad8dfff0dd792883c9", from = "https://github.com/yutaro-sakamoto/tree-sitter-cobol" }
       "#
     };
