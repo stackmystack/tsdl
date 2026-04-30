@@ -19,6 +19,8 @@
 //! json = "0.21.0" # The leading v is not necessary
 //! python = "master"
 //! typescript = { ref = "0.21.0", cmd = "make" }
+//! toml = { ref = "v0.7.0", from = "https://github.com/tree-sitter-grammars/tree-sitter-toml" }
+//! rbs = { ref = "v0.2.2", from = "https://github.com/joker1007/tree-sitter-rbs" }
 //! cobol = { ref = "6a469068cacb5e3955bb16ad8dfff0dd792883c9", from = "https://github.com/yutaro-sakamoto/tree-sitter-cobol" }
 //! ```
 //!
