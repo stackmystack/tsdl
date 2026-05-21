@@ -32,7 +32,7 @@ fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
             result
         }
         args::Command::Config { command } => tsdl::config::run(app, command),
-        args::Command::Selfupdate { force, target } => tsdl::selfupdate::run(app, *force, target),
+        args::Command::Selfupdate{ force, target} => tsdl::selfupdate::run(*force, target),
     }
 }
 

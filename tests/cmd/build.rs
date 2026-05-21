@@ -83,7 +83,7 @@ fn unknown_parser_should_fail(#[case] languages: Vec<&str>) {
     sandbox.cmd.arg("build").args(&languages);
     let mut assert = sandbox.cmd.assert().failure();
     for lang in &languages {
-        assert = assert.stdout(p::str::contains(format!("{lang} HEAD cloning")));
+        assert = assert.stdout(p::str::contains(format!("{lang} HEAD [1/2] cloning")));
     }
     for lang in languages {
         sandbox
@@ -169,7 +169,7 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
     sandbox.cmd.arg("build").args(&languages);
     let mut assert = sandbox.cmd.assert().success();
     for lang in &languages {
-        assert = assert.stdout(p::str::contains(format!("{lang} HEAD cloning")));
+        assert = assert.stdout(p::str::contains(format!("{lang} HEAD [1/2] cloning")));
     }
     for lang in &languages {
         let dylib = sandbox
@@ -210,7 +210,7 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &
         .assert()
         .success()
         .stdout(p::str::contains(format!(
-            "{language}/{language} {version} build done"
+            "{language}/{language} {version} [4/4] done"
         )));
     let dylib = sandbox
         .tmp
@@ -247,7 +247,7 @@ fn build_implicit_pinned_and_unpinned() {
     let mut out = sandbox.cmd.arg("build").assert().success();
     for (language, version) in parsers {
         out = out.stdout(p::str::contains(format!(
-            "{language}/{language} {version} build done"
+            "{language}/{language} {version} [4/4] done"
         )));
     }
     for (language, _version) in parsers {
@@ -267,7 +267,9 @@ fn multi_parsers_no_cmd() {
     let mut sandbox = Sandbox::new();
     let mut assert = sandbox.cmd.args(["build", java]).assert().success();
     for language in languages {
-        assert = assert.stdout(p::str::contains(format!("{language} {version} cloning")));
+        assert = assert.stdout(p::str::contains(format!(
+            "{language} {version} [1/2] cloning"
+        )));
     }
     for language in languages {
         let dylib = sandbox
@@ -298,7 +300,9 @@ fn multi_parsers_cmd() {
     let assert = sandbox.cmd.args(["build", typescript]).assert().success();
     // Check for version in cloning step
     // TODO: dig for changes in this test and revert.
-    _ = assert.stdout(p::str::contains(format!("{typescript} v{version} cloning")));
+    _ = assert.stdout(p::str::contains(format!(
+        "{typescript} v{version} [1/2] cloning"
+    )));
     for language in languages {
         let dylib = sandbox
             .tmp

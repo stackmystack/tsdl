@@ -15,7 +15,7 @@ fn build_no_args_should_log_to_default_path() {
         .assert()
         .success()
         .stdout(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_VERSION} done"
+            "tree-sitter-cli v{TREE_SITTER_VERSION} [2/2] done"
         )));
     assert!(!sandbox.is_empty());
     sandbox
@@ -39,7 +39,7 @@ fn build_w_specific_log_path(#[case] log: &str) {
         .assert()
         .success()
         .stdout(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_VERSION} done"
+            "tree-sitter-cli v{TREE_SITTER_VERSION} [2/2] done"
         )));
     sandbox
         .tmp

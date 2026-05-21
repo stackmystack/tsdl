@@ -4,8 +4,7 @@ use self_update::self_replace;
 use semver::Version;
 
 use crate::{
-    app::App, args::VersionBump, consts::TREE_SITTER_PLATFORM, error::TsdlError, prompt_user,
-    TsdlResult,
+    TsdlResult, args::VersionBump, consts::TREE_SITTER_PLATFORM, error::TsdlError, prompt_user
 };
 
 enum UpdateTarget {
@@ -16,7 +15,6 @@ enum UpdateTarget {
 fn download_and_replace(
     asset_name: &str,
     download_url: &str,
-    handle: &crate::display::ProgressBar,
     version: &Version,
 ) -> TsdlResult<()> {
     let tsdl = env!("CARGO_PKG_NAME");
@@ -26,7 +24,7 @@ fn download_and_replace(
     let tmp_gz = fs::File::create_new(&tmp_gz_path)
         .map_err(|e| TsdlError::context("Failed to create temporary file", e))?;
 
-    handle.step(format!("downloading {version}"));
+    eprintln!("downloading {version}");
     self_update::Download::from_url(download_url)
         .set_header(
             reqwest::header::ACCEPT,
@@ -37,7 +35,7 @@ fn download_and_replace(
         .download_to(&tmp_gz)
         .map_err(|e| TsdlError::context("Failed to download release asset", e))?;
 
-    handle.step(format!("extracting {version}"));
+    eprintln!("extracting {version}");
     let tsdl_bin = PathBuf::from(tsdl);
     self_update::Extract::from_source(&tmp_gz_path)
         .archive(self_update::ArchiveKind::Plain(Some(
@@ -50,7 +48,7 @@ fn download_and_replace(
     self_replace::self_replace(new_exe)
         .map_err(|e| TsdlError::context("Failed to replace current executable", e))?;
 
-    handle.fin(format!("{version}"));
+    eprintln!("{version}");
     Ok(())
 }
 
@@ -65,15 +63,14 @@ fn parse_target(raw: &str) -> Result<UpdateTarget, String> {
     }
 }
 
-pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
+pub fn run(force: bool, target: &str) -> TsdlResult<()> {
     let update_target = parse_target(target).map_err(TsdlError::message)?;
 
     let tsdl = env!("CARGO_PKG_NAME");
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| TsdlError::context("Failed to parse current version", e))?;
-    let handle = app.progress.register("selfupdate".into(), "".into(), 4);
 
-    handle.step("fetching releases");
+    eprintln!("fetching releases");
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
@@ -98,7 +95,7 @@ pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
             };
 
             if target_version == current_version {
-                handle.msg(format!("already at {target_version}"));
+                eprintln!("already at {target_version}");
                 return Ok(());
             }
 
@@ -110,7 +107,7 @@ pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
                     false,
                 )?
             {
-                handle.msg("downgrade cancelled");
+                eprintln!("downgrade cancelled");
                 return Ok(());
             }
 
@@ -144,12 +141,12 @@ pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
                     .as_ref()
                     .is_some_and(|v| v > &current_version)
                 {
-                    handle.msg(format!(
+                    eprintln!(
                         "no compatible {bump} update (latest is {}; use `tsdl selfupdate major` to install it)",
                         releases[0].version,
-                    ));
+                    );
                 } else {
-                    handle.msg("already at the latest version");
+                    eprintln!("already at the latest version");
                 }
                 return Ok(());
             }
@@ -168,5 +165,5 @@ pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
         ));
     };
 
-    download_and_replace(&asset.name, &asset.download_url, &handle, &version)
+    download_and_replace(&asset.name, &asset.download_url, &version)
 }

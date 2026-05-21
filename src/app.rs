@@ -8,7 +8,7 @@ use crate::{args::Args, args::BuildCommand, config, display, TsdlResult};
 pub struct App {
     pub command: BuildCommand,
     pub config_path: PathBuf,
-    pub progress: display::Progress,
+    pub progress_mode: display::Mode,
     pub verbose: Verbosity<InfoLevel>,
 }
 
@@ -17,11 +17,11 @@ impl App {
     /// This resolves and merges all configuration sources (CLI, config file, defaults).
     pub fn new(args: &Args) -> TsdlResult<Self> {
         let command = config::current(&args.config, args.command.as_build())?;
-        let progress = display::current(&args.progress, &args.verbose);
+        let progress_mode = display::mode_from_args(&args.progress, &args.verbose);
 
         Ok(Self {
             command,
-            progress,
+            progress_mode,
             config_path: args.config.clone(),
             verbose: args.verbose,
         })

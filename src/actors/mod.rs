@@ -71,6 +71,31 @@ pub async fn run(
     languages: Vec<LanguageBuild>,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<()> {
+    let result = run_inner(
+        build_dir,
+        cache,
+        display.clone(),
+        jobs,
+        languages,
+        tree_sitter,
+    )
+    .await;
+
+    // We need to shut down before returning the results to avoid display
+    // issues with the ratatui backend.
+    display.shutdown().await;
+
+    result
+}
+
+async fn run_inner(
+    build_dir: &PathBuf,
+    cache: CacheAddr,
+    display: DisplayAddr,
+    jobs: usize,
+    languages: Vec<LanguageBuild>,
+    tree_sitter: &TreeSitter,
+) -> TsdlResult<()> {
     let ts_cli = Arc::new(tree_sitter::prepare(build_dir, display.clone(), tree_sitter).await?);
 
     let mut errors : Vec<TsdlError> =
@@ -144,20 +169,29 @@ async fn discover_grammars(
     ts_cli: Arc<PathBuf>,
 ) -> TsdlResult<Vec<crate::parser::GrammarBuild>> {
     let progress = display
-        .add_language(language.spec.git_ref.clone(), language.name.clone(), 3)
+        .add_language(language.spec.git_ref.clone(), language.name.clone(), 2)
         .await;
 
-    // ... (Clone logic same as original) ...
     if cache
         .needs_clone(language.name.clone(), language.spec.clone())
         .await
     {
         progress.step("cloning");
-        language.clone().await?;
+        if let Err(e) = language.clone().await {
+            progress.err("clone failed");
+            return Err(e);
+        }
     }
 
     progress.step("scanning");
-    let grammars = language.discover_grammars().await?;
+    let grammars = match language.discover_grammars().await {
+        Ok(grammars) => grammars,
+        Err(e) => {
+            progress.err("scan failed");
+            return Err(e);
+        }
+    };
+    progress.fin("done");
 
     // Map the raw discovery data into the Build struct immediately
     let mut builds = Vec::new();
@@ -169,8 +203,8 @@ async fn discover_grammars(
         let progress = display
             .add_grammar(
                 language.spec.git_ref.clone(),
-                name_arc.clone(),
                 language.name.clone(),
+                name_arc.clone(),
                 4,
             )
             .await;

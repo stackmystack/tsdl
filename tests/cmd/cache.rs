@@ -35,7 +35,7 @@ fn cache_hit_skips_build() {
         .arg("json")
         .assert()
         .success()
-        .stdout(p::str::contains("cached done"))
+        .stdout(p::str::contains("json/json HEAD [4/4] done"))
         .stdout(p::str::contains("cloning").not());
 
     let second_inode = binary.metadata().unwrap().ino();
@@ -68,8 +68,8 @@ fn cache_miss_on_grammar_modification() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stdout(p::str::contains("HEAD cloning"))
-        .stdout(p::str::contains("(cached)").not());
+        .stdout(p::str::contains("HEAD [1/2] cloning"))
+        .stdout(p::str::contains("json/json HEAD [3/4] building"));
 }
 
 #[rstest]
@@ -128,8 +128,8 @@ fn force_flag_bypasses_cache() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stdout(p::str::contains("HEAD cloning"))
-        .stdout(p::str::contains("(cached)").not());
+        .stdout(p::str::contains("HEAD [1/2] cloning"))
+        .stdout(p::str::contains("json/json HEAD [3/4] building"));
 
     let second_inode = binary.metadata().unwrap().ino();
     assert_ne!(
@@ -179,7 +179,7 @@ fn force_flag_reinstalls_hardlink() {
     cmd.args(["build", "--force", "json"])
         .assert()
         .success()
-        .stdout(p::str::contains("json/json HEAD installing"));
+        .stdout(p::str::contains("json/json HEAD [4/4] installing"));
 
     let final_inode_out = binary.metadata().unwrap().ino();
     let final_inode_build = build_binary.metadata().unwrap().ino();
@@ -213,7 +213,7 @@ fn multi_parser_independent_cache(#[case] languages: Vec<&str>) {
     let mut output = cmd.arg("build").args(&languages).assert().success();
 
     for lang in &languages {
-        output = output.stdout(p::str::contains(format!("{lang} HEAD cached done")));
+        output = output.stdout(p::str::contains(format!("{lang}/{lang} HEAD [4/4] done")));
     }
 }
 
