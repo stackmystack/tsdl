@@ -38,13 +38,12 @@ fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
     }
 }
 
-fn selfupdate(app: &mut App) -> TsdlResult<()> {
+fn selfupdate(_app: &mut App) -> TsdlResult<()> {
     let tsdl = env!("CARGO_BIN_NAME");
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| TsdlError::context("Failed to parse current version", e))?;
-    let handle = app.progress.register("selfupdate".into(), "".into(), 4);
 
-    handle.step("fetching releases");
+    eprintln!("Fetching releases...");
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
@@ -64,11 +63,11 @@ fn selfupdate(app: &mut App) -> TsdlResult<()> {
     let latest_version = Version::parse(&releases[0].version)
         .map_err(|e| TsdlError::context("Failed to parse latest version", e))?;
     if latest_version <= current_version {
-        handle.msg("already at the latest version");
+        eprintln!("Already at the latest version ({current_version})");
         return Ok(());
     }
 
-    handle.step(format!("downloading {latest_version}"));
+    eprintln!("Downloading {latest_version}...");
     let asset = asset.unwrap();
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| TsdlError::context("Failed to create temporary directory", e))?;
@@ -86,7 +85,7 @@ fn selfupdate(app: &mut App) -> TsdlResult<()> {
         .download_to(&tmp_gz)
         .map_err(|e| TsdlError::context("Failed to download release asset", e))?;
 
-    handle.step(format!("extracting {latest_version}"));
+    eprintln!("Extracting {latest_version}...");
     let tsdl_bin = PathBuf::from(tsdl);
     self_update::Extract::from_source(&tmp_gz_path)
         .archive(self_update::ArchiveKind::Plain(Some(
@@ -99,7 +98,7 @@ fn selfupdate(app: &mut App) -> TsdlResult<()> {
     self_replace::self_replace(new_exe)
         .map_err(|e| TsdlError::context("Failed to replace current executable", e))?;
 
-    handle.fin(format!("{latest_version}"));
+    eprintln!("Updated to {latest_version}");
     Ok(())
 }
 

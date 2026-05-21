@@ -273,9 +273,7 @@ impl GrammarBuild {
 
                 // Report reinstallation when fixing broken hardlink
                 if hardlink_broken {
-                    if let Some(hnd) = self.context.progress.as_ref() {
-                        hnd.msg("Reinstalled");
-                    }
+                    self.progress.msg("Reinstalled");
                 }
 
                 // Create the hardlink after removing the old one

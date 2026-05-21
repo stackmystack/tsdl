@@ -6,16 +6,14 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::time;
 use url::Url;
 
 use crate::{
-    actors::{self, CacheActor, DisplayActor, DisplayAddr},
+    actors::{self, CacheActor, DisplayActor},
     app::App,
     args::{ParserConfig, Target, TreeSitter},
     cache::Db,
     consts::TSDL_FROM,
-    display::{self, Progress, ProgressBar, TICK_CHARS},
     error::{self, TsdlError},
     git::GitRef,
     lock::{Lock, LockStatus},
@@ -43,50 +41,6 @@ pub struct OutputConfig {
 pub struct BuildContext {
     pub cache_hit: bool,
     pub force: bool,
-    pub progress: Option<display::ProgressBar>,
-}
-
-impl BuildContext {
-    pub fn err(&self, msg: &str) {
-        if let Some(ref progress) = self.progress {
-            progress.err(msg);
-        }
-    }
-
-    pub fn fin(&self, msg: &str) {
-        if let Some(ref progress) = self.progress {
-            progress.fin(msg);
-        }
-    }
-
-    pub fn msg(&self, msg: &str) {
-        if let Some(ref progress) = self.progress {
-            progress.msg(msg);
-        }
-    }
-
-    pub fn step(&self, msg: &str) {
-        if let Some(ref progress) = self.progress {
-            progress.step(msg);
-        }
-    }
-
-    #[must_use]
-    pub fn is_done(&self) -> bool {
-        self.progress.as_ref().is_none_or(ProgressBar::is_done)
-    }
-
-    pub fn start(&mut self, msg: &str) {
-        if let Some(ref mut progress) = self.progress {
-            progress.step(msg);
-        }
-    }
-
-    pub fn tick(&self) {
-        if let Some(ref progress) = self.progress {
-            progress.tick();
-        }
-    }
 }
 
 pub fn run(app: &mut App) -> TsdlResult<()> {
@@ -94,14 +48,11 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
         crate::config::show(&app.command)?;
     }
 
-    // Initialize the manager first with the build directory
     let lock = Lock::new(&app.command.build_dir);
 
     if app.command.unlock {
         lock.force_unlock()?;
     }
-
-    // Check lock status before clearing anything
 
     let _guard = match lock.try_acquire()? {
         LockStatus::Acquired(lock) => lock,
@@ -114,7 +65,6 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
         LockStatus::LockedBy { pid, exe } => {
             eprintln!("Lock owned by different process: PID {pid} ({exe})");
             if prompt_user("Proceed anyway?", false)? {
-                // Use the manager instance to force acquire
                 lock.force_acquire()?
             } else {
                 return Err(TsdlError::message("Lock acquisition cancelled by user"));
@@ -147,9 +97,8 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
 
 fn clear(app: &mut App) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
-        let bar = app.progress.register("Fresh Build".into(), "".into(), 1);
         fs::remove_dir_all(&app.command.build_dir)?;
-        bar.fin(format!("Cleaned {}", app.command.build_dir.display()));
+        eprintln!("Cleaned {}", app.command.build_dir.display());
     }
 
     fs::create_dir_all(&app.command.build_dir)?;
@@ -180,7 +129,6 @@ fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
 ) -> (Option<String>, GitRef, TsdlResult<Url>) {
-    // Attempt to find the config; defaults to None if map or key is missing
     let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
     match config {
@@ -221,12 +169,9 @@ fn ignite(app: &App) -> TsdlResult<()> {
 
     let result = rt.block_on(async move {
         let cache = CacheActor::spawn(db, app.command.force);
-        let display = DisplayActor::spawn(Progress::new(app.progress.mode));
-
-        let display2 = display.clone();
-        tokio::spawn(async {
-            update_screen(display2).await;
-        });
+        let build_dir: Arc<PathBuf> = app.command.build_dir.canon()?.into();
+        let out_dir: Arc<PathBuf> = app.command.out_dir.canon()?.into();
+        let display = DisplayActor::spawn(app.progress_mode, build_dir, out_dir);
 
         actors::run(
             &app.command.build_dir,
@@ -281,7 +226,6 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
                 BuildContext {
                     force: app.command.force || app.command.fresh,
                     cache_hit: false,
-                    progress: None, // Progress is handled by DisplayActor
                 },
                 Arc::new(BuildSpec {
                     build_script,
@@ -314,15 +258,4 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
     }
 
     results
-}
-
-async fn update_screen(display: DisplayAddr) {
-    let mut interval = time::interval(time::Duration::from_millis(
-        1000 / TICK_CHARS.chars().count() as u64,
-    ));
-
-    loop {
-        interval.tick().await;
-        display.tick().await;
-    }
 }
