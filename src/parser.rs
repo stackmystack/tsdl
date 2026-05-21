@@ -55,15 +55,18 @@ impl GrammarBuild {
         let hit = !self.context.force && !self.needs_rebuild(&key);
 
         if hit {
+            self.progress.mark_cached();
             // Install the binary from the build directory
             if let Err(e) = self.install().await {
-                self.progress.err("install");
+                self.progress.err("install failed");
                 return Err(e);
             }
 
-            self.progress.fin("cached");
+            self.progress.cached("done");
             return Ok(None);
         }
+
+        self.progress.mark_built();
 
         // Use the grammar directory path provided
         if !self.dir.exists() {
@@ -71,13 +74,13 @@ impl GrammarBuild {
                 "Grammar directory not found: {}",
                 self.dir.display()
             ));
-            self.progress.err(format!("{err}"));
+            self.progress.err("missing grammar directory");
             return Err(err);
         }
 
         // Build the grammar
         if let Err(e) = self.build_grammar().await {
-            self.progress.err("build");
+            self.progress.err("build failed");
             return Err(e);
         }
 
@@ -90,7 +93,7 @@ impl GrammarBuild {
             },
         };
 
-        self.progress.fin("build");
+        self.progress.fin("done");
 
         Ok(Some(update))
     }
@@ -273,9 +276,7 @@ impl GrammarBuild {
 
                 // Report reinstallation when fixing broken hardlink
                 if hardlink_broken {
-                    if let Some(hnd) = self.context.progress.as_ref() {
-                        hnd.msg("Reinstalled");
-                    }
+                    self.progress.msg("Reinstalled");
                 }
 
                 // Create the hardlink after removing the old one

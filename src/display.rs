@@ -1,26 +1,19 @@
-use std::{
-    sync::atomic::Ordering,
-    sync::{atomic::AtomicU64, Arc},
-    time,
-};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use clap_verbosity_flag::{InfoLevel, Verbosity};
-use console::style;
 use log::Level;
-use tokio::sync::OnceCell;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 
-use crate::{args::ProgressStyle, error::TsdlError, format_duration, git::GitRef, TsdlResult};
+use crate::args::ProgressStyle;
+use crate::git::GitRef;
 
-#[derive(Debug, Clone, Copy)]
-pub enum UpdateKind {
-    Msg,
-    Step,
-    Fin,
-    Err,
-}
-
-/// Spinning sprite.
-pub const TICK_CHARS: &str = "⠷⠯⠟⠻⠽⠾⠿";
+// ---------------------------------------------------------------------------
+// Mode
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -28,291 +21,9 @@ pub enum Mode {
     Plain,
 }
 
-#[derive(Debug, Clone)]
-pub struct Progress {
-    multi: indicatif::MultiProgress,
-    pub mode: Mode,
-    // We store handles to ensure they aren't dropped prematurely if needed,
-    // mimicking the original `handles` vectors.
-    handles: Vec<ProgressBar>,
-}
-
-impl Progress {
-    #[must_use]
-    pub fn new(mode: Mode) -> Self {
-        Self {
-            multi: indicatif::MultiProgress::new(),
-            mode,
-            handles: Vec::new(),
-        }
-    }
-
-    pub fn clear(&self) -> TsdlResult<()> {
-        if self.mode == Mode::Fancy {
-            self.multi
-                .clear()
-                .map_err(|e| TsdlError::context("Clearing the multi-progress bar", e))?;
-        }
-        Ok(())
-    }
-
-    pub fn is_done(&self) -> bool {
-        self.handles.iter().all(ProgressBar::is_done)
-    }
-
-    pub fn prinltn(&self, msg: impl AsRef<str>) {
-        println!("{}", msg.as_ref());
-    }
-
-    /// # Panics
-    ///
-    /// Will panic indicatif errs.
-    pub fn register(&mut self, name: Arc<str>, git_ref: GitRef, num_tasks: usize) -> ProgressBar {
-        let bar = match self.mode {
-            Mode::Fancy => {
-                let bar = indicatif::ProgressBar::new(num_tasks as u64);
-                let bar = self.multi.add(bar);
-                let style = indicatif::ProgressStyle::with_template(
-                    "{prefix:.bold.dim} {spinner} {wide_msg}",
-                )
-                .unwrap_or_else(|_| {
-                    panic!("cannot create spinner [?/{num_tasks}] {name} @ {git_ref}")
-                })
-                .tick_chars(TICK_CHARS);
-                bar.set_style(style);
-                bar.set_prefix(format!("[?/{num_tasks}]"));
-                Some(bar)
-            }
-            Mode::Plain => None,
-        };
-
-        let handle = ProgressBar {
-            bar,
-            name,
-            git_ref,
-            num_tasks,
-            t_start: OnceCell::new(),
-            mode: self.mode,
-            current_step: Arc::new(AtomicU64::new(0)),
-        };
-
-        self.handles.push(handle.clone());
-        handle
-    }
-
-    pub fn tick(&self) {
-        // Only necessary for fancy bars in some terminals/configs, plain bars do nothing
-        if self.mode == Mode::Fancy {
-            for handle in &self.handles {
-                handle.tick();
-            }
-        }
-    }
-}
-
-// Ensure bars are finished on drop
-impl Drop for Progress {
-    fn drop(&mut self) {
-        for handle in &self.handles {
-            if !handle.is_done() {
-                if let Some(bar) = &handle.bar {
-                    bar.finish();
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ProgressBar {
-    bar: Option<indicatif::ProgressBar>,
-    pub name: Arc<str>,
-    git_ref: GitRef,
-    num_tasks: usize,
-    t_start: OnceCell<time::Instant>,
-    mode: Mode,
-    current_step: Arc<AtomicU64>,
-}
-
-impl PartialEq for ProgressBar {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.git_ref == other.git_ref
-            && self.num_tasks == other.num_tasks
-    }
-}
-
-impl ProgressBar {
-    fn format_elapsed(&self) -> String {
-        self.t_start
-            .get()
-            .map(|start| {
-                let dur = format_duration(time::Instant::now().duration_since(*start));
-                if self.mode == Mode::Fancy {
-                    format!(" in {}", style(dur).yellow())
-                } else {
-                    format!(" in {dur}")
-                }
-            })
-            .unwrap_or_default()
-    }
-
-    fn name_with_version(&self) -> String {
-        if self.git_ref.is_empty() {
-            self.name.to_string()
-        } else {
-            format!("{} {}", self.name, style(&self.git_ref).blue())
-        }
-    }
-
-    /// Helper to print log lines in Plain mode (using bar.println to coordinate with `MultiProgress`)
-    pub fn println(&self, msg: String) {
-        match &self.bar {
-            Some(bar) => bar.println(msg),
-            None => println!("{msg}"),
-        }
-    }
-}
-
-impl ProgressBar {
-    pub fn err(&self, msg: impl AsRef<str>) {
-        if let Some(bar) = &self.bar {
-            bar.abandon_with_message(format!(
-                "{} {} {}{}",
-                self.name_with_version(),
-                style(msg.as_ref()).blue(),
-                style("failed").red(),
-                self.format_elapsed()
-            ));
-        } else {
-            let cur = self.current_step.load(Ordering::SeqCst);
-            self.println(format!(
-                "[{}/{}] {} {} {}{}",
-                cur,
-                self.num_tasks,
-                self.name_with_version(),
-                msg.as_ref(),
-                style("failed").red(),
-                self.format_elapsed()
-            ));
-        }
-    }
-
-    pub fn fin(&self, msg: impl AsRef<str>) {
-        if let Some(bar) = &self.bar {
-            bar.inc(1);
-        } else {
-            self.current_step.fetch_add(1, Ordering::SeqCst);
-        }
-
-        if let Some(bar) = &self.bar {
-            let position = usize::try_from(bar.position())
-                .unwrap_or(self.num_tasks)
-                .min(self.num_tasks);
-            bar.set_prefix(format!("[{}/{}]", position, self.num_tasks));
-
-            let message = if msg.as_ref().is_empty() {
-                format!(
-                    "{} {}{}",
-                    self.name_with_version(),
-                    style("done").green(),
-                    self.format_elapsed()
-                )
-            } else {
-                format!(
-                    "{} {} {}{}",
-                    self.name_with_version(),
-                    msg.as_ref(),
-                    style("done").green(),
-                    self.format_elapsed()
-                )
-            };
-            bar.finish_with_message(message);
-        } else {
-            let cur = self.current_step.load(Ordering::SeqCst);
-            if msg.as_ref().is_empty() {
-                self.println(format!(
-                    "[{}/{}] {} {}{}",
-                    cur,
-                    self.num_tasks,
-                    self.name_with_version(),
-                    style("done").green(),
-                    self.format_elapsed()
-                ));
-            } else {
-                self.println(format!(
-                    "[{}/{}] {} {} {}{}",
-                    cur,
-                    self.num_tasks,
-                    self.name_with_version(),
-                    style(msg.as_ref()).blue(),
-                    style("done").green(),
-                    self.format_elapsed()
-                ));
-            }
-        }
-    }
-
-    pub fn is_done(&self) -> bool {
-        self.bar
-            .as_ref()
-            .is_some_and(indicatif::ProgressBar::is_finished)
-    }
-
-    pub fn msg(&self, msg: impl AsRef<str>) {
-        if let Some(bar) = &self.bar {
-            let position = usize::try_from(bar.position())
-                .unwrap_or(self.num_tasks)
-                .min(self.num_tasks);
-            bar.set_prefix(format!("[{}/{}]", position, self.num_tasks));
-            bar.set_message(format!("{} {}", self.name_with_version(), msg.as_ref()));
-        } else {
-            let cur = self.current_step.load(Ordering::SeqCst);
-            self.println(format!(
-                "[{}/{}] {}: {}",
-                cur,
-                self.num_tasks,
-                self.name_with_version(),
-                msg.as_ref()
-            ));
-        }
-    }
-
-    pub fn step(&self, msg: impl AsRef<str>) {
-        let _ = self.t_start.set(time::Instant::now());
-        if let Some(bar) = &self.bar {
-            bar.inc(1);
-        } else {
-            self.current_step.fetch_add(1, Ordering::SeqCst);
-        }
-
-        if let Some(bar) = &self.bar {
-            let position = usize::try_from(bar.position())
-                .unwrap_or(self.num_tasks)
-                .min(self.num_tasks);
-            bar.set_prefix(format!("[{}/{}]", position, self.num_tasks));
-            bar.set_message(format!("{}: {}", self.name_with_version(), msg.as_ref()));
-        } else {
-            let cur = self.current_step.load(Ordering::SeqCst);
-            self.println(format!(
-                "[{}/{}] {} {}",
-                cur,
-                self.num_tasks,
-                self.name_with_version(),
-                msg.as_ref()
-            ));
-        }
-    }
-
-    pub fn tick(&self) {
-        if let Some(bar) = &self.bar {
-            bar.tick();
-        }
-    }
-}
-
+/// Determine the display mode from CLI flags and environment.
 #[must_use]
-pub fn current(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Progress {
+pub fn mode_from_args(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Mode {
     let mut mode = match progress {
         ProgressStyle::Auto => {
             if atty::is(atty::Stream::Stdout) {
@@ -329,5 +40,432 @@ pub fn current(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Prog
         mode = Mode::Plain;
     }
 
-    Progress::new(mode)
+    mode
+}
+
+// ---------------------------------------------------------------------------
+// Item lifecycle + outcome
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemStatus {
+    /// Just registered, not yet started.
+    New,
+    /// In progress — cloning, generating, building, etc.
+    InProgress,
+    /// Successfully completed.
+    Done,
+    /// Failed.
+    Failed,
+}
+
+impl ItemStatus {
+    fn icon(self) -> &'static str {
+        match self {
+            ItemStatus::New | ItemStatus::InProgress => "●",
+            ItemStatus::Done => "✓",
+            ItemStatus::Failed => "✗",
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(self, ItemStatus::Done | ItemStatus::Failed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemOutcome {
+    /// We do not yet know whether this item is cached or needs work.
+    Unknown,
+    /// Cache hit.
+    Cached,
+    /// Not cached; work was needed.
+    Built,
+}
+
+impl ItemOutcome {
+    fn color(self) -> Color {
+        match self {
+            ItemOutcome::Unknown => Color::DarkGray,
+            ItemOutcome::Cached => Color::Yellow,
+            ItemOutcome::Built => Color::Blue,
+        }
+    }
+}
+
+fn palette_color(status: ItemStatus, outcome: ItemOutcome) -> Color {
+    match status {
+        ItemStatus::Failed => Color::Red,
+        ItemStatus::New | ItemStatus::InProgress | ItemStatus::Done => outcome.color(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// State entries
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) struct RepoEntry {
+    pub name: Arc<str>,
+    pub git_ref: GitRef,
+    pub status: ItemStatus,
+    pub outcome: ItemOutcome,
+    pub msg: Arc<str>,
+    pub step: usize,
+    pub total: usize,
+    /// Creation time for the whole item. This is not reset between steps.
+    pub started_at: Instant,
+    /// Frozen whole-item elapsed time for terminal states.
+    pub frozen_elapsed: Option<Duration>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GrammarEntry {
+    pub repo: Arc<str>,
+    pub repo_id: u64,
+    pub name: Arc<str>,
+    pub git_ref: GitRef,
+    pub status: ItemStatus,
+    pub outcome: ItemOutcome,
+    pub msg: Arc<str>,
+    pub step: usize,
+    pub total: usize,
+    /// Creation time for the whole item. This is not reset between steps.
+    pub started_at: Instant,
+    /// Frozen whole-item elapsed time for terminal states.
+    pub frozen_elapsed: Option<Duration>,
+}
+
+// ---------------------------------------------------------------------------
+// DisplayState — the full renderable state
+// ---------------------------------------------------------------------------
+
+pub(crate) struct DisplayState {
+    pub mode: Mode,
+    pub repos: HashMap<u64, RepoEntry>,
+    pub grammars: HashMap<u64, GrammarEntry>,
+    pub build_dir: Arc<PathBuf>,
+    pub out_dir: Arc<PathBuf>,
+}
+
+impl DisplayState {
+    pub fn new(mode: Mode, build_dir: Arc<PathBuf>, out_dir: Arc<PathBuf>) -> Self {
+        Self {
+            mode,
+            repos: HashMap::new(),
+            grammars: HashMap::new(),
+            build_dir,
+            out_dir,
+        }
+    }
+
+    /// Render the entire display as ratatui `Line`s.
+    pub fn render_lines(&self, width: u16) -> Vec<Line<'_>> {
+        let w = width as usize;
+        let mut lines: Vec<Line> = Vec::new();
+
+        for (repo_id, repo) in self.sorted_repos() {
+            let repo_lines = self.format_repo_with_grammars(repo_id, repo, w);
+            lines.extend(repo_lines);
+        }
+
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+
+        lines.push(self.format_footer_build());
+        lines.push(self.format_footer_out());
+        lines.push(Line::from(""));
+        lines.push(self.format_footer_counts());
+
+        lines
+    }
+
+    fn sorted_repos(&self) -> Vec<(u64, &RepoEntry)> {
+        let mut repos: Vec<(u64, &RepoEntry)> = self
+            .repos
+            .iter()
+            .map(|(repo_id, repo)| (*repo_id, repo))
+            .collect();
+        repos.sort_by_key(|(_, r)| r.started_at);
+        repos
+    }
+
+    fn sorted_grammars_for_repo(&self, repo_id: u64) -> Vec<&GrammarEntry> {
+        let mut grammars: Vec<&GrammarEntry> = self
+            .grammars
+            .values()
+            .filter(|g| g.repo_id == repo_id)
+            .collect();
+        grammars.sort_by_key(|g| g.started_at);
+        grammars
+    }
+
+    fn format_repo_with_grammars(
+        &self,
+        repo_id: u64,
+        repo: &RepoEntry,
+        w: usize,
+    ) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line> = Vec::new();
+        let repo_grammars = self.sorted_grammars_for_repo(repo_id);
+
+        if repo_grammars.is_empty() {
+            lines.push(self.format_item_line(
+                repo.status,
+                repo.outcome,
+                &repo.name,
+                &repo.git_ref.to_string(),
+                &repo.msg,
+                repo.step,
+                repo.total,
+                repo.started_at,
+                repo.frozen_elapsed,
+                w,
+                "",
+            ));
+        } else if repo_grammars.len() == 1 {
+            let g = repo_grammars[0];
+            if g.name == repo.name {
+                lines.push(self.format_item_line(
+                    g.status,
+                    g.outcome,
+                    &repo.name,
+                    &repo.git_ref.to_string(),
+                    &g.msg,
+                    g.step,
+                    g.total,
+                    g.started_at,
+                    g.frozen_elapsed,
+                    w,
+                    "",
+                ));
+            } else {
+                let label = format!("{}/{}", repo.name, g.name);
+                lines.push(self.format_item_line(
+                    g.status,
+                    g.outcome,
+                    &label,
+                    &g.git_ref.to_string(),
+                    &g.msg,
+                    g.step,
+                    g.total,
+                    g.started_at,
+                    g.frozen_elapsed,
+                    w,
+                    "",
+                ));
+            }
+        } else {
+            lines.push(self.format_item_line(
+                repo.status,
+                repo.outcome,
+                &repo.name,
+                &repo.git_ref.to_string(),
+                &repo.msg,
+                repo.step,
+                repo.total,
+                repo.started_at,
+                repo.frozen_elapsed,
+                w,
+                "",
+            ));
+            for g in &repo_grammars {
+                lines.push(self.format_item_line(
+                    g.status,
+                    g.outcome,
+                    &g.name,
+                    &g.git_ref.to_string(),
+                    &g.msg,
+                    g.step,
+                    g.total,
+                    g.started_at,
+                    g.frozen_elapsed,
+                    w,
+                    "  ",
+                ));
+            }
+        }
+
+        lines
+    }
+
+    fn dim_line(&self, text: String) -> Line<'static> {
+        Line::from(Span::styled(
+            text,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        ))
+    }
+
+    fn format_item_line(
+        &self,
+        status: ItemStatus,
+        outcome: ItemOutcome,
+        name: &str,
+        git_ref: &str,
+        msg: &str,
+        step: usize,
+        total: usize,
+        started_at: Instant,
+        frozen_elapsed: Option<Duration>,
+        width: usize,
+        indent: &str,
+    ) -> Line<'static> {
+        let terminal = status.is_terminal();
+        let palette = palette_color(status, outcome);
+        let name_style = Style::default().fg(palette).add_modifier(Modifier::BOLD);
+        let progress_style = Style::default().fg(if terminal { palette } else { Color::White });
+        let ref_style = Style::default().fg(Color::White);
+        let msg_style = Style::default().fg(Color::White);
+
+        let elapsed = frozen_elapsed.unwrap_or_else(|| started_at.elapsed());
+        let time = format_elapsed_duration(elapsed);
+        let time_col = format!("{time:<8}");
+        let ref_col = format!("{:<12}", truncate_str(git_ref, 12));
+        let step_col = if total > 0 {
+            format!("{:>7}", format!("[{}/{}]", step.min(total), total))
+        } else {
+            "       ".to_string()
+        };
+        let indented_name = format!("{indent}{name}");
+        let name_col = format!("{:<28}", truncate_str(&indented_name, 28));
+
+        let fixed_width = 8 + 1 + 12 + 1 + 7 + 1 + 2 + 1 + 28 + 1;
+        let msg_width = width.saturating_sub(fixed_width);
+        let msg_col = truncate_str(msg, msg_width.max(1));
+
+        let mut spans: Vec<Span> = Vec::new();
+        spans.push(Span::styled(time_col, progress_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(ref_col, ref_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(step_col, progress_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(status.icon(), progress_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(name_col, name_style));
+        spans.push(Span::styled(msg_col, msg_style));
+
+        Line::from(spans)
+    }
+
+    fn format_footer_build(&self) -> Line<'static> {
+        self.dim_line(format!("build: {}", self.build_dir.display()))
+    }
+
+    fn format_footer_out(&self) -> Line<'static> {
+        self.dim_line(format!("out:   {}", self.out_dir.display()))
+    }
+
+    fn format_footer_counts(&self) -> Line<'static> {
+        let (cached, built, building, failed) = self.grammar_status_counts();
+
+        let mut spans: Vec<Span> = Vec::new();
+        spans.push(Span::styled(
+            format!("✓ {cached} cached  "),
+            Style::default().fg(if cached > 0 {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            }),
+        ));
+        spans.push(Span::styled(
+            format!("● {built} built  "),
+            Style::default().fg(if built > 0 {
+                Color::Blue
+            } else {
+                Color::DarkGray
+            }),
+        ));
+        spans.push(Span::styled(
+            format!("● {building} building  "),
+            Style::default().fg(if building > 0 {
+                Color::White
+            } else {
+                Color::DarkGray
+            }),
+        ));
+        spans.push(Span::styled(
+            format!("✗ {failed} failed"),
+            Style::default().fg(if failed > 0 {
+                Color::Red
+            } else {
+                Color::DarkGray
+            }),
+        ));
+
+        Line::from(spans)
+    }
+
+    fn grammar_status_counts(&self) -> (usize, usize, usize, usize) {
+        let mut cached = 0;
+        let mut built = 0;
+        let mut building = 0;
+        let mut failed = 0;
+
+        for grammar in self.grammars.values() {
+            count_grammar_status(
+                grammar.status,
+                grammar.outcome,
+                &mut cached,
+                &mut built,
+                &mut building,
+                &mut failed,
+            );
+        }
+
+        for (repo_id, repo) in self.sorted_repos() {
+            let has_grammars = self.grammars.values().any(|g| g.repo_id == repo_id);
+            if !has_grammars && repo.status == ItemStatus::Failed {
+                failed += 1;
+            }
+        }
+
+        (cached, built, building, failed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn count_grammar_status(
+    status: ItemStatus,
+    outcome: ItemOutcome,
+    cached: &mut usize,
+    built: &mut usize,
+    building: &mut usize,
+    failed: &mut usize,
+) {
+    match status {
+        ItemStatus::New | ItemStatus::InProgress => *building += 1,
+        ItemStatus::Done => match outcome {
+            ItemOutcome::Cached => *cached += 1,
+            ItemOutcome::Built | ItemOutcome::Unknown => *built += 1,
+        },
+        ItemStatus::Failed => *failed += 1,
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else if max <= 1 {
+        "…".to_string()
+    } else {
+        let mut truncated: String = s.chars().take(max - 1).collect();
+        truncated.push('…');
+        truncated
+    }
+}
+
+fn format_elapsed_duration(dur: Duration) -> String {
+    let secs = dur.as_secs_f64();
+    if secs < 60.0 {
+        format!("{secs:.2}s")
+    } else {
+        format!("{:.2}m", secs / 60.0)
+    }
 }

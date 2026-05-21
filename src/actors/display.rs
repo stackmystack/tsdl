@@ -1,23 +1,23 @@
-use std::{collections::HashMap, sync::Arc};
+use std::io;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use ratatui::widgets::Paragraph;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time;
 
-use crate::{
-    actors::{Addr, Response},
-    display::{Progress, ProgressBar, UpdateKind},
-    git::GitRef,
-    TsdlResult,
-};
+use crate::actors::Addr;
+use crate::display::{DisplayState, GrammarEntry, ItemOutcome, ItemStatus, Mode, RepoEntry};
+use crate::git::GitRef;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-enum DisplayResponseKind<'a> {
-    RegisterGrammar { language: &'a str, name: &'a str },
-    RegisterLanguage { name: &'a str },
-}
+// ---------------------------------------------------------------------------
+// Message types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub enum DisplayMessage {
+    /// Register a repo-level progress line. Returns a ProgressAddr.
     RegisterLanguage {
         git_ref: GitRef,
         name: Arc<str>,
@@ -25,10 +25,7 @@ pub enum DisplayMessage {
         tx: oneshot::Sender<ProgressAddr>,
     },
 
-    Println {
-        msg: Arc<str>,
-    },
-
+    /// Register a grammar-level progress line. Returns a ProgressAddr.
     RegisterGrammar {
         git_ref: GitRef,
         language: Arc<str>,
@@ -37,23 +34,40 @@ pub enum DisplayMessage {
         tx: oneshot::Sender<ProgressAddr>,
     },
 
-    UnregisterLanguage {
-        name: Arc<str>,
-    },
-
+    /// Update a specific bar.
     Update {
         id: u64,
         kind: UpdateKind,
-        msg: String,
+        msg: Arc<str>,
     },
 
+    /// Advance the elapsed-time display and trigger a re-render.
     Tick,
+
+    /// Flush and close the display actor. The response is sent after cleanup.
+    Shutdown { tx: oneshot::Sender<()> },
 }
 
-/// The Manager Handle: Only used to register/unregister tasks.
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateKind {
+    Msg,
+    Step,
+    MarkCached,
+    MarkBuilt,
+    Cached,
+    Fin,
+    Err,
+}
+
+// ---------------------------------------------------------------------------
+// Handles
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 pub struct DisplayAddr {
     tx: mpsc::Sender<DisplayMessage>,
+    #[allow(dead_code)]
+    mode: Mode,
 }
 
 impl Addr for DisplayAddr {
@@ -70,8 +84,23 @@ impl Addr for DisplayAddr {
 
 impl DisplayAddr {
     #[must_use]
-    pub fn new(tx: mpsc::Sender<DisplayMessage>) -> Self {
-        Self { tx }
+    pub fn new(tx: mpsc::Sender<DisplayMessage>, mode: Mode) -> Self {
+        Self { tx, mode }
+    }
+
+    pub async fn add_language<S: Into<Arc<str>>>(
+        &self,
+        git_ref: GitRef,
+        name: S,
+        num_tasks: usize,
+    ) -> ProgressAddr {
+        self.request(|tx| DisplayMessage::RegisterLanguage {
+            git_ref,
+            name: name.into(),
+            num_tasks,
+            tx,
+        })
+        .await
     }
 
     pub async fn add_grammar<S: Into<Arc<str>>>(
@@ -91,37 +120,16 @@ impl DisplayAddr {
         .await
     }
 
-    pub async fn add_language<S: Into<Arc<str>>>(
-        &self,
-        git_ref: GitRef,
-        name: S,
-        num_tasks: usize,
-    ) -> ProgressAddr {
-        self.request(|tx| DisplayMessage::RegisterLanguage {
-            git_ref,
-            name: name.into(),
-            num_tasks,
-            tx,
-        })
-        .await
-    }
-
-    pub async fn println<S: Into<Arc<str>>>(&self, msg: S) {
-        self.fire(DisplayMessage::Println { msg: msg.into() }).await;
-    }
-
-    pub async fn remove_language<S: Into<Arc<str>>>(&self, name: S) -> TsdlResult<()> {
-        self.fire(DisplayMessage::UnregisterLanguage { name: name.into() })
-            .await;
-        Ok(())
-    }
-
     pub async fn tick(&self) {
-        self.fire(DisplayMessage::Tick {}).await;
+        self.fire(DisplayMessage::Tick).await;
+    }
+
+    pub async fn shutdown(&self) {
+        self.request(|tx| DisplayMessage::Shutdown { tx }).await
     }
 }
 
-/// The Task Handle: Dedicated to controlling a specific progress bar.
+/// Handle for updating a specific progress bar (repo or grammar).
 #[derive(Debug, Clone)]
 pub struct ProgressAddr {
     id: u64,
@@ -129,8 +137,7 @@ pub struct ProgressAddr {
 }
 
 impl ProgressAddr {
-    /// Takes Into<String> directly as the message must be owned to be sent
-    pub fn msg<S: Into<String>>(&self, msg: S) {
+    pub fn msg<S: Into<Arc<str>>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Msg,
@@ -138,7 +145,7 @@ impl ProgressAddr {
         });
     }
 
-    pub fn step<S: Into<String>>(&self, msg: S) {
+    pub fn step<S: Into<Arc<str>>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Step,
@@ -146,7 +153,31 @@ impl ProgressAddr {
         });
     }
 
-    pub fn fin<S: Into<String>>(&self, msg: S) {
+    pub fn mark_cached(&self) {
+        let _ = self.tx.try_send(DisplayMessage::Update {
+            id: self.id,
+            kind: UpdateKind::MarkCached,
+            msg: Arc::from(""),
+        });
+    }
+
+    pub fn mark_built(&self) {
+        let _ = self.tx.try_send(DisplayMessage::Update {
+            id: self.id,
+            kind: UpdateKind::MarkBuilt,
+            msg: Arc::from(""),
+        });
+    }
+
+    pub fn cached<S: Into<Arc<str>>>(&self, msg: S) {
+        let _ = self.tx.try_send(DisplayMessage::Update {
+            id: self.id,
+            kind: UpdateKind::Cached,
+            msg: msg.into(),
+        });
+    }
+
+    pub fn fin<S: Into<Arc<str>>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Fin,
@@ -154,7 +185,7 @@ impl ProgressAddr {
         });
     }
 
-    pub fn err<S: Into<String>>(&self, msg: S) {
+    pub fn err<S: Into<Arc<str>>>(&self, msg: S) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::Err,
@@ -163,124 +194,426 @@ impl ProgressAddr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// DisplayActor
+// ---------------------------------------------------------------------------
+
 pub struct DisplayActor {
-    handles: HashMap<u64, ProgressBar>,
+    state: DisplayState,
     next_id: u64,
-    progress: Progress,
     rx: mpsc::Receiver<DisplayMessage>,
     tx: mpsc::Sender<DisplayMessage>,
 }
 
 impl DisplayActor {
-    fn finish<F>(&mut self, id: u64, f: F)
-    where
-        F: FnOnce(&ProgressBar),
-    {
-        self.forward(id, f);
-        self.handles.remove(&id);
-    }
+    #[must_use]
+    pub fn spawn(mode: Mode, build_dir: Arc<PathBuf>, out_dir: Arc<PathBuf>) -> DisplayAddr {
+        let (tx, rx) = mpsc::channel(256);
+        let actor = Self {
+            state: DisplayState::new(mode, build_dir, out_dir),
+            next_id: 1,
+            rx,
+            tx: tx.clone(),
+        };
 
-    fn forward<F>(&self, id: u64, f: F)
-    where
-        F: FnOnce(&ProgressBar),
-    {
-        if let Some(h) = self.handles.get(&id) {
-            f(h);
-        }
+        tokio::spawn(async move {
+            actor.run().await;
+        });
+
+        DisplayAddr::new(tx, mode)
     }
 
     async fn run(mut self) {
+        if self.state.mode == Mode::Fancy {
+            self.run_fancy().await;
+        } else {
+            self.run_plain().await;
+        }
+    }
+
+    // ── Fancy mode ────────────────────────────────────────────────────
+
+    async fn run_fancy(&mut self) {
+        let term_height = crossterm::terminal::size()
+            .map(|(_, h)| h as usize)
+            .unwrap_or(40);
+        let viewport_height = term_height.min(40);
+
+        let mut terminal = ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(io::stderr()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(viewport_height as u16),
+            },
+        )
+        .expect("Failed to initialize ratatui terminal");
+
+        let _ = terminal.draw(|frame| self.render(frame));
+
+        let mut tick_interval = time::interval(Duration::from_millis(100));
+
+        let mut shutdown_tx = None;
+
+        loop {
+            tokio::select! {
+                msg = self.rx.recv() => {
+                    match msg {
+                        Some(DisplayMessage::Shutdown { tx }) => {
+                            shutdown_tx = Some(tx);
+                            break;
+                        }
+                        Some(msg) => self.handle_message(msg),
+                        None => break,
+                    }
+                }
+                _ = tick_interval.tick() => {
+                    // Ticks trigger re-renders for live elapsed-time updates.
+                }
+            }
+
+            let _ = terminal.draw(|frame| self.render(frame));
+        }
+
+        let _ = terminal.draw(|frame| self.render(frame));
+        ratatui::restore();
+        eprintln!();
+
+        if let Some(tx) = shutdown_tx {
+            let _ = tx.send(());
+        }
+    }
+
+    fn render(&self, frame: &mut ratatui::Frame) {
+        let area = frame.area();
+        let lines = self.state.render_lines(area.width);
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, area);
+    }
+
+    // ── Plain mode ────────────────────────────────────────────────────
+
+    async fn run_plain(&mut self) {
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DisplayMessage::RegisterLanguage {
                     git_ref,
-                    ref name,
+                    name,
                     num_tasks,
                     tx,
                 } => {
-                    let res = self.register({
-                        let name = name.clone();
-                        move |p| p.register(name, git_ref, num_tasks)
-                    });
-
-                    Response {
-                        tx,
-                        kind: DisplayResponseKind::RegisterLanguage { name },
-                    }
-                    .send(res);
+                    let addr = self.register_repo(name, git_ref, num_tasks);
+                    let _ = tx.send(addr);
                 }
-
-                DisplayMessage::Println { msg } => {
-                    self.progress.prinltn(msg);
-                }
-
                 DisplayMessage::RegisterGrammar {
                     git_ref,
-                    ref language,
-                    ref name,
+                    language,
+                    name,
                     num_tasks,
                     tx,
                 } => {
-                    let res = self.register(|p| {
-                        let language = language.clone();
-                        let name = name.clone();
-                        p.register(format!("{language}/{name}").into(), git_ref, num_tasks)
-                    });
-                    Response {
-                        tx,
-                        kind: DisplayResponseKind::RegisterGrammar { language, name },
+                    let addr = self.register_grammar(language, name, git_ref, num_tasks);
+                    let _ = tx.send(addr);
+                }
+                DisplayMessage::Update { id, kind, msg } => {
+                    self.apply_update(id, kind, msg);
+                    if matches!(kind, UpdateKind::MarkCached | UpdateKind::MarkBuilt) {
+                        continue;
                     }
-                    .send(res);
+                    if let Some(repo) = self.state.repos.get(&id) {
+                        println!(
+                            "  {} {} [{}/{}] {}",
+                            repo.name, repo.git_ref, repo.step, repo.total, repo.msg,
+                        );
+                    } else if let Some(grammar) = self.state.grammars.get(&id) {
+                        println!(
+                            "  {}/{} {} [{}/{}] {}",
+                            grammar.repo,
+                            grammar.name,
+                            grammar.git_ref,
+                            grammar.step,
+                            grammar.total,
+                            grammar.msg,
+                        );
+                    }
                 }
-
-                DisplayMessage::UnregisterLanguage { name } => {
-                    self.handles.retain(|_, h| name != h.name);
-                }
-
-                DisplayMessage::Update { id, kind, ref msg } => match kind {
-                    UpdateKind::Msg => self.forward(id, |h| h.msg(msg)),
-                    UpdateKind::Step => self.forward(id, |h| h.step(msg)),
-                    UpdateKind::Fin => self.finish(id, |h| h.fin(msg)),
-                    UpdateKind::Err => self.finish(id, |h| h.err(msg)),
-                },
-
-                DisplayMessage::Tick => {
-                    self.progress.tick();
+                DisplayMessage::Tick => {}
+                DisplayMessage::Shutdown { tx } => {
+                    let _ = tx.send(());
+                    break;
                 }
             }
         }
     }
 
-    fn register<F>(&mut self, create: F) -> ProgressAddr
-    where
-        F: FnOnce(&mut Progress) -> ProgressBar,
-    {
-        // 1. Create inner handle
-        let inner = create(&mut self.progress);
+    // ── Message handling ──────────────────────────────────────────────
 
-        // 2. Register in actor state
+    fn handle_message(&mut self, msg: DisplayMessage) {
+        match msg {
+            DisplayMessage::RegisterLanguage {
+                git_ref,
+                name,
+                num_tasks,
+                tx,
+            } => {
+                let addr = self.register_repo(name, git_ref, num_tasks);
+                let _ = tx.send(addr);
+            }
+            DisplayMessage::RegisterGrammar {
+                git_ref,
+                language,
+                name,
+                num_tasks,
+                tx,
+            } => {
+                let addr = self.register_grammar(language, name, git_ref, num_tasks);
+                let _ = tx.send(addr);
+            }
+            DisplayMessage::Update { id, kind, msg } => {
+                self.apply_update(id, kind, msg);
+            }
+            DisplayMessage::Tick => {}
+            DisplayMessage::Shutdown { tx } => {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    fn register_repo(&mut self, name: Arc<str>, git_ref: GitRef, num_tasks: usize) -> ProgressAddr {
         let id = self.next_id;
         self.next_id += 1;
-        self.handles.insert(id, inner);
 
-        // 3. Return client handle
+        self.state.repos.insert(
+            id,
+            RepoEntry {
+                name,
+                git_ref,
+                status: ItemStatus::New,
+                outcome: ItemOutcome::Unknown,
+                msg: Arc::from(""),
+                step: 0,
+                total: num_tasks,
+                started_at: Instant::now(),
+                frozen_elapsed: None,
+            },
+        );
+
         ProgressAddr {
             id,
             tx: self.tx.clone(),
         }
     }
 
-    #[must_use]
-    pub fn spawn(progress: Progress) -> DisplayAddr {
-        let (tx, rx) = mpsc::channel(64);
-        let actor = Self {
-            handles: HashMap::new(),
-            next_id: 1,
-            progress,
-            rx,
-            tx: tx.clone(),
-        };
-        tokio::spawn(actor.run());
-        DisplayAddr::new(tx)
+    fn register_grammar(
+        &mut self,
+        language: Arc<str>,
+        name: Arc<str>,
+        git_ref: GitRef,
+        num_tasks: usize,
+    ) -> ProgressAddr {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let repo_id = self
+            .state
+            .repos
+            .iter()
+            .find(|(_, r)| r.name == language)
+            .map(|(id, _)| *id)
+            .unwrap_or(0);
+
+        self.state.grammars.insert(
+            id,
+            GrammarEntry {
+                repo: language,
+                repo_id,
+                name,
+                git_ref,
+                status: ItemStatus::New,
+                outcome: ItemOutcome::Unknown,
+                msg: Arc::from(""),
+                step: 0,
+                total: num_tasks,
+                started_at: Instant::now(),
+                frozen_elapsed: None,
+            },
+        );
+
+        ProgressAddr {
+            id,
+            tx: self.tx.clone(),
+        }
+    }
+
+    fn apply_update(&mut self, id: u64, kind: UpdateKind, msg: Arc<str>) {
+        if let Some(repo) = self.state.repos.get_mut(&id) {
+            Self::apply_repo_update(repo, kind, msg);
+            return;
+        }
+
+        let mut maybe_parent_id: Option<u64> = None;
+        if let Some(grammar) = self.state.grammars.get_mut(&id) {
+            Self::apply_grammar_update(grammar, kind, msg);
+            if matches!(
+                kind,
+                UpdateKind::Step
+                    | UpdateKind::MarkCached
+                    | UpdateKind::MarkBuilt
+                    | UpdateKind::Cached
+                    | UpdateKind::Fin
+                    | UpdateKind::Err
+            ) {
+                maybe_parent_id = Some(grammar.repo_id);
+            }
+        }
+
+        if let Some(repo_id) = maybe_parent_id {
+            self.sync_parent_repo(repo_id);
+        }
+    }
+
+    fn apply_repo_update(repo: &mut RepoEntry, kind: UpdateKind, msg: Arc<str>) {
+        match kind {
+            UpdateKind::Msg => {
+                repo.msg = msg;
+            }
+            UpdateKind::Step => {
+                repo.status = ItemStatus::InProgress;
+                repo.step += 1;
+                repo.msg = msg;
+            }
+            UpdateKind::MarkCached => {
+                repo.outcome = ItemOutcome::Cached;
+            }
+            UpdateKind::MarkBuilt => {
+                repo.outcome = ItemOutcome::Built;
+            }
+            UpdateKind::Cached => {
+                repo.frozen_elapsed = Some(repo.started_at.elapsed());
+                repo.status = ItemStatus::Done;
+                repo.outcome = ItemOutcome::Cached;
+                if repo.total > 0 {
+                    repo.step = repo.total;
+                }
+                repo.msg = msg;
+            }
+            UpdateKind::Fin => {
+                repo.frozen_elapsed = Some(repo.started_at.elapsed());
+                repo.status = ItemStatus::Done;
+                if repo.outcome == ItemOutcome::Unknown {
+                    repo.outcome = ItemOutcome::Built;
+                }
+                if repo.total > 0 {
+                    repo.step = repo.total;
+                }
+                repo.msg = msg;
+            }
+            UpdateKind::Err => {
+                repo.frozen_elapsed = Some(repo.started_at.elapsed());
+                repo.status = ItemStatus::Failed;
+                repo.msg = msg;
+            }
+        }
+    }
+
+    fn apply_grammar_update(grammar: &mut GrammarEntry, kind: UpdateKind, msg: Arc<str>) {
+        match kind {
+            UpdateKind::Msg => {
+                grammar.msg = msg;
+            }
+            UpdateKind::Step => {
+                grammar.status = ItemStatus::InProgress;
+                grammar.step += 1;
+                grammar.msg = msg;
+            }
+            UpdateKind::MarkCached => {
+                grammar.outcome = ItemOutcome::Cached;
+            }
+            UpdateKind::MarkBuilt => {
+                grammar.outcome = ItemOutcome::Built;
+            }
+            UpdateKind::Cached => {
+                grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+                grammar.status = ItemStatus::Done;
+                grammar.outcome = ItemOutcome::Cached;
+                grammar.step = grammar.total;
+                grammar.msg = msg;
+            }
+            UpdateKind::Fin => {
+                grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+                grammar.status = ItemStatus::Done;
+                if grammar.outcome == ItemOutcome::Unknown {
+                    grammar.outcome = ItemOutcome::Built;
+                }
+                grammar.step = grammar.total;
+                grammar.msg = msg;
+            }
+            UpdateKind::Err => {
+                grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+                grammar.status = ItemStatus::Failed;
+                grammar.msg = msg;
+            }
+        }
+    }
+
+    fn sync_parent_repo(&mut self, repo_id: u64) {
+        let has_any = self.state.grammars.values().any(|g| g.repo_id == repo_id);
+        if !has_any {
+            return;
+        }
+
+        let any_failed = self
+            .state
+            .grammars
+            .values()
+            .any(|g| g.repo_id == repo_id && g.status == ItemStatus::Failed);
+        let any_active = self.state.grammars.values().any(|g| {
+            g.repo_id == repo_id
+                && (g.status == ItemStatus::New || g.status == ItemStatus::InProgress)
+        });
+        let outcome = self.aggregate_child_outcome(repo_id);
+
+        if let Some(repo) = self.state.repos.get_mut(&repo_id) {
+            repo.outcome = outcome;
+            if any_failed {
+                repo.status = ItemStatus::Failed;
+                repo.msg = Arc::from("failed");
+                repo.frozen_elapsed
+                    .get_or_insert_with(|| repo.started_at.elapsed());
+            } else if any_active {
+                repo.status = ItemStatus::InProgress;
+                repo.msg = Arc::from("building");
+                repo.frozen_elapsed = None;
+            } else {
+                repo.status = ItemStatus::Done;
+                repo.msg = Arc::from("done");
+                repo.frozen_elapsed
+                    .get_or_insert_with(|| repo.started_at.elapsed());
+            }
+        }
+    }
+
+    fn aggregate_child_outcome(&self, repo_id: u64) -> ItemOutcome {
+        let mut saw_cached = false;
+        let mut saw_unknown = false;
+
+        for grammar in self
+            .state
+            .grammars
+            .values()
+            .filter(|g| g.repo_id == repo_id)
+        {
+            match grammar.outcome {
+                ItemOutcome::Built => return ItemOutcome::Built,
+                ItemOutcome::Cached => saw_cached = true,
+                ItemOutcome::Unknown => saw_unknown = true,
+            }
+        }
+
+        if saw_unknown {
+            ItemOutcome::Unknown
+        } else if saw_cached {
+            ItemOutcome::Cached
+        } else {
+            ItemOutcome::Unknown
+        }
     }
 }
