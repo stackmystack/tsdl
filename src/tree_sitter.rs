@@ -37,7 +37,7 @@ async fn cli(
     let tag = match tag {
         Tag::Exact { label, .. } => Cow::Borrowed(label),
         Tag::Ref(git_ref) => {
-            handle.msg(format!("Figuring out the exact tag for {tag}",));
+            handle.msg(format!("resolving exact tag for {tag}"));
             let tree_sitter = PathBuf::new().join(build_dir).join("tree-sitter");
             git::clone(repo, &tree_sitter).await?;
             Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
@@ -50,12 +50,16 @@ async fn cli(
         .canon()?;
 
     if !res.exists() {
-        handle.msg(format!("Downloading {tag}",));
+        handle.mark_built();
+        handle.step("downloading");
         let gz_basename = format!("{cli}.gz");
         let url = format!("{repo}/releases/download/{tag}/{gz_basename}");
         let gz = PathBuf::new().join(build_dir).join(gz_basename);
 
         download_and_extract(&gz, &url, &res).await?;
+    } else {
+        handle.mark_cached();
+        handle.step("cached");
     }
 
     Ok(res)
@@ -140,9 +144,9 @@ pub async fn prepare(
 ) -> TsdlResult<PathBuf> {
     let progress = display
         .add_language(
-            "Preparing tree-sitter-cli".into(),
-            format!("v{}", tree_sitter.version),
-            3,
+            display_tree_sitter_ref(&tree_sitter.version),
+            "tree-sitter-cli",
+            2,
         )
         .await;
 
@@ -150,21 +154,41 @@ pub async fn prepare(
         .map_err(|e| TsdlError::context("Parsing the tree-sitter URL", e))?;
     let git_ref = &tree_sitter.version;
 
-    progress.step(format!("Figuring out tag from ref {git_ref}"));
-    let tag = tag(repo.as_str(), git_ref).await?;
+    progress.step(format!("resolving {git_ref}"));
+    let tag = match tag(repo.as_str(), git_ref).await {
+        Ok(tag) => tag,
+        Err(e) => {
+            progress.err("resolve failed");
+            return Err(e);
+        }
+    };
 
-    progress.step(format!("Fetching {tag}",));
-    let cli = cli(
+    let cli = match cli(
         build_dir,
         &progress,
         &tree_sitter.platform,
         &tree_sitter.repo,
         &tag,
     )
-    .await?;
-    progress.fin(format!("{tag}"));
+    .await
+    {
+        Ok(cli) => cli,
+        Err(e) => {
+            progress.err("download failed");
+            return Err(e);
+        }
+    };
+    progress.fin("done");
 
     Ok(cli)
+}
+
+fn display_tree_sitter_ref(version: &str) -> GitRef {
+    if version.starts_with('v') || !version.split('.').all(|part| part.parse::<u32>().is_ok()) {
+        GitRef::from(version.to_string())
+    } else {
+        GitRef::from(format!("v{version}"))
+    }
 }
 
 #[allow(clippy::missing_panics_doc)]
