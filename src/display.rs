@@ -648,10 +648,18 @@ impl DisplayState {
             );
         }
 
-        // Repos without grammars that failed
+        // Repos without grammars are visible terminal rows too (for example,
+        // tree-sitter-cli or a language that failed before grammar discovery).
         for (repo_id, repo) in &self.repos {
-            if !repos_with_grammars.contains(repo_id) && repo.status == ItemStatus::Failed {
-                failed += 1;
+            if !repos_with_grammars.contains(repo_id) {
+                count_grammar_status(
+                    repo.status,
+                    repo.outcome,
+                    &mut cached,
+                    &mut built,
+                    &mut building,
+                    &mut failed,
+                );
             }
         }
 
