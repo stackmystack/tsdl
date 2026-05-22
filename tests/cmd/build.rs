@@ -187,7 +187,7 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
 #[case::pinned_no_leading_v_json("json", "v0.21.0")]
 #[case::unpinned_rust("rust", "HEAD")]
 #[case::pinned::cmd::typescript("typescript", "v0.21.0")]
-fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] _version: &str) {
+fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &str) {
     let config = indoc! {
       r#"
         [parsers]
@@ -209,6 +209,7 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] _version: 
         .args(["build", language])
         .assert()
         .success()
+        .stdout(p::str::contains(format!("{language:<16} @ {version}")))
         .stdout(p::str::contains(format!(
             "{:<16} [4/4] built",
             format!("{language}/{language}")
@@ -263,10 +264,15 @@ fn build_implicit_pinned_and_unpinned() {
 #[rstest]
 fn multi_parsers_no_cmd() {
     let java = "java";
-    let _version = "HEAD";
+    let version = "HEAD";
     let languages = [java];
     let mut sandbox = Sandbox::new();
-    let mut assert = sandbox.cmd.args(["build", java]).assert().success();
+    let mut assert = sandbox
+        .cmd
+        .args(["build", java])
+        .assert()
+        .success()
+        .stdout(p::str::contains(format!("{java:<16} @ {version}")));
     for language in languages {
         assert = assert.stdout(p::str::contains(format!("{language:<16} [1/2] cloning")));
     }
