@@ -141,7 +141,7 @@ pub fn column(input: &str, indent: &str, width: usize) -> TsdlResult<Output> {
         .arg("column")
         .arg("--mode=always")
         .arg(format!("--indent={indent}"))
-        .arg(format!("--width={width}",))
+        .arg(format!("--width={width}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;

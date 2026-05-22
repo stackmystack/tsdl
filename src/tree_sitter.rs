@@ -49,7 +49,10 @@ async fn cli(
         .join(format!("{cli}-{tag}"))
         .canon()?;
 
-    if !res.exists() {
+    if res.exists() {
+        handle.mark_cached();
+        handle.step("cached");
+    } else {
         handle.mark_built();
         handle.step("downloading");
         let gz_basename = format!("{cli}.gz");
@@ -57,9 +60,6 @@ async fn cli(
         let gz = PathBuf::new().join(build_dir).join(gz_basename);
 
         download_and_extract(&gz, &url, &res).await?;
-    } else {
-        handle.mark_cached();
-        handle.step("cached");
     }
 
     Ok(res)
