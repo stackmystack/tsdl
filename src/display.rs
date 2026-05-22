@@ -11,6 +11,38 @@ use ratatui::text::{Line, Span};
 use crate::args::ProgressStyle;
 use crate::git::GitRef;
 
+// ── Column geometry ──────────────────────────────────────────────
+/// Fixed width of the time column (right-aligned, " 0.00s" … "59:59").
+const TIME_COL_WIDTH: usize = 6;
+/// Minimum width of the git-ref column (left-aligned).
+const MIN_REF_WIDTH: usize = 4;
+/// Minimum width of the step column (right-aligned, e.g. "[1/4]").
+const MIN_STEP_WIDTH: usize = 5;
+/// Minimum width of the name column (left-aligned).
+const MIN_NAME_WIDTH: usize = 4;
+/// Width of the icon column (●, ✓, ✗ are all single-width).
+const ICON_COL_WIDTH: usize = 1;
+/// Width of a spacer between columns (a single space).
+const SPACER_WIDTH: usize = 1;
+/// Minimum width for the message column.
+const MIN_MSG_WIDTH: usize = 1;
+
+/// Pre-compute the fixed (non-message) portion of a row line.
+///
+/// Columns in order: Time _ Ref _ Step _ Icon _ Name _ Msg
+/// (5 spacers between 6 columns).
+const fn fixed_width(time: usize, rf: usize, step: usize, name: usize) -> usize {
+    time + SPACER_WIDTH
+        + rf
+        + SPACER_WIDTH
+        + step
+        + SPACER_WIDTH
+        + ICON_COL_WIDTH
+        + SPACER_WIDTH
+        + name
+        + SPACER_WIDTH
+}
+
 // ---------------------------------------------------------------------------
 // Mode
 // ---------------------------------------------------------------------------
@@ -192,32 +224,32 @@ pub(crate) struct CachedLayout {
 impl Default for CachedLayout {
     fn default() -> Self {
         Self {
-            time_width: 6,
-            ref_width: 4,
-            step_width: 5,
-            name_width: 4,
-            fixed_width: 6 + 1 + 4 + 1 + 5 + 1 + 1 + 1 + 4 + 1,
+            time_width: TIME_COL_WIDTH,
+            ref_width: MIN_REF_WIDTH,
+            step_width: MIN_STEP_WIDTH,
+            name_width: MIN_NAME_WIDTH,
+            fixed_width: fixed_width(
+                TIME_COL_WIDTH,
+                MIN_REF_WIDTH,
+                MIN_STEP_WIDTH,
+                MIN_NAME_WIDTH,
+            ),
         }
     }
 }
 
 impl CachedLayout {
     fn finalize(&mut self) {
-        self.time_width = 6;
-        self.ref_width = self.ref_width.max(4);
-        self.step_width = self.step_width.max(5);
-        self.name_width = self.name_width.max(4);
-        // fixed = time + sp + ref + sp + step + sp + icon(1) + sp + name + sp
-        self.fixed_width = self.time_width
-            + 1
-            + self.ref_width
-            + 1
-            + self.step_width
-            + 1
-            + 1
-            + 1
-            + self.name_width
-            + 1;
+        self.time_width = TIME_COL_WIDTH;
+        self.ref_width = self.ref_width.max(MIN_REF_WIDTH);
+        self.step_width = self.step_width.max(MIN_STEP_WIDTH);
+        self.name_width = self.name_width.max(MIN_NAME_WIDTH);
+        self.fixed_width = fixed_width(
+            self.time_width,
+            self.ref_width,
+            self.step_width,
+            self.name_width,
+        );
     }
 }
 
@@ -422,7 +454,9 @@ pub(crate) fn compute_msg_cell(
     layout: &CachedLayout,
     term_width: usize,
 ) -> Span<'static> {
-    let msg_width = term_width.saturating_sub(layout.fixed_width).max(1);
+    let msg_width = term_width
+        .saturating_sub(layout.fixed_width)
+        .max(MIN_MSG_WIDTH);
     Span::styled(truncate_str(info.msg(), msg_width), MSG_STYLE)
 }
 
@@ -723,10 +757,12 @@ fn truncate_str(s: &str, max: usize) -> String {
 fn format_elapsed_duration(dur: Duration) -> String {
     let secs = dur.as_secs_f64();
     if secs < 60.0 {
-        format!("{:>5.2}s", secs)
+        format!("{secs:>5.2}s")
     } else {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let mins = secs as u64 / 60;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let remaining = secs as u64 % 60;
-        format!("{:>3}:{:02}", mins, remaining)
+        format!("{mins:>3}:{remaining:02}")
     }
 }
