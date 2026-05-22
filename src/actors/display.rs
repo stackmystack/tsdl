@@ -1,11 +1,11 @@
-use std::io::{self, Write};
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::Backend;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph, Widget};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 
@@ -255,10 +255,10 @@ fn plain_grammar_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> S
 // DisplayActor
 // ---------------------------------------------------------------------------
 
-fn draw_lines<B: Backend<Error = io::Error>>(
+fn draw_lines<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
     lines: Vec<Line<'static>>,
-) -> io::Result<()> {
+) -> Result<(), B::Error> {
     terminal
         .draw(|frame| {
             let area = frame.area();
@@ -267,38 +267,81 @@ fn draw_lines<B: Backend<Error = io::Error>>(
         .map(|_| ())
 }
 
-fn draw_lines_with_cursor_at_top<B: Backend<Error = io::Error>>(
+fn current_viewport_height<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
-    lines: Vec<Line<'static>>,
-) -> io::Result<()> {
-    terminal
-        .draw(|frame| {
-            let area = frame.area();
-            frame.render_widget(Paragraph::new(lines), area);
-            frame.set_cursor_position((area.x, area.y));
-        })
-        .map(|_| ())
+) -> Result<u16, B::Error> {
+    terminal.autoresize()?;
+    Ok(terminal.get_frame().area().height.max(1))
 }
 
-fn line_to_plain_text(line: &Line<'_>) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
+fn split_lines_for_viewport(
+    mut lines: Vec<Line<'static>>,
+    viewport_height: u16,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let suffix_len = usize::from(viewport_height).min(lines.len());
+    let split_at = lines.len() - suffix_len;
+    let suffix = lines.split_off(split_at);
+    (lines, suffix)
 }
 
-fn print_lines_from_cursor(lines: &[String]) -> io::Result<()> {
-    let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
-    )?;
+fn insert_lines_before_viewport<B: Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    mut lines: Vec<Line<'static>>,
+) -> Result<(), B::Error> {
+    while !lines.is_empty() {
+        let rest = if lines.len() > usize::from(u16::MAX) {
+            lines.split_off(usize::from(u16::MAX))
+        } else {
+            Vec::new()
+        };
+        let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
 
-    for line in lines {
-        writeln!(stdout, "{line}")?;
+        terminal.insert_before(height, move |buf| {
+            Paragraph::new(lines).render(buf.area, buf);
+        })?;
+
+        lines = rest;
     }
-    writeln!(stdout)?;
-    stdout.flush()
+
+    Ok(())
+}
+
+fn draw_lines_in_viewport<B: Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    lines: Vec<Line<'static>>,
+) -> Result<(), B::Error> {
+    let line_count = lines.len();
+
+    terminal
+        .draw(move |frame| {
+            let area = frame.area();
+            frame.render_widget(Clear, area);
+            frame.render_widget(Paragraph::new(lines), area);
+
+            let cursor_offset = line_count
+                .saturating_sub(1)
+                .min(usize::from(area.height.saturating_sub(1)));
+            let cursor_y = area.y + u16::try_from(cursor_offset).unwrap_or(0);
+            frame.set_cursor_position((area.x, cursor_y));
+        })
+        .map(|_| ())
+}
+
+fn render_final_report<B: Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    lines: Vec<Line<'static>>,
+) -> Result<(), B::Error> {
+    let viewport_height = current_viewport_height(terminal)?;
+    let (prefix, suffix) = split_lines_for_viewport(lines, viewport_height);
+    insert_lines_before_viewport(terminal, prefix)?;
+    draw_lines_in_viewport(terminal, suffix)
+}
+
+fn clear_from_cursor_down() -> io::Result<()> {
+    crossterm::execute!(
+        io::stdout(),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+    )
 }
 
 pub struct DisplayActor {
@@ -349,13 +392,12 @@ impl DisplayActor {
     // ── Fancy mode ────────────────────────────────────────────────────
 
     async fn run_fancy(&mut self) {
-        let term_height = crossterm::terminal::size().map_or(40, |(_, h)| h as usize);
-        let viewport_height = term_height.min(40);
+        let viewport_height = crossterm::terminal::size().map_or(40, |(_, h)| h).min(40);
 
         let mut terminal = match ratatui::Terminal::with_options(
             ratatui::backend::CrosstermBackend::new(io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(viewport_height as u16),
+                viewport: ratatui::Viewport::Inline(viewport_height),
             },
         ) {
             Ok(terminal) => terminal,
@@ -434,24 +476,21 @@ impl DisplayActor {
         tx: oneshot::Sender<()>,
     ) {
         let term_width = terminal.size().map_or(80, |s| s.width);
-        let final_lines = self.materialize(term_width);
-        let final_text = final_lines
-            .iter()
-            .map(line_to_plain_text)
-            .collect::<Vec<_>>();
+        let mut final_lines = self.materialize(term_width);
+        final_lines.push(Line::from(""));
 
-        match draw_lines_with_cursor_at_top(terminal, final_lines) {
+        match render_final_report(terminal, final_lines) {
             Ok(()) => {
                 ratatui::restore();
-                if let Err(err) = print_lines_from_cursor(&final_text) {
+                if let Err(err) = clear_from_cursor_down() {
                     println!();
-                    eprintln!("tsdl: fancy display final report failed: {err}");
+                    eprintln!("tsdl: fancy display cleanup failed: {err}");
                 }
             }
             Err(err) => {
                 ratatui::restore();
                 println!();
-                eprintln!("tsdl: fancy display final render failed: {err}");
+                eprintln!("tsdl: fancy display final report failed: {err}");
             }
         }
 
@@ -982,6 +1021,70 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn split_lines_for_viewport_keeps_the_visible_suffix() {
+        let lines = vec![
+            Line::from("one"),
+            Line::from("two"),
+            Line::from("three"),
+            Line::from("four"),
+        ];
+
+        let (prefix, suffix) = split_lines_for_viewport(lines, 2);
+
+        assert_eq!(line_text(&prefix[0]), "one");
+        assert_eq!(line_text(&prefix[1]), "two");
+        assert_eq!(line_text(&suffix[0]), "three");
+        assert_eq!(line_text(&suffix[1]), "four");
+    }
+
+    #[test]
+    fn render_final_report_inserts_prefix_and_replaces_viewport() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::{Color, Style};
+        use ratatui::{Terminal, TerminalOptions, Viewport};
+
+        let backend = TestBackend::new(20, 5);
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(2),
+            },
+        )
+        .unwrap();
+
+        draw_lines(
+            &mut terminal,
+            vec![Line::from("old viewport 1"), Line::from("old viewport 2")],
+        )
+        .unwrap();
+
+        render_final_report(
+            &mut terminal,
+            vec![
+                Line::from("final 1"),
+                Line::from("final 2"),
+                Line::from("final 3"),
+                Line::from(Span::styled("final 4", Style::default().fg(Color::Blue))),
+                Line::from(""),
+            ],
+        )
+        .unwrap();
+
+        terminal.backend().assert_buffer_lines(vec![
+            Line::from("final 1             "),
+            Line::from("final 2             "),
+            Line::from("final 3             "),
+            Line::from(vec![
+                Span::styled("final 4", Style::default().fg(Color::Blue)),
+                Span::raw("             "),
+            ]),
+            Line::from("                    "),
+        ]);
+        terminal.backend().assert_scrollback_empty();
+        terminal.backend_mut().assert_cursor_position((0, 4));
     }
 
     #[test]
