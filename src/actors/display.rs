@@ -34,6 +34,9 @@ pub enum DisplayMessage {
         tx: oneshot::Sender<ProgressAddr>,
     },
 
+    /// Plain-mode reference line. Fancy mode ignores this because refs are rendered per row.
+    RegisterReference { git_ref: GitRef, name: Arc<str> },
+
     /// Update a specific bar.
     Update {
         id: u64,
@@ -120,6 +123,14 @@ impl DisplayAddr {
         .await
     }
 
+    pub async fn reference<S: Into<Arc<str>>>(&self, git_ref: GitRef, name: S) {
+        self.fire(DisplayMessage::RegisterReference {
+            git_ref,
+            name: name.into(),
+        })
+        .await;
+    }
+
     pub async fn tick(&self) {
         self.fire(DisplayMessage::Tick).await;
     }
@@ -195,12 +206,53 @@ impl ProgressAddr {
 }
 
 // ---------------------------------------------------------------------------
+// Plain output model
+// ---------------------------------------------------------------------------
+
+struct PlainLine {
+    name: String,
+    step: usize,
+    total: usize,
+    message: String,
+}
+
+fn plain_repo_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> String {
+    match kind {
+        UpdateKind::Err => format!("failed: {msg}"),
+        UpdateKind::Cached => "cached".to_string(),
+        UpdateKind::Fin => match outcome {
+            ItemOutcome::Cached => "done".to_string(),
+            ItemOutcome::Built => "done".to_string(),
+            ItemOutcome::Unknown => msg.to_string(),
+        },
+        UpdateKind::Step => msg.to_string(),
+        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt => msg.to_string(),
+    }
+}
+
+fn plain_grammar_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> String {
+    match kind {
+        UpdateKind::Err => format!("failed: {msg}"),
+        UpdateKind::Cached => "cached".to_string(),
+        UpdateKind::Fin => match outcome {
+            ItemOutcome::Cached => "cached".to_string(),
+            ItemOutcome::Built => "built".to_string(),
+            ItemOutcome::Unknown => msg.to_string(),
+        },
+        UpdateKind::Step => msg.to_string(),
+        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt => msg.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DisplayActor
 // ---------------------------------------------------------------------------
 
 pub struct DisplayActor {
     state: DisplayState,
     next_id: u64,
+    plain_name_width: usize,
+    plain_progress_started: bool,
     rx: mpsc::Receiver<DisplayMessage>,
     tx: mpsc::Sender<DisplayMessage>,
 }
@@ -212,6 +264,8 @@ impl DisplayActor {
         let actor = Self {
             state: DisplayState::new(mode, build_dir, out_dir),
             next_id: 1,
+            plain_name_width: 16,
+            plain_progress_started: false,
             rx,
             tx: tx.clone(),
         };
@@ -292,6 +346,8 @@ impl DisplayActor {
     // ── Plain mode ────────────────────────────────────────────────────
 
     async fn run_plain(&mut self) {
+        self.print_plain_metadata();
+
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DisplayMessage::RegisterLanguage {
@@ -310,38 +366,90 @@ impl DisplayActor {
                     num_tasks,
                     tx,
                 } => {
+                    let plain_name = format!("{language}/{name}");
+                    self.update_plain_name_width(&plain_name);
                     let addr = self.register_grammar(language, name, git_ref, num_tasks);
                     let _ = tx.send(addr);
                 }
+                DisplayMessage::RegisterReference { git_ref, name } => {
+                    self.print_plain_ref(&name, &git_ref.to_string());
+                }
                 DisplayMessage::Update { id, kind, msg } => {
                     self.apply_update(id, kind, msg);
-                    if matches!(kind, UpdateKind::MarkCached | UpdateKind::MarkBuilt) {
+                    if matches!(
+                        kind,
+                        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt
+                    ) {
                         continue;
                     }
-                    if let Some(repo) = self.state.repos.get(&id) {
-                        println!(
-                            "  {} {} [{}/{}] {}",
-                            repo.name, repo.git_ref, repo.step, repo.total, repo.msg,
-                        );
-                    } else if let Some(grammar) = self.state.grammars.get(&id) {
-                        println!(
-                            "  {}/{} {} [{}/{}] {}",
-                            grammar.repo,
-                            grammar.name,
-                            grammar.git_ref,
-                            grammar.step,
-                            grammar.total,
-                            grammar.msg,
-                        );
+                    if let Some(line) = self.plain_progress_line(id, kind) {
+                        self.print_plain_progress(&line);
                     }
                 }
                 DisplayMessage::Tick => {}
                 DisplayMessage::Shutdown { tx } => {
+                    self.print_plain_summary();
                     let _ = tx.send(());
                     break;
                 }
             }
         }
+    }
+
+    fn update_plain_name_width(&mut self, name: &str) -> usize {
+        self.plain_name_width = self.plain_name_width.max(name.chars().count());
+        self.plain_name_width
+    }
+
+    fn print_plain_metadata(&self) {
+        println!("build: {}", self.state.build_dir.display());
+        println!("out:   {}", self.state.out_dir.display());
+        println!();
+    }
+
+    fn print_plain_ref(&mut self, name: &str, git_ref: &str) {
+        let width = self.update_plain_name_width(name);
+        println!("{name:<width$} @ {git_ref}");
+    }
+
+    fn print_plain_progress(&mut self, line: &PlainLine) {
+        if !self.plain_progress_started {
+            println!();
+            self.plain_progress_started = true;
+        }
+
+        let width = self.update_plain_name_width(&line.name);
+        println!(
+            "{name:<width$} [{step}/{total}] {message}",
+            name = line.name,
+            step = line.step.min(line.total),
+            total = line.total,
+            message = line.message,
+        );
+    }
+
+    fn print_plain_summary(&self) {
+        let (cached, built, building, failed) = self.state.summary_counts();
+        println!();
+        println!("✓ {cached} cached  ● {built} built  ● {building} building  ✗ {failed} failed");
+    }
+
+    fn plain_progress_line(&self, id: u64, kind: UpdateKind) -> Option<PlainLine> {
+        if let Some(repo) = self.state.repos.get(&id) {
+            return Some(PlainLine {
+                name: repo.name.to_string(),
+                step: repo.step,
+                total: repo.total,
+                message: plain_repo_message(kind, repo.outcome, &repo.msg),
+            });
+        }
+
+        self.state.grammars.get(&id).map(|grammar| PlainLine {
+            name: format!("{}/{}", grammar.repo, grammar.name),
+            step: grammar.step,
+            total: grammar.total,
+            message: plain_grammar_message(kind, grammar.outcome, &grammar.msg),
+        })
     }
 
     // ── Message handling ──────────────────────────────────────────────
@@ -367,6 +475,7 @@ impl DisplayActor {
                 let addr = self.register_grammar(language, name, git_ref, num_tasks);
                 let _ = tx.send(addr);
             }
+            DisplayMessage::RegisterReference { .. } => {}
             DisplayMessage::Update { id, kind, msg } => {
                 self.apply_update(id, kind, msg);
             }
