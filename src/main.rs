@@ -1,6 +1,7 @@
 use std::{process::ExitCode, time::Instant};
 
 use clap::Parser;
+use console::style;
 use tracing::{error, info};
 
 use tsdl::{app::App, args, logging, TsdlResult};
@@ -28,7 +29,12 @@ fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
     match &args.command {
         args::Command::Build(_) => {
             let (result, duration) = time(|| tsdl::build::run(app));
-            println!("Done in {duration}");
+            let done = format!("Done in {duration}");
+            if result.is_ok() {
+                println!("{}", style(done).green());
+            } else {
+                println!("{}", style(done).red());
+            }
             result
         }
         args::Command::Config { command } => tsdl::config::run(app, command),
