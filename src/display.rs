@@ -192,18 +192,18 @@ pub(crate) struct CachedLayout {
 impl Default for CachedLayout {
     fn default() -> Self {
         Self {
-            time_width: 5,
+            time_width: 6,
             ref_width: 4,
             step_width: 5,
             name_width: 4,
-            fixed_width: 5 + 1 + 4 + 1 + 5 + 1 + 1 + 1 + 4 + 1,
+            fixed_width: 6 + 1 + 4 + 1 + 5 + 1 + 1 + 1 + 4 + 1,
         }
     }
 }
 
 impl CachedLayout {
     fn finalize(&mut self) {
-        self.time_width = self.time_width.max(5);
+        self.time_width = 6;
         self.ref_width = self.ref_width.max(4);
         self.step_width = self.step_width.max(5);
         self.name_width = self.name_width.max(4);
@@ -583,7 +583,6 @@ impl DisplayState {
         let mut layout = CachedLayout::default();
         for spec in row_specs {
             let info = self.get_item_info(spec);
-            let time_str = format_elapsed_duration(info.elapsed());
             let ref_str = info.git_ref().to_string();
             let step_str = if info.total() > 0 {
                 format!("[{}/{}]", info.step().min(info.total()), info.total())
@@ -591,7 +590,6 @@ impl DisplayState {
                 String::new()
             };
             let name_full = format!("{}{}", spec.indent, spec.display_name);
-            layout.time_width = layout.time_width.max(time_str.chars().count());
             layout.ref_width = layout.ref_width.max(ref_str.chars().count());
             layout.step_width = layout.step_width.max(step_str.chars().count());
             layout.name_width = layout.name_width.max(name_full.chars().count());
@@ -725,8 +723,10 @@ fn truncate_str(s: &str, max: usize) -> String {
 fn format_elapsed_duration(dur: Duration) -> String {
     let secs = dur.as_secs_f64();
     if secs < 60.0 {
-        format!("{secs:.2}s")
+        format!("{:>5.2}s", secs)
     } else {
-        format!("{:.2}m", secs / 60.0)
+        let mins = secs as u64 / 60;
+        let remaining = secs as u64 % 60;
+        format!("{:>3}:{:02}", mins, remaining)
     }
 }
