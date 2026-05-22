@@ -226,12 +226,12 @@ fn plain_repo_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> Stri
         UpdateKind::Err => format!("failed: {msg}"),
         UpdateKind::Cached => "cached".to_string(),
         UpdateKind::Fin => match outcome {
-            ItemOutcome::Cached => "done".to_string(),
-            ItemOutcome::Built => "done".to_string(),
+            ItemOutcome::Built | ItemOutcome::Cached => "done".to_string(),
             ItemOutcome::Unknown => msg.to_string(),
         },
-        UpdateKind::Step => msg.to_string(),
-        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt => msg.to_string(),
+        UpdateKind::MarkBuilt | UpdateKind::MarkCached | UpdateKind::Msg | UpdateKind::Step => {
+            msg.to_string()
+        }
     }
 }
 
@@ -244,8 +244,9 @@ fn plain_grammar_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> S
             ItemOutcome::Built => "built".to_string(),
             ItemOutcome::Unknown => msg.to_string(),
         },
-        UpdateKind::Step => msg.to_string(),
-        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt => msg.to_string(),
+        UpdateKind::MarkBuilt | UpdateKind::MarkCached | UpdateKind::Msg | UpdateKind::Step => {
+            msg.to_string()
+        }
     }
 }
 
@@ -299,8 +300,7 @@ impl DisplayActor {
     // ── Fancy mode ────────────────────────────────────────────────────
 
     async fn run_fancy(&mut self) {
-        let term_height = crossterm::terminal::size()
-            .map_or(40, |(_, h)| h as usize);
+        let term_height = crossterm::terminal::size().map_or(40, |(_, h)| h as usize);
         let viewport_height = term_height.min(40);
 
         let mut terminal = ratatui::Terminal::with_options(
@@ -395,13 +395,13 @@ impl DisplayActor {
             let new_layout = self.state.compute_layout(&self.row_specs);
 
             // Invalidate columns whose width changed
-            if new_layout.ref_width != self.grid.layout.ref_width {
+            if new_layout.ref_ != self.grid.layout.ref_ {
                 self.grid.invalidate_column(Column::GitRef);
             }
-            if new_layout.step_width != self.grid.layout.step_width {
+            if new_layout.step != self.grid.layout.step {
                 self.grid.invalidate_column(Column::Step);
             }
-            if new_layout.name_width != self.grid.layout.name_width {
+            if new_layout.name != self.grid.layout.name {
                 self.grid.invalidate_column(Column::Name);
             }
             self.grid.layout = new_layout;
@@ -605,11 +605,10 @@ impl DisplayActor {
                 let addr = self.register_grammar(language, name, git_ref, num_tasks);
                 let _ = tx.send(addr);
             }
-            DisplayMessage::RegisterReference { .. } => {}
+            DisplayMessage::RegisterReference { .. } | DisplayMessage::Tick => {}
             DisplayMessage::Update { id, kind, msg } => {
                 self.apply_update(id, kind, msg);
             }
-            DisplayMessage::Tick => {}
             DisplayMessage::Shutdown { tx } => {
                 let _ = tx.send(());
             }

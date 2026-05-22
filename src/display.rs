@@ -212,10 +212,10 @@ struct CellKey {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedLayout {
-    pub time_width: usize,
-    pub ref_width: usize,
-    pub step_width: usize,
-    pub name_width: usize,
+    pub time: usize,
+    pub ref_: usize,
+    pub step: usize,
+    pub name: usize,
     /// Total width consumed by non-message columns: time + sp + ref + sp +
     /// step + sp + icon(1) + sp + name + sp.
     pub fixed_width: usize,
@@ -224,10 +224,10 @@ pub(crate) struct CachedLayout {
 impl Default for CachedLayout {
     fn default() -> Self {
         Self {
-            time_width: TIME_COL_WIDTH,
-            ref_width: MIN_REF_WIDTH,
-            step_width: MIN_STEP_WIDTH,
-            name_width: MIN_NAME_WIDTH,
+            time: TIME_COL_WIDTH,
+            ref_: MIN_REF_WIDTH,
+            step: MIN_STEP_WIDTH,
+            name: MIN_NAME_WIDTH,
             fixed_width: fixed_width(
                 TIME_COL_WIDTH,
                 MIN_REF_WIDTH,
@@ -240,16 +240,11 @@ impl Default for CachedLayout {
 
 impl CachedLayout {
     fn finalize(&mut self) {
-        self.time_width = TIME_COL_WIDTH;
-        self.ref_width = self.ref_width.max(MIN_REF_WIDTH);
-        self.step_width = self.step_width.max(MIN_STEP_WIDTH);
-        self.name_width = self.name_width.max(MIN_NAME_WIDTH);
-        self.fixed_width = fixed_width(
-            self.time_width,
-            self.ref_width,
-            self.step_width,
-            self.name_width,
-        );
+        self.time = TIME_COL_WIDTH;
+        self.ref_ = self.ref_.max(MIN_REF_WIDTH);
+        self.step = self.step.max(MIN_STEP_WIDTH);
+        self.name = self.name.max(MIN_NAME_WIDTH);
+        self.fixed_width = fixed_width(self.time, self.ref_, self.step, self.name);
     }
 }
 
@@ -402,13 +397,13 @@ const MSG_STYLE: Style = Style::new();
 pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
     let time = format_elapsed_duration(info.elapsed());
     // Right-aligned
-    let padded = format!("{:>width$}", time, width = layout.time_width);
+    let padded = format!("{:>width$}", time, width = layout.time);
     Span::styled(padded, TIME_STYLE)
 }
 
 pub(crate) fn compute_ref_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
     let ref_str = info.git_ref().to_string();
-    let padded = format!("{:<width$}", ref_str, width = layout.ref_width);
+    let padded = format!("{:<width$}", ref_str, width = layout.ref_);
     Span::styled(padded, REF_STYLE)
 }
 
@@ -419,7 +414,7 @@ pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> S
         String::new()
     };
     // Right-aligned
-    let padded = format!("{:>width$}", step_str, width = layout.step_width);
+    let padded = format!("{:>width$}", step_str, width = layout.step);
     Span::styled(padded, REF_STYLE)
 }
 
@@ -440,7 +435,7 @@ pub(crate) fn compute_name_cell(
     layout: &CachedLayout,
 ) -> Span<'static> {
     let full = format!("{indent}{display_name}");
-    let padded = format!("{:<width$}", full, width = layout.name_width);
+    let padded = format!("{:<width$}", full, width = layout.name);
     Span::styled(
         padded,
         Style::default()
@@ -624,9 +619,9 @@ impl DisplayState {
                 String::new()
             };
             let name_full = format!("{}{}", spec.indent, spec.display_name);
-            layout.ref_width = layout.ref_width.max(ref_str.chars().count());
-            layout.step_width = layout.step_width.max(step_str.chars().count());
-            layout.name_width = layout.name_width.max(name_full.chars().count());
+            layout.ref_ = layout.ref_.max(ref_str.chars().count());
+            layout.step = layout.step.max(step_str.chars().count());
+            layout.name = layout.name.max(name_full.chars().count());
         }
         layout.finalize();
         layout
