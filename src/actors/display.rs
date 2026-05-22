@@ -275,6 +275,7 @@ pub struct DisplayActor {
     grid: GridCache,
     row_specs: Vec<RowSpec>,
     rows_dirty: bool,
+    last_term_width: Option<usize>,
     rx: mpsc::Receiver<DisplayMessage>,
     tx: mpsc::Sender<DisplayMessage>,
 }
@@ -291,6 +292,7 @@ impl DisplayActor {
             grid: GridCache::new(),
             row_specs: Vec::new(),
             rows_dirty: true,
+            last_term_width: None,
             rx,
             tx: tx.clone(),
         };
@@ -420,6 +422,11 @@ impl DisplayActor {
     fn materialize(&mut self, term_width: u16) -> Vec<Line<'static>> {
         let term_w = term_width as usize;
 
+        if self.last_term_width != Some(term_w) {
+            self.grid.invalidate_column(Column::Msg);
+            self.last_term_width = Some(term_w);
+        }
+
         // Rebuild row order if items were added
         if self.rows_dirty {
             self.row_specs = self.state.compute_row_order();
@@ -434,6 +441,9 @@ impl DisplayActor {
             }
             if new_layout.name != self.grid.layout.name {
                 self.grid.invalidate_column(Column::Name);
+            }
+            if new_layout.fixed_width != self.grid.layout.fixed_width {
+                self.grid.invalidate_column(Column::Msg);
             }
             self.grid.layout = new_layout;
             self.rows_dirty = false;
@@ -899,4 +909,78 @@ impl DisplayActor {
 
 fn spacer() -> Span<'static> {
     Span::raw(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn actor() -> DisplayActor {
+        let (tx, rx) = mpsc::channel(1);
+        DisplayActor {
+            state: DisplayState::new(
+                Mode::Fancy,
+                Arc::new(PathBuf::from("build")),
+                Arc::new(PathBuf::from("out")),
+            ),
+            next_id: 1,
+            plain_name_width: 16,
+            plain_progress_started: false,
+            grid: GridCache::new(),
+            row_specs: Vec::new(),
+            rows_dirty: true,
+            last_term_width: None,
+            rx,
+            tx,
+        }
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn materialize_recomputes_message_cells_when_terminal_width_changes() {
+        let mut actor = actor();
+        let progress = actor.register_repo("json".into(), GitRef::from("HEAD"), 1);
+        let message = "abcdefghijklmnop";
+
+        actor.apply_update(progress.id, UpdateKind::Msg, Arc::from(message));
+
+        let narrow_lines = actor.materialize(30);
+        let narrow_row = line_text(&narrow_lines[0]);
+        assert!(narrow_row.contains("abcd…"));
+        assert!(!narrow_row.contains(message));
+
+        let wide_lines = actor.materialize(80);
+        let wide_row = line_text(&wide_lines[0]);
+        assert!(wide_row.contains(message));
+    }
+
+    #[test]
+    fn materialize_recomputes_message_cells_when_layout_width_changes() {
+        let mut actor = actor();
+        let progress = actor.register_repo("json".into(), GitRef::from("HEAD"), 1);
+        let message = "abcdefghijklmnop";
+
+        actor.apply_update(progress.id, UpdateKind::Msg, Arc::from(message));
+
+        let initial_lines = actor.materialize(42);
+        let initial_row = line_text(&initial_lines[0]);
+        assert!(initial_row.contains(message));
+
+        actor.register_repo("zzzzzzzzzzzzzzzzzzzz".into(), GitRef::from("HEAD"), 1);
+
+        let updated_lines = actor.materialize(42);
+        let updated_row = updated_lines
+            .iter()
+            .map(line_text)
+            .find(|line| line.contains("json"))
+            .expect("json row should still be rendered");
+        assert!(updated_row.contains('…'));
+        assert!(!updated_row.contains(message));
+    }
 }
