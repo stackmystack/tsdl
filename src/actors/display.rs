@@ -3,12 +3,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 
 use crate::actors::Addr;
-use crate::display::{DisplayState, GrammarEntry, ItemOutcome, ItemStatus, Mode, RepoEntry};
+use crate::display::{
+    compute_icon_cell, compute_msg_cell, compute_name_cell, compute_ref_cell, compute_step_cell,
+    compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemOutcome, ItemStatus,
+    Mode, RepoEntry, RowSpec,
+};
 use crate::git::GitRef;
 
 // ---------------------------------------------------------------------------
@@ -253,6 +258,9 @@ pub struct DisplayActor {
     next_id: u64,
     plain_name_width: usize,
     plain_progress_started: bool,
+    grid: GridCache,
+    row_specs: Vec<RowSpec>,
+    rows_dirty: bool,
     rx: mpsc::Receiver<DisplayMessage>,
     tx: mpsc::Sender<DisplayMessage>,
 }
@@ -266,6 +274,9 @@ impl DisplayActor {
             next_id: 1,
             plain_name_width: 16,
             plain_progress_started: false,
+            grid: GridCache::new(),
+            row_specs: Vec::new(),
+            rows_dirty: true,
             rx,
             tx: tx.clone(),
         };
@@ -301,46 +312,166 @@ impl DisplayActor {
         )
         .expect("Failed to initialize ratatui terminal");
 
-        let _ = terminal.draw(|frame| self.render(frame));
+        // Initial render
+        let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+        let _ = terminal.draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(Paragraph::new(lines), area);
+        });
 
         let mut tick_interval = time::interval(Duration::from_millis(100));
 
-        let mut shutdown_tx = None;
-
         loop {
+            // Drain all pending messages before rendering
+            let mut shutdown_tx = None;
+            while let Ok(msg) = self.rx.try_recv() {
+                match msg {
+                    DisplayMessage::Shutdown { tx } => {
+                        shutdown_tx = Some(tx);
+                        break;
+                    }
+                    other => self.handle_message(other),
+                }
+            }
+
+            if let Some(tx) = shutdown_tx {
+                // Final render before shutting down
+                let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+                let _ = terminal.draw(|frame| {
+                    let area = frame.area();
+                    frame.render_widget(Paragraph::new(lines), area);
+                });
+                ratatui::restore();
+                eprintln!();
+                let _ = tx.send(());
+                return;
+            }
+
+            // Render current state
+            let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+            let _ = terminal.draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(Paragraph::new(lines), area);
+            });
+
+            // Wait for next event
             tokio::select! {
                 msg = self.rx.recv() => {
                     match msg {
                         Some(DisplayMessage::Shutdown { tx }) => {
-                            shutdown_tx = Some(tx);
-                            break;
+                            // Final render then exit
+                            let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+                            let _ = terminal.draw(|frame| {
+                                let area = frame.area();
+                                frame.render_widget(Paragraph::new(lines), area);
+                            });
+                            ratatui::restore();
+                            eprintln!();
+                            let _ = tx.send(());
+                            return;
                         }
-                        Some(msg) => self.handle_message(msg),
+                        Some(other) => self.handle_message(other),
                         None => break,
                     }
                 }
                 _ = tick_interval.tick() => {
-                    // Ticks trigger re-renders for live elapsed-time updates.
+                    // Tick — next materialize will update live clocks
                 }
             }
-
-            let _ = terminal.draw(|frame| self.render(frame));
         }
 
-        let _ = terminal.draw(|frame| self.render(frame));
         ratatui::restore();
         eprintln!();
-
-        if let Some(tx) = shutdown_tx {
-            let _ = tx.send(());
-        }
     }
 
-    fn render(&self, frame: &mut ratatui::Frame) {
-        let area = frame.area();
-        let lines = self.state.render_lines(area.width);
-        let paragraph = Paragraph::new(lines);
-        frame.render_widget(paragraph, area);
+    /// Assemble `Vec<Line>` from the grid cache. Rebuilds row order and layout
+    /// only when items have been added. Otherwise reuses the cached row order
+    /// and recomputes only stale cells (dirty items + running clocks).
+    fn materialize(&mut self, term_width: u16) -> Vec<Line<'static>> {
+        let term_w = term_width as usize;
+
+        // Rebuild row order if items were added
+        if self.rows_dirty {
+            self.row_specs = self.state.compute_row_order();
+            let new_layout = self.state.compute_layout(&self.row_specs);
+
+            // Invalidate columns whose width changed
+            if new_layout.ref_width != self.grid.layout.ref_width {
+                self.grid.invalidate_column(Column::GitRef);
+            }
+            if new_layout.step_width != self.grid.layout.step_width {
+                self.grid.invalidate_column(Column::Step);
+            }
+            if new_layout.name_width != self.grid.layout.name_width {
+                self.grid.invalidate_column(Column::Name);
+            }
+            self.grid.layout = new_layout;
+            self.rows_dirty = false;
+        }
+
+        // Assemble rows from the grid cache
+        let layout = self.grid.layout.clone();
+        let mut lines: Vec<Line<'static>> = Vec::with_capacity(self.row_specs.len());
+
+        for spec in &self.row_specs {
+            let info = self.state.get_item_info(spec);
+            let item_id = spec.id;
+            let is_dirty = self.grid.dirty_items.contains(&item_id);
+
+            // TIME: stale when dirty OR clock is still running
+            let time_stale =
+                is_dirty || matches!(info.status(), ItemStatus::New | ItemStatus::InProgress);
+            let time = self.grid.cell(item_id, Column::Time, time_stale, || {
+                compute_time_cell(&info, &layout)
+            });
+
+            let gref = self.grid.cell(item_id, Column::GitRef, is_dirty, || {
+                compute_ref_cell(&info, &layout)
+            });
+
+            let step = self.grid.cell(item_id, Column::Step, is_dirty, || {
+                compute_step_cell(&info, &layout)
+            });
+
+            let icon = self
+                .grid
+                .cell(item_id, Column::Icon, is_dirty, || compute_icon_cell(&info));
+
+            let name = self.grid.cell(item_id, Column::Name, is_dirty, || {
+                compute_name_cell(&spec.display_name, spec.indent, &info, &layout)
+            });
+
+            let msg = self.grid.cell(item_id, Column::Msg, is_dirty, || {
+                compute_msg_cell(&info, &layout, term_w)
+            });
+
+            lines.push(Line::from(vec![
+                time,
+                spacer(),
+                gref,
+                spacer(),
+                step,
+                spacer(),
+                icon,
+                spacer(),
+                name,
+                spacer(),
+                msg,
+            ]));
+        }
+
+        // Footer
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(self.state.footer_build_line());
+        lines.push(self.state.footer_out_line());
+        lines.push(Line::from(""));
+        lines.push(self.state.format_footer_counts());
+
+        self.grid.clear_dirty();
+
+        lines
     }
 
     // ── Plain mode ────────────────────────────────────────────────────
@@ -505,6 +636,8 @@ impl DisplayActor {
             },
         );
 
+        self.rows_dirty = true;
+
         ProgressAddr {
             id,
             tx: self.tx.clone(),
@@ -546,6 +679,8 @@ impl DisplayActor {
             },
         );
 
+        self.rows_dirty = true;
+
         ProgressAddr {
             id,
             tx: self.tx.clone(),
@@ -555,12 +690,14 @@ impl DisplayActor {
     fn apply_update(&mut self, id: u64, kind: UpdateKind, msg: Arc<str>) {
         if let Some(repo) = self.state.repos.get_mut(&id) {
             Self::apply_repo_update(repo, kind, msg);
+            self.grid.mark_dirty(id);
             return;
         }
 
         let mut maybe_parent_id: Option<u64> = None;
         if let Some(grammar) = self.state.grammars.get_mut(&id) {
             Self::apply_grammar_update(grammar, kind, msg);
+            self.grid.mark_dirty(id);
             if matches!(
                 kind,
                 UpdateKind::Step
@@ -698,6 +835,8 @@ impl DisplayActor {
                     .get_or_insert_with(|| repo.started_at.elapsed());
             }
         }
+
+        self.grid.mark_dirty(repo_id);
     }
 
     fn aggregate_child_outcome(&self, repo_id: u64) -> ItemOutcome {
@@ -725,4 +864,8 @@ impl DisplayActor {
             ItemOutcome::Unknown
         }
     }
+}
+
+fn spacer() -> Span<'static> {
+    Span::raw(" ")
 }
