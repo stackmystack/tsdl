@@ -25,7 +25,7 @@ fn no_args_should_download_tree_sitter_cli() {
         .assert()
         .success()
         .stdout(p::str::contains(format!(
-            "tree-sitter-cli v{TREE_SITTER_VERSION}"
+            "tree-sitter-cli  @ v{TREE_SITTER_VERSION}"
         )));
     assert!(!sandbox.is_empty());
     let tree_sitter_cli = sandbox.tmp.child(TSDL_BUILD_DIR).child(format!(
@@ -60,7 +60,7 @@ fn no_args_should_build_tree_sitter_with_specific_version(
         .cmd
         .assert()
         .success()
-        .stdout(p::str::contains(format!("tree-sitter-cli {version}")));
+        .stdout(p::str::contains(format!("tree-sitter-cli  @ {version}")));
     let mut tree_sitter_cli = Command::new(
         sandbox
             .tmp
@@ -83,7 +83,7 @@ fn unknown_parser_should_fail(#[case] languages: Vec<&str>) {
     sandbox.cmd.arg("build").args(&languages);
     let mut assert = sandbox.cmd.assert().failure();
     for lang in &languages {
-        assert = assert.stdout(p::str::contains(format!("{lang} HEAD [1/2] cloning")));
+        assert = assert.stdout(p::str::contains(format!("{lang:<16} [1/2] cloning")));
     }
     for lang in languages {
         sandbox
@@ -169,7 +169,7 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
     sandbox.cmd.arg("build").args(&languages);
     let mut assert = sandbox.cmd.assert().success();
     for lang in &languages {
-        assert = assert.stdout(p::str::contains(format!("{lang} HEAD [1/2] cloning")));
+        assert = assert.stdout(p::str::contains(format!("{lang:<16} [1/2] cloning")));
     }
     for lang in &languages {
         let dylib = sandbox
@@ -187,7 +187,7 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
 #[case::pinned_no_leading_v_json("json", "v0.21.0")]
 #[case::unpinned_rust("rust", "HEAD")]
 #[case::pinned::cmd::typescript("typescript", "v0.21.0")]
-fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &str) {
+fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] _version: &str) {
     let config = indoc! {
       r#"
         [parsers]
@@ -210,7 +210,8 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &
         .assert()
         .success()
         .stdout(p::str::contains(format!(
-            "{language}/{language} {version} [4/4] done"
+            "{:<16} [4/4] built",
+            format!("{language}/{language}")
         )));
     let dylib = sandbox
         .tmp
@@ -245,10 +246,10 @@ fn build_implicit_pinned_and_unpinned() {
         .write_str(config)
         .unwrap();
     let mut out = sandbox.cmd.arg("build").assert().success();
-    for (language, version) in parsers {
-        out = out.stdout(p::str::contains(format!(
-            "{language}/{language} {version} [4/4] done"
-        )));
+    for (language, _version) in parsers {
+        out = out
+            .stdout(p::str::contains(format!("{language}/{language}")))
+            .stdout(p::str::contains("[4/4] built"));
     }
     for (language, _version) in parsers {
         let dylib = sandbox
@@ -262,14 +263,12 @@ fn build_implicit_pinned_and_unpinned() {
 #[rstest]
 fn multi_parsers_no_cmd() {
     let java = "java";
-    let version = "HEAD";
+    let _version = "HEAD";
     let languages = [java];
     let mut sandbox = Sandbox::new();
     let mut assert = sandbox.cmd.args(["build", java]).assert().success();
     for language in languages {
-        assert = assert.stdout(p::str::contains(format!(
-            "{language} {version} [1/2] cloning"
-        )));
+        assert = assert.stdout(p::str::contains(format!("{language:<16} [1/2] cloning")));
     }
     for language in languages {
         let dylib = sandbox
@@ -300,9 +299,7 @@ fn multi_parsers_cmd() {
     let assert = sandbox.cmd.args(["build", typescript]).assert().success();
     // Check for version in cloning step
     // TODO: dig for changes in this test and revert.
-    _ = assert.stdout(p::str::contains(format!(
-        "{typescript} v{version} [1/2] cloning"
-    )));
+    _ = assert.stdout(p::str::contains(format!("{typescript:<16} [1/2] cloning")));
     for language in languages {
         let dylib = sandbox
             .tmp

@@ -183,7 +183,7 @@ pub async fn prepare(
     Ok(cli)
 }
 
-fn display_tree_sitter_ref(version: &str) -> GitRef {
+pub(crate) fn display_tree_sitter_ref(version: &str) -> GitRef {
     if version.starts_with('v') || !version.split('.').all(|part| part.parse::<u32>().is_ok()) {
         GitRef::from(version.to_string())
     } else {
