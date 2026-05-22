@@ -429,9 +429,9 @@ impl DisplayActor {
     }
 
     fn print_plain_summary(&self) {
-        let (cached, built, building, failed) = self.state.summary_counts();
+        let (cached, built, _building, failed) = self.state.summary_counts();
         println!();
-        println!("✓ {cached} cached  ● {built} built  ● {building} building  ✗ {failed} failed");
+        println!("✓ {cached} cached  ✓ {built} built  ✗ {failed} failed");
     }
 
     fn plain_progress_line(&self, id: u64, kind: UpdateKind) -> Option<PlainLine> {
