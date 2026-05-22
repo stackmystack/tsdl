@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ratatui::backend::Backend;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tokio::sync::{mpsc, oneshot};
@@ -254,6 +255,18 @@ fn plain_grammar_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> S
 // DisplayActor
 // ---------------------------------------------------------------------------
 
+fn draw_lines<B: Backend<Error = io::Error>>(
+    terminal: &mut ratatui::Terminal<B>,
+    lines: Vec<Line<'static>>,
+) -> io::Result<()> {
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(Paragraph::new(lines), area);
+        })
+        .map(|_| ())
+}
+
 pub struct DisplayActor {
     state: DisplayState,
     next_id: u64,
@@ -303,20 +316,29 @@ impl DisplayActor {
         let term_height = crossterm::terminal::size().map_or(40, |(_, h)| h as usize);
         let viewport_height = term_height.min(40);
 
-        let mut terminal = ratatui::Terminal::with_options(
-            ratatui::backend::CrosstermBackend::new(io::stderr()),
+        let mut terminal = match ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(io::stdout()),
             ratatui::TerminalOptions {
                 viewport: ratatui::Viewport::Inline(viewport_height as u16),
             },
-        )
-        .expect("Failed to initialize ratatui terminal");
+        ) {
+            Ok(terminal) => terminal,
+            Err(err) => {
+                eprintln!("tsdl: fancy display unavailable; falling back to plain progress: {err}");
+                self.run_plain().await;
+                return;
+            }
+        };
 
         // Initial render
         let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
-        let _ = terminal.draw(|frame| {
-            let area = frame.area();
-            frame.render_widget(Paragraph::new(lines), area);
-        });
+        if let Err(err) = draw_lines(&mut terminal, lines) {
+            ratatui::restore();
+            println!();
+            eprintln!("tsdl: fancy display failed; falling back to plain progress: {err}");
+            self.run_plain().await;
+            return;
+        }
 
         let mut tick_interval = time::interval(Duration::from_millis(100));
 
@@ -336,22 +358,28 @@ impl DisplayActor {
             if let Some(tx) = shutdown_tx {
                 // Final render before shutting down
                 let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
-                let _ = terminal.draw(|frame| {
-                    let area = frame.area();
-                    frame.render_widget(Paragraph::new(lines), area);
-                });
+                if let Err(err) = draw_lines(&mut terminal, lines) {
+                    ratatui::restore();
+                    println!();
+                    eprintln!("tsdl: fancy display final render failed: {err}");
+                    let _ = tx.send(());
+                    return;
+                }
                 ratatui::restore();
-                eprintln!();
+                println!();
                 let _ = tx.send(());
                 return;
             }
 
             // Render current state
             let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
-            let _ = terminal.draw(|frame| {
-                let area = frame.area();
-                frame.render_widget(Paragraph::new(lines), area);
-            });
+            if let Err(err) = draw_lines(&mut terminal, lines) {
+                ratatui::restore();
+                println!();
+                eprintln!("tsdl: fancy display failed; falling back to plain progress: {err}");
+                self.run_plain().await;
+                return;
+            }
 
             // Wait for next event
             tokio::select! {
@@ -360,12 +388,15 @@ impl DisplayActor {
                         Some(DisplayMessage::Shutdown { tx }) => {
                             // Final render then exit
                             let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
-                            let _ = terminal.draw(|frame| {
-                                let area = frame.area();
-                                frame.render_widget(Paragraph::new(lines), area);
-                            });
+                            if let Err(err) = draw_lines(&mut terminal, lines) {
+                                ratatui::restore();
+                                println!();
+                                eprintln!("tsdl: fancy display final render failed: {err}");
+                                let _ = tx.send(());
+                                return;
+                            }
                             ratatui::restore();
-                            eprintln!();
+                            println!();
                             let _ = tx.send(());
                             return;
                         }
@@ -380,7 +411,7 @@ impl DisplayActor {
         }
 
         ratatui::restore();
-        eprintln!();
+        println!();
     }
 
     /// Assemble `Vec<Line>` from the grid cache. Rebuilds row order and layout
@@ -677,6 +708,9 @@ impl DisplayActor {
         );
 
         self.rows_dirty = true;
+        if repo_id != 0 {
+            self.sync_parent_repo(repo_id);
+        }
 
         ProgressAddr {
             id,
