@@ -100,7 +100,7 @@ fn indicator_color(status: ItemStatus) -> Color {
     match status {
         ItemStatus::Done => Color::Green,
         ItemStatus::Failed => Color::Red,
-        ItemStatus::New | ItemStatus::InProgress => Color::White,
+        ItemStatus::New | ItemStatus::InProgress => Color::DarkGray,
     }
 }
 
@@ -395,7 +395,9 @@ impl DisplayState {
 
         push_summary_success(&mut spans, cached, "cached", Color::Yellow, true);
         push_summary_success(&mut spans, built, "built", Color::Blue, false);
-        push_summary_building(&mut spans, building);
+        if building > 0 {
+            push_summary_building(&mut spans, building);
+        }
         push_summary_failed(&mut spans, failed);
 
         Line::from(spans)
