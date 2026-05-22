@@ -67,10 +67,6 @@ impl ItemStatus {
             ItemStatus::Failed => "✗",
         }
     }
-
-    fn is_terminal(self) -> bool {
-        matches!(self, ItemStatus::Done | ItemStatus::Failed)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,10 +89,18 @@ impl ItemOutcome {
     }
 }
 
-fn palette_color(status: ItemStatus, outcome: ItemOutcome) -> Color {
+fn name_color(status: ItemStatus, outcome: ItemOutcome) -> Color {
     match status {
         ItemStatus::Failed => Color::Red,
         ItemStatus::New | ItemStatus::InProgress | ItemStatus::Done => outcome.color(),
+    }
+}
+
+fn indicator_color(status: ItemStatus) -> Color {
+    match status {
+        ItemStatus::Done => Color::Green,
+        ItemStatus::Failed => Color::Red,
+        ItemStatus::New | ItemStatus::InProgress => Color::White,
     }
 }
 
@@ -137,6 +141,84 @@ pub(crate) struct GrammarEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Render rows
+// ---------------------------------------------------------------------------
+
+struct RenderRow {
+    status: ItemStatus,
+    outcome: ItemOutcome,
+    name: String,
+    git_ref: String,
+    msg: String,
+    step: usize,
+    total: usize,
+    started_at: Instant,
+    frozen_elapsed: Option<Duration>,
+    indent: &'static str,
+}
+
+impl RenderRow {
+    fn elapsed(&self) -> Duration {
+        self.frozen_elapsed
+            .unwrap_or_else(|| self.started_at.elapsed())
+    }
+
+    fn time(&self) -> String {
+        format_elapsed_duration(self.elapsed())
+    }
+
+    fn step_text(&self) -> String {
+        if self.total > 0 {
+            format!("[{}/{}]", self.step.min(self.total), self.total)
+        } else {
+            String::new()
+        }
+    }
+
+    fn display_name(&self) -> String {
+        format!("{}{}", self.indent, self.name)
+    }
+}
+
+struct RenderLayout {
+    time_width: usize,
+    ref_width: usize,
+    step_width: usize,
+    name_width: usize,
+}
+
+impl RenderLayout {
+    fn from_rows(rows: &[RenderRow]) -> Self {
+        Self {
+            time_width: rows
+                .iter()
+                .map(|row| row.time().chars().count())
+                .max()
+                .unwrap_or(5)
+                .max(5),
+            ref_width: rows
+                .iter()
+                .map(|row| row.git_ref.chars().count())
+                .max()
+                .unwrap_or(4)
+                .max(4),
+            step_width: rows
+                .iter()
+                .map(|row| row.step_text().chars().count())
+                .max()
+                .unwrap_or(5)
+                .max(5),
+            name_width: rows
+                .iter()
+                .map(|row| row.display_name().chars().count())
+                .max()
+                .unwrap_or(4)
+                .max(4),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DisplayState — the full renderable state
 // ---------------------------------------------------------------------------
 
@@ -163,10 +245,11 @@ impl DisplayState {
     pub fn render_lines(&self, width: u16) -> Vec<Line<'_>> {
         let w = width as usize;
         let mut lines: Vec<Line> = Vec::new();
+        let rows = self.render_rows();
+        let layout = RenderLayout::from_rows(&rows);
 
-        for (repo_id, repo) in self.sorted_repos() {
-            let repo_lines = self.format_repo_with_grammars(repo_id, repo, w);
-            lines.extend(repo_lines);
+        for row in &rows {
+            lines.push(self.format_item_line(row, &layout, w));
         }
 
         if !lines.is_empty() {
@@ -201,93 +284,38 @@ impl DisplayState {
         grammars
     }
 
-    fn format_repo_with_grammars(
-        &self,
-        repo_id: u64,
-        repo: &RepoEntry,
-        w: usize,
-    ) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line> = Vec::new();
-        let repo_grammars = self.sorted_grammars_for_repo(repo_id);
+    fn render_rows(&self) -> Vec<RenderRow> {
+        let mut rows = Vec::new();
 
-        if repo_grammars.is_empty() {
-            lines.push(self.format_item_line(
-                repo.status,
-                repo.outcome,
-                &repo.name,
-                &repo.git_ref.to_string(),
-                &repo.msg,
-                repo.step,
-                repo.total,
-                repo.started_at,
-                repo.frozen_elapsed,
-                w,
-                "",
-            ));
-        } else if repo_grammars.len() == 1 {
-            let g = repo_grammars[0];
-            if g.name == repo.name {
-                lines.push(self.format_item_line(
-                    g.status,
-                    g.outcome,
-                    &repo.name,
-                    &repo.git_ref.to_string(),
-                    &g.msg,
-                    g.step,
-                    g.total,
-                    g.started_at,
-                    g.frozen_elapsed,
-                    w,
-                    "",
-                ));
+        for (repo_id, repo) in self.sorted_repos() {
+            let repo_grammars = self.sorted_grammars_for_repo(repo_id);
+
+            if repo_grammars.is_empty() {
+                rows.push(RenderRow::from_repo(repo, ""));
+            } else if repo_grammars.len() == 1 {
+                let grammar = repo_grammars[0];
+                if grammar.name == repo.name {
+                    rows.push(RenderRow::from_grammar(grammar, repo.name.to_string(), ""));
+                } else {
+                    rows.push(RenderRow::from_grammar(
+                        grammar,
+                        format!("{}/{}", repo.name, grammar.name),
+                        "",
+                    ));
+                }
             } else {
-                let label = format!("{}/{}", repo.name, g.name);
-                lines.push(self.format_item_line(
-                    g.status,
-                    g.outcome,
-                    &label,
-                    &g.git_ref.to_string(),
-                    &g.msg,
-                    g.step,
-                    g.total,
-                    g.started_at,
-                    g.frozen_elapsed,
-                    w,
-                    "",
-                ));
-            }
-        } else {
-            lines.push(self.format_item_line(
-                repo.status,
-                repo.outcome,
-                &repo.name,
-                &repo.git_ref.to_string(),
-                &repo.msg,
-                repo.step,
-                repo.total,
-                repo.started_at,
-                repo.frozen_elapsed,
-                w,
-                "",
-            ));
-            for g in &repo_grammars {
-                lines.push(self.format_item_line(
-                    g.status,
-                    g.outcome,
-                    &g.name,
-                    &g.git_ref.to_string(),
-                    &g.msg,
-                    g.step,
-                    g.total,
-                    g.started_at,
-                    g.frozen_elapsed,
-                    w,
-                    "  ",
-                ));
+                rows.push(RenderRow::from_repo(repo, ""));
+                for grammar in repo_grammars {
+                    rows.push(RenderRow::from_grammar(
+                        grammar,
+                        grammar.name.to_string(),
+                        "  ",
+                    ));
+                }
             }
         }
 
-        lines
+        rows
     }
 
     fn dim_line(&self, text: String) -> Line<'static> {
@@ -301,51 +329,53 @@ impl DisplayState {
 
     fn format_item_line(
         &self,
-        status: ItemStatus,
-        outcome: ItemOutcome,
-        name: &str,
-        git_ref: &str,
-        msg: &str,
-        step: usize,
-        total: usize,
-        started_at: Instant,
-        frozen_elapsed: Option<Duration>,
+        row: &RenderRow,
+        layout: &RenderLayout,
         width: usize,
-        indent: &str,
     ) -> Line<'static> {
-        let terminal = status.is_terminal();
-        let palette = palette_color(status, outcome);
-        let name_style = Style::default().fg(palette).add_modifier(Modifier::BOLD);
-        let progress_style = Style::default().fg(if terminal { palette } else { Color::White });
-        let ref_style = Style::default().fg(Color::White);
-        let msg_style = Style::default().fg(Color::White);
+        let time = row.time();
+        let step = row.step_text();
+        let name = row.display_name();
+        let icon = row.status.icon();
 
-        let elapsed = frozen_elapsed.unwrap_or_else(|| started_at.elapsed());
-        let time = format_elapsed_duration(elapsed);
-        let time_col = format!("{time:<8}");
-        let ref_col = format!("{:<12}", truncate_str(git_ref, 12));
-        let step_col = if total > 0 {
-            format!("{:>7}", format!("[{}/{}]", step.min(total), total))
-        } else {
-            "       ".to_string()
-        };
-        let indented_name = format!("{indent}{name}");
-        let name_col = format!("{:<28}", truncate_str(&indented_name, 28));
+        let time_col = format!("{time:<width$}", width = layout.time_width);
+        let ref_col = format!("{:<width$}", row.git_ref, width = layout.ref_width);
+        let step_col = format!("{:>width$}", step, width = layout.step_width);
+        let name_col = format!("{:<width$}", name, width = layout.name_width);
 
-        let fixed_width = 8 + 1 + 12 + 1 + 7 + 1 + 2 + 1 + 28 + 1;
+        let fixed_width = layout.time_width
+            + 1
+            + layout.ref_width
+            + 1
+            + layout.step_width
+            + 1
+            + icon.chars().count()
+            + 1
+            + layout.name_width
+            + 1;
         let msg_width = width.saturating_sub(fixed_width);
-        let msg_col = truncate_str(msg, msg_width.max(1));
+        let msg_col = truncate_str(&row.msg, msg_width.max(1));
+
+        let progress_style = Style::default().fg(Color::White);
+        let icon_style = Style::default()
+            .fg(indicator_color(row.status))
+            .add_modifier(Modifier::BOLD);
+        let name_style = Style::default()
+            .fg(name_color(row.status, row.outcome))
+            .add_modifier(Modifier::BOLD);
+        let msg_style = Style::default().fg(Color::White);
 
         let mut spans: Vec<Span> = Vec::new();
         spans.push(Span::styled(time_col, progress_style));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(ref_col, ref_style));
+        spans.push(Span::styled(ref_col, progress_style));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(step_col, progress_style));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(status.icon(), progress_style));
+        spans.push(Span::styled(icon, icon_style));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(name_col, name_style));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(msg_col, msg_style));
 
         Line::from(spans)
@@ -360,46 +390,18 @@ impl DisplayState {
     }
 
     fn format_footer_counts(&self) -> Line<'static> {
-        let (cached, built, building, failed) = self.grammar_status_counts();
-
+        let (cached, built, building, failed) = self.summary_counts();
         let mut spans: Vec<Span> = Vec::new();
-        spans.push(Span::styled(
-            format!("✓ {cached} cached  "),
-            Style::default().fg(if cached > 0 {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            }),
-        ));
-        spans.push(Span::styled(
-            format!("● {built} built  "),
-            Style::default().fg(if built > 0 {
-                Color::Blue
-            } else {
-                Color::DarkGray
-            }),
-        ));
-        spans.push(Span::styled(
-            format!("● {building} building  "),
-            Style::default().fg(if building > 0 {
-                Color::White
-            } else {
-                Color::DarkGray
-            }),
-        ));
-        spans.push(Span::styled(
-            format!("✗ {failed} failed"),
-            Style::default().fg(if failed > 0 {
-                Color::Red
-            } else {
-                Color::DarkGray
-            }),
-        ));
+
+        push_summary_success(&mut spans, cached, "cached", Color::Yellow, true);
+        push_summary_success(&mut spans, built, "built", Color::Blue, false);
+        push_summary_building(&mut spans, building);
+        push_summary_failed(&mut spans, failed);
 
         Line::from(spans)
     }
 
-    fn grammar_status_counts(&self) -> (usize, usize, usize, usize) {
+    pub(crate) fn summary_counts(&self) -> (usize, usize, usize, usize) {
         let mut cached = 0;
         let mut built = 0;
         let mut building = 0;
@@ -427,6 +429,38 @@ impl DisplayState {
     }
 }
 
+impl RenderRow {
+    fn from_repo(repo: &RepoEntry, indent: &'static str) -> Self {
+        Self {
+            status: repo.status,
+            outcome: repo.outcome,
+            name: repo.name.to_string(),
+            git_ref: repo.git_ref.to_string(),
+            msg: repo.msg.to_string(),
+            step: repo.step,
+            total: repo.total,
+            started_at: repo.started_at,
+            frozen_elapsed: repo.frozen_elapsed,
+            indent,
+        }
+    }
+
+    fn from_grammar(grammar: &GrammarEntry, name: String, indent: &'static str) -> Self {
+        Self {
+            status: grammar.status,
+            outcome: grammar.outcome,
+            name,
+            git_ref: grammar.git_ref.to_string(),
+            msg: grammar.msg.to_string(),
+            step: grammar.step,
+            total: grammar.total,
+            started_at: grammar.started_at,
+            frozen_elapsed: grammar.frozen_elapsed,
+            indent,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -447,6 +481,62 @@ fn count_grammar_status(
         },
         ItemStatus::Failed => *failed += 1,
     }
+}
+
+fn push_summary_success(
+    spans: &mut Vec<Span<'static>>,
+    count: usize,
+    label: &'static str,
+    label_color: Color,
+    leading: bool,
+) {
+    if !leading {
+        spans.push(Span::raw("  "));
+    }
+
+    if count > 0 {
+        spans.push(Span::styled(
+            format!("✓ {count} "),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            label,
+            Style::default()
+                .fg(label_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!("✓ {count} {label}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+}
+
+fn push_summary_building(spans: &mut Vec<Span<'static>>, count: usize) {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("{count} building"),
+        Style::default().fg(if count > 0 {
+            Color::White
+        } else {
+            Color::DarkGray
+        }),
+    ));
+}
+
+fn push_summary_failed(spans: &mut Vec<Span<'static>>, count: usize) {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("✗ {count} failed"),
+        Style::default().fg(if count > 0 {
+            Color::Red
+        } else {
+            Color::DarkGray
+        }),
+    ));
 }
 
 fn truncate_str(s: &str, max: usize) -> String {

@@ -71,6 +71,18 @@ pub async fn run(
     languages: Vec<LanguageBuild>,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<()> {
+    display
+        .reference(
+            tree_sitter::display_tree_sitter_ref(&tree_sitter.version),
+            "tree-sitter-cli",
+        )
+        .await;
+    for language in &languages {
+        display
+            .reference(language.spec.git_ref.clone(), language.name.clone())
+            .await;
+    }
+
     let result = run_inner(
         build_dir,
         cache,
