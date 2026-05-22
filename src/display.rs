@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -123,6 +123,13 @@ pub(crate) struct RepoEntry {
     pub frozen_elapsed: Option<Duration>,
 }
 
+impl RepoEntry {
+    pub(crate) fn elapsed(&self) -> Duration {
+        self.frozen_elapsed
+            .unwrap_or_else(|| self.started_at.elapsed())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GrammarEntry {
     pub repo: Arc<str>,
@@ -140,87 +147,298 @@ pub(crate) struct GrammarEntry {
     pub frozen_elapsed: Option<Duration>,
 }
 
-// ---------------------------------------------------------------------------
-// Render rows
-// ---------------------------------------------------------------------------
-
-struct RenderRow {
-    status: ItemStatus,
-    outcome: ItemOutcome,
-    name: String,
-    git_ref: String,
-    msg: String,
-    step: usize,
-    total: usize,
-    started_at: Instant,
-    frozen_elapsed: Option<Duration>,
-    indent: &'static str,
-}
-
-impl RenderRow {
-    fn elapsed(&self) -> Duration {
+impl GrammarEntry {
+    pub(crate) fn elapsed(&self) -> Duration {
         self.frozen_elapsed
             .unwrap_or_else(|| self.started_at.elapsed())
     }
-
-    fn time(&self) -> String {
-        format_elapsed_duration(self.elapsed())
-    }
-
-    fn step_text(&self) -> String {
-        if self.total > 0 {
-            format!("[{}/{}]", self.step.min(self.total), self.total)
-        } else {
-            String::new()
-        }
-    }
-
-    fn display_name(&self) -> String {
-        format!("{}{}", self.indent, self.name)
-    }
 }
 
-struct RenderLayout {
-    time_width: usize,
-    ref_width: usize,
-    step_width: usize,
-    name_width: usize,
+// ---------------------------------------------------------------------------
+// Column identifiers for the grid cache
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Column {
+    Time,
+    GitRef,
+    Step,
+    Icon,
+    Name,
+    Msg,
 }
 
-impl RenderLayout {
-    fn from_rows(rows: &[RenderRow]) -> Self {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CellKey {
+    item_id: u64,
+    column: Column,
+}
+
+// ---------------------------------------------------------------------------
+// Cached layout (column widths)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedLayout {
+    pub time_width: usize,
+    pub ref_width: usize,
+    pub step_width: usize,
+    pub name_width: usize,
+    /// Total width consumed by non-message columns: time + sp + ref + sp +
+    /// step + sp + icon(1) + sp + name + sp.
+    pub fixed_width: usize,
+}
+
+impl Default for CachedLayout {
+    fn default() -> Self {
         Self {
-            time_width: rows
-                .iter()
-                .map(|row| row.time().chars().count())
-                .max()
-                .unwrap_or(5)
-                .max(5),
-            ref_width: rows
-                .iter()
-                .map(|row| row.git_ref.chars().count())
-                .max()
-                .unwrap_or(4)
-                .max(4),
-            step_width: rows
-                .iter()
-                .map(|row| row.step_text().chars().count())
-                .max()
-                .unwrap_or(5)
-                .max(5),
-            name_width: rows
-                .iter()
-                .map(|row| row.display_name().chars().count())
-                .max()
-                .unwrap_or(4)
-                .max(4),
+            time_width: 5,
+            ref_width: 4,
+            step_width: 5,
+            name_width: 4,
+            fixed_width: 5 + 1 + 4 + 1 + 5 + 1 + 1 + 1 + 4 + 1,
+        }
+    }
+}
+
+impl CachedLayout {
+    fn finalize(&mut self) {
+        self.time_width = self.time_width.max(5);
+        self.ref_width = self.ref_width.max(4);
+        self.step_width = self.step_width.max(5);
+        self.name_width = self.name_width.max(4);
+        // fixed = time + sp + ref + sp + step + sp + icon(1) + sp + name + sp
+        self.fixed_width = self.time_width
+            + 1
+            + self.ref_width
+            + 1
+            + self.step_width
+            + 1
+            + 1
+            + 1
+            + self.name_width
+            + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grid cache
+// ---------------------------------------------------------------------------
+
+pub(crate) struct GridCache {
+    cells: HashMap<CellKey, Span<'static>>,
+    pub dirty_items: HashSet<u64>,
+    pub layout: CachedLayout,
+}
+
+impl GridCache {
+    pub fn new() -> Self {
+        Self {
+            cells: HashMap::new(),
+            dirty_items: HashSet::new(),
+            layout: CachedLayout::default(),
+        }
+    }
+
+    /// Get a cell for the given item and column. If `stale` is true (or the
+    /// cell is not cached), `compute` is called, the result is cached, and
+    /// returned. Otherwise the cached cell is cloned.
+    pub fn cell(
+        &mut self,
+        item_id: u64,
+        column: Column,
+        stale: bool,
+        compute: impl FnOnce() -> Span<'static>,
+    ) -> Span<'static> {
+        let key = CellKey { item_id, column };
+        if stale {
+            let span = compute();
+            self.cells.insert(key, span.clone());
+            span
+        } else if let Some(cached) = self.cells.get(&key) {
+            cached.clone()
+        } else {
+            let span = compute();
+            self.cells.insert(key, span.clone());
+            span
+        }
+    }
+
+    pub fn mark_dirty(&mut self, item_id: u64) {
+        self.dirty_items.insert(item_id);
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty_items.clear();
+    }
+
+    /// Invalidate all cached cells for a given column (e.g. when layout width
+    /// for that column changes).
+    pub fn invalidate_column(&mut self, column: Column) {
+        self.cells.retain(|key, _| key.column != column);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row specification
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) enum RowKind {
+    Repo,
+    Grammar,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RowSpec {
+    pub id: u64,
+    pub kind: RowKind,
+    /// The text to display in the name column (already includes indent).
+    pub display_name: Arc<str>,
+    /// Indentation prefix for the name column (applied before padding).
+    pub indent: &'static str,
+}
+
+// ---------------------------------------------------------------------------
+// Unified item info (abstracts over RepoEntry / GrammarEntry)
+// ---------------------------------------------------------------------------
+
+pub(crate) enum ItemInfo<'a> {
+    Repo(&'a RepoEntry),
+    Grammar(&'a GrammarEntry),
+}
+
+impl ItemInfo<'_> {
+    pub(crate) fn status(&self) -> ItemStatus {
+        match self {
+            ItemInfo::Repo(r) => r.status,
+            ItemInfo::Grammar(g) => g.status,
+        }
+    }
+
+    pub(crate) fn outcome(&self) -> ItemOutcome {
+        match self {
+            ItemInfo::Repo(r) => r.outcome,
+            ItemInfo::Grammar(g) => g.outcome,
+        }
+    }
+
+    pub(crate) fn msg(&self) -> &str {
+        match self {
+            ItemInfo::Repo(r) => &r.msg,
+            ItemInfo::Grammar(g) => &g.msg,
+        }
+    }
+
+    pub(crate) fn step(&self) -> usize {
+        match self {
+            ItemInfo::Repo(r) => r.step,
+            ItemInfo::Grammar(g) => g.step,
+        }
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        match self {
+            ItemInfo::Repo(r) => r.total,
+            ItemInfo::Grammar(g) => g.total,
+        }
+    }
+
+    pub(crate) fn git_ref(&self) -> &GitRef {
+        match self {
+            ItemInfo::Repo(r) => &r.git_ref,
+            ItemInfo::Grammar(g) => &g.git_ref,
+        }
+    }
+
+    pub(crate) fn elapsed(&self) -> Duration {
+        match self {
+            ItemInfo::Repo(r) => r.elapsed(),
+            ItemInfo::Grammar(g) => g.elapsed(),
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// DisplayState — the full renderable state
+// Cell factories — each produces a fully padded, fully styled Span
 // ---------------------------------------------------------------------------
+
+const TIME_STYLE: Style = Style::new();
+const REF_STYLE: Style = Style::new();
+const MSG_STYLE: Style = Style::new();
+
+pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
+    let time = format_elapsed_duration(info.elapsed());
+    // Right-aligned
+    let padded = format!("{:>width$}", time, width = layout.time_width);
+    Span::styled(padded, TIME_STYLE)
+}
+
+pub(crate) fn compute_ref_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
+    let ref_str = info.git_ref().to_string();
+    let padded = format!("{:<width$}", ref_str, width = layout.ref_width);
+    Span::styled(padded, REF_STYLE)
+}
+
+pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
+    let step_str = if info.total() > 0 {
+        format!("[{}/{}]", info.step().min(info.total()), info.total())
+    } else {
+        String::new()
+    };
+    // Right-aligned
+    let padded = format!("{:>width$}", step_str, width = layout.step_width);
+    Span::styled(padded, REF_STYLE)
+}
+
+pub(crate) fn compute_icon_cell(info: &ItemInfo<'_>) -> Span<'static> {
+    let status = info.status();
+    Span::styled(
+        status.icon(),
+        Style::default()
+            .fg(indicator_color(status))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+pub(crate) fn compute_name_cell(
+    display_name: &str,
+    indent: &str,
+    info: &ItemInfo<'_>,
+    layout: &CachedLayout,
+) -> Span<'static> {
+    let full = format!("{indent}{display_name}");
+    let padded = format!("{:<width$}", full, width = layout.name_width);
+    Span::styled(
+        padded,
+        Style::default()
+            .fg(name_color(info.status(), info.outcome()))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+pub(crate) fn compute_msg_cell(
+    info: &ItemInfo<'_>,
+    layout: &CachedLayout,
+    term_width: usize,
+) -> Span<'static> {
+    let msg_width = term_width.saturating_sub(layout.fixed_width).max(1);
+    Span::styled(truncate_str(info.msg(), msg_width), MSG_STYLE)
+}
+
+// ---------------------------------------------------------------------------
+// DisplayState — the source of truth
+// ---------------------------------------------------------------------------
+
+/// Pre-computed dimmed footer lines (static; never change).
+fn dim_line(text: String) -> Line<'static> {
+    Line::from(Span::styled(
+        text,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    ))
+}
 
 pub(crate) struct DisplayState {
     pub mode: Mode,
@@ -228,170 +446,38 @@ pub(crate) struct DisplayState {
     pub grammars: HashMap<u64, GrammarEntry>,
     pub build_dir: Arc<PathBuf>,
     pub out_dir: Arc<PathBuf>,
+    footer_build: Line<'static>,
+    footer_out: Line<'static>,
 }
 
 impl DisplayState {
     pub fn new(mode: Mode, build_dir: Arc<PathBuf>, out_dir: Arc<PathBuf>) -> Self {
+        let footer_build = dim_line(format!("build: {}", build_dir.display()));
+        let footer_out = dim_line(format!("out:   {}", out_dir.display()));
         Self {
             mode,
             repos: HashMap::new(),
             grammars: HashMap::new(),
             build_dir,
             out_dir,
+            footer_build,
+            footer_out,
         }
     }
 
-    /// Render the entire display as ratatui `Line`s.
-    pub fn render_lines(&self, width: u16) -> Vec<Line<'_>> {
-        let w = width as usize;
-        let mut lines: Vec<Line> = Vec::new();
-        let rows = self.render_rows();
-        let layout = RenderLayout::from_rows(&rows);
+    // ── Footer lines ──────────────────────────────────────────────
 
-        for row in &rows {
-            lines.push(self.format_item_line(row, &layout, w));
-        }
-
-        if !lines.is_empty() {
-            lines.push(Line::from(""));
-        }
-
-        lines.push(self.format_footer_build());
-        lines.push(self.format_footer_out());
-        lines.push(Line::from(""));
-        lines.push(self.format_footer_counts());
-
-        lines
+    pub fn footer_build_line(&self) -> Line<'static> {
+        self.footer_build.clone()
     }
 
-    fn sorted_repos(&self) -> Vec<(u64, &RepoEntry)> {
-        let mut repos: Vec<(u64, &RepoEntry)> = self
-            .repos
-            .iter()
-            .map(|(repo_id, repo)| (*repo_id, repo))
-            .collect();
-        repos.sort_by_key(|(_, r)| r.started_at);
-        repos
+    pub fn footer_out_line(&self) -> Line<'static> {
+        self.footer_out.clone()
     }
 
-    fn sorted_grammars_for_repo(&self, repo_id: u64) -> Vec<&GrammarEntry> {
-        let mut grammars: Vec<&GrammarEntry> = self
-            .grammars
-            .values()
-            .filter(|g| g.repo_id == repo_id)
-            .collect();
-        grammars.sort_by_key(|g| g.started_at);
-        grammars
-    }
-
-    fn render_rows(&self) -> Vec<RenderRow> {
-        let mut rows = Vec::new();
-
-        for (repo_id, repo) in self.sorted_repos() {
-            let repo_grammars = self.sorted_grammars_for_repo(repo_id);
-
-            if repo_grammars.is_empty() {
-                rows.push(RenderRow::from_repo(repo, ""));
-            } else if repo_grammars.len() == 1 {
-                let grammar = repo_grammars[0];
-                if grammar.name == repo.name {
-                    rows.push(RenderRow::from_grammar(grammar, repo.name.to_string(), ""));
-                } else {
-                    rows.push(RenderRow::from_grammar(
-                        grammar,
-                        format!("{}/{}", repo.name, grammar.name),
-                        "",
-                    ));
-                }
-            } else {
-                rows.push(RenderRow::from_repo(repo, ""));
-                for grammar in repo_grammars {
-                    rows.push(RenderRow::from_grammar(
-                        grammar,
-                        grammar.name.to_string(),
-                        "  ",
-                    ));
-                }
-            }
-        }
-
-        rows
-    }
-
-    fn dim_line(&self, text: String) -> Line<'static> {
-        Line::from(Span::styled(
-            text,
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        ))
-    }
-
-    fn format_item_line(
-        &self,
-        row: &RenderRow,
-        layout: &RenderLayout,
-        width: usize,
-    ) -> Line<'static> {
-        let time = row.time();
-        let step = row.step_text();
-        let name = row.display_name();
-        let icon = row.status.icon();
-
-        let time_col = format!("{time:<width$}", width = layout.time_width);
-        let ref_col = format!("{:<width$}", row.git_ref, width = layout.ref_width);
-        let step_col = format!("{:>width$}", step, width = layout.step_width);
-        let name_col = format!("{:<width$}", name, width = layout.name_width);
-
-        let fixed_width = layout.time_width
-            + 1
-            + layout.ref_width
-            + 1
-            + layout.step_width
-            + 1
-            + icon.chars().count()
-            + 1
-            + layout.name_width
-            + 1;
-        let msg_width = width.saturating_sub(fixed_width);
-        let msg_col = truncate_str(&row.msg, msg_width.max(1));
-
-        let progress_style = Style::default().fg(Color::White);
-        let icon_style = Style::default()
-            .fg(indicator_color(row.status))
-            .add_modifier(Modifier::BOLD);
-        let name_style = Style::default()
-            .fg(name_color(row.status, row.outcome))
-            .add_modifier(Modifier::BOLD);
-        let msg_style = Style::default().fg(Color::White);
-
-        let mut spans: Vec<Span> = Vec::new();
-        spans.push(Span::styled(time_col, progress_style));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(ref_col, progress_style));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(step_col, progress_style));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(icon, icon_style));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(name_col, name_style));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(msg_col, msg_style));
-
-        Line::from(spans)
-    }
-
-    fn format_footer_build(&self) -> Line<'static> {
-        self.dim_line(format!("build: {}", self.build_dir.display()))
-    }
-
-    fn format_footer_out(&self) -> Line<'static> {
-        self.dim_line(format!("out:   {}", self.out_dir.display()))
-    }
-
-    fn format_footer_counts(&self) -> Line<'static> {
+    pub fn format_footer_counts(&self) -> Line<'static> {
         let (cached, built, building, failed) = self.summary_counts();
-        let mut spans: Vec<Span> = Vec::new();
+        let mut spans: Vec<Span<'static>> = Vec::new();
 
         push_summary_success(&mut spans, cached, "cached", Color::Yellow, true);
         push_summary_success(&mut spans, built, "built", Color::Blue, false);
@@ -403,13 +489,128 @@ impl DisplayState {
         Line::from(spans)
     }
 
+    // ── Row order ─────────────────────────────────────────────────
+
+    /// Compute the sorted row order. Repos are sorted alphabetically by name;
+    /// grammars within each repo are sorted alphabetically by name.
+    /// Collapses single-grammar repos where the grammar name equals the repo
+    /// name into a single grammar row (no separate repo row).
+    pub fn compute_row_order(&self) -> Vec<RowSpec> {
+        let mut rows = Vec::new();
+
+        // Sort repos alphabetically by name
+        let mut sorted_repos: Vec<(u64, &RepoEntry)> =
+            self.repos.iter().map(|(id, r)| (*id, r)).collect();
+        sorted_repos.sort_by(|(_, a), (_, b)| a.name.cmp(&b.name));
+
+        // Gather grammar (id, entry) pairs grouped by repo, sorted by name
+        let mut grammars_by_repo: HashMap<u64, Vec<(u64, &GrammarEntry)>> = HashMap::new();
+        for (gid, g) in &self.grammars {
+            grammars_by_repo
+                .entry(g.repo_id)
+                .or_default()
+                .push((*gid, g));
+        }
+        for list in grammars_by_repo.values_mut() {
+            list.sort_by(|(_, a), (_, b)| a.name.cmp(&b.name));
+        }
+
+        for (repo_id, repo) in &sorted_repos {
+            let repo_grammars = grammars_by_repo.remove(repo_id).unwrap_or_default();
+
+            if repo_grammars.is_empty() {
+                rows.push(RowSpec {
+                    id: *repo_id,
+                    kind: RowKind::Repo,
+                    display_name: repo.name.clone(),
+                    indent: "",
+                });
+            } else if repo_grammars.len() == 1 {
+                let (gid, grammar) = repo_grammars[0];
+                let display_name: Arc<str> = if grammar.name == repo.name {
+                    repo.name.clone()
+                } else {
+                    format!("{}/{}", repo.name, grammar.name).into()
+                };
+                rows.push(RowSpec {
+                    id: gid,
+                    kind: RowKind::Grammar,
+                    display_name,
+                    indent: "",
+                });
+            } else {
+                rows.push(RowSpec {
+                    id: *repo_id,
+                    kind: RowKind::Repo,
+                    display_name: repo.name.clone(),
+                    indent: "",
+                });
+                for (gid, grammar) in repo_grammars {
+                    rows.push(RowSpec {
+                        id: gid,
+                        kind: RowKind::Grammar,
+                        display_name: grammar.name.clone(),
+                        indent: "  ",
+                    });
+                }
+            }
+        }
+
+        rows
+    }
+
+    // ── Item access ───────────────────────────────────────────────
+
+    pub fn get_item_info(&self, spec: &RowSpec) -> ItemInfo<'_> {
+        match spec.kind {
+            RowKind::Repo => ItemInfo::Repo(
+                self.repos
+                    .get(&spec.id)
+                    .expect("repo not found for row spec"),
+            ),
+            RowKind::Grammar => ItemInfo::Grammar(
+                self.grammars
+                    .get(&spec.id)
+                    .expect("grammar not found for row spec"),
+            ),
+        }
+    }
+
+    // ── Layout ────────────────────────────────────────────────────
+
+    /// Compute column layout from the current row specs and state.
+    pub fn compute_layout(&self, row_specs: &[RowSpec]) -> CachedLayout {
+        let mut layout = CachedLayout::default();
+        for spec in row_specs {
+            let info = self.get_item_info(spec);
+            let time_str = format_elapsed_duration(info.elapsed());
+            let ref_str = info.git_ref().to_string();
+            let step_str = if info.total() > 0 {
+                format!("[{}/{}]", info.step().min(info.total()), info.total())
+            } else {
+                String::new()
+            };
+            let name_full = format!("{}{}", spec.indent, spec.display_name);
+            layout.time_width = layout.time_width.max(time_str.chars().count());
+            layout.ref_width = layout.ref_width.max(ref_str.chars().count());
+            layout.step_width = layout.step_width.max(step_str.chars().count());
+            layout.name_width = layout.name_width.max(name_full.chars().count());
+        }
+        layout.finalize();
+        layout
+    }
+
+    // ── Summary counts ────────────────────────────────────────────
+
     pub(crate) fn summary_counts(&self) -> (usize, usize, usize, usize) {
         let mut cached = 0;
         let mut built = 0;
         let mut building = 0;
         let mut failed = 0;
 
+        let mut repos_with_grammars: HashSet<u64> = HashSet::new();
         for grammar in self.grammars.values() {
+            repos_with_grammars.insert(grammar.repo_id);
             count_grammar_status(
                 grammar.status,
                 grammar.outcome,
@@ -420,46 +621,14 @@ impl DisplayState {
             );
         }
 
-        for (repo_id, repo) in self.sorted_repos() {
-            let has_grammars = self.grammars.values().any(|g| g.repo_id == repo_id);
-            if !has_grammars && repo.status == ItemStatus::Failed {
+        // Repos without grammars that failed
+        for (repo_id, repo) in &self.repos {
+            if !repos_with_grammars.contains(repo_id) && repo.status == ItemStatus::Failed {
                 failed += 1;
             }
         }
 
         (cached, built, building, failed)
-    }
-}
-
-impl RenderRow {
-    fn from_repo(repo: &RepoEntry, indent: &'static str) -> Self {
-        Self {
-            status: repo.status,
-            outcome: repo.outcome,
-            name: repo.name.to_string(),
-            git_ref: repo.git_ref.to_string(),
-            msg: repo.msg.to_string(),
-            step: repo.step,
-            total: repo.total,
-            started_at: repo.started_at,
-            frozen_elapsed: repo.frozen_elapsed,
-            indent,
-        }
-    }
-
-    fn from_grammar(grammar: &GrammarEntry, name: String, indent: &'static str) -> Self {
-        Self {
-            status: grammar.status,
-            outcome: grammar.outcome,
-            name,
-            git_ref: grammar.git_ref.to_string(),
-            msg: grammar.msg.to_string(),
-            step: grammar.step,
-            total: grammar.total,
-            started_at: grammar.started_at,
-            frozen_elapsed: grammar.frozen_elapsed,
-            indent,
-        }
     }
 }
 
