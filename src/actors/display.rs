@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -267,6 +267,40 @@ fn draw_lines<B: Backend<Error = io::Error>>(
         .map(|_| ())
 }
 
+fn draw_lines_with_cursor_at_top<B: Backend<Error = io::Error>>(
+    terminal: &mut ratatui::Terminal<B>,
+    lines: Vec<Line<'static>>,
+) -> io::Result<()> {
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(Paragraph::new(lines), area);
+            frame.set_cursor_position((area.x, area.y));
+        })
+        .map(|_| ())
+}
+
+fn line_to_plain_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+fn print_lines_from_cursor(lines: &[String]) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+    )?;
+
+    for line in lines {
+        writeln!(stdout, "{line}")?;
+    }
+    writeln!(stdout)?;
+    stdout.flush()
+}
+
 pub struct DisplayActor {
     state: DisplayState,
     next_id: u64,
@@ -358,18 +392,7 @@ impl DisplayActor {
             }
 
             if let Some(tx) = shutdown_tx {
-                // Final render before shutting down
-                let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
-                if let Err(err) = draw_lines(&mut terminal, lines) {
-                    ratatui::restore();
-                    println!();
-                    eprintln!("tsdl: fancy display final render failed: {err}");
-                    let _ = tx.send(());
-                    return;
-                }
-                ratatui::restore();
-                println!();
-                let _ = tx.send(());
+                self.finish_fancy(&mut terminal, tx);
                 return;
             }
 
@@ -388,18 +411,7 @@ impl DisplayActor {
                 msg = self.rx.recv() => {
                     match msg {
                         Some(DisplayMessage::Shutdown { tx }) => {
-                            // Final render then exit
-                            let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
-                            if let Err(err) = draw_lines(&mut terminal, lines) {
-                                ratatui::restore();
-                                println!();
-                                eprintln!("tsdl: fancy display final render failed: {err}");
-                                let _ = tx.send(());
-                                return;
-                            }
-                            ratatui::restore();
-                            println!();
-                            let _ = tx.send(());
+                            self.finish_fancy(&mut terminal, tx);
                             return;
                         }
                         Some(other) => self.handle_message(other),
@@ -414,6 +426,36 @@ impl DisplayActor {
 
         ratatui::restore();
         println!();
+    }
+
+    fn finish_fancy<B: Backend<Error = io::Error>>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+        tx: oneshot::Sender<()>,
+    ) {
+        let term_width = terminal.size().map_or(80, |s| s.width);
+        let final_lines = self.materialize(term_width);
+        let final_text = final_lines
+            .iter()
+            .map(line_to_plain_text)
+            .collect::<Vec<_>>();
+
+        match draw_lines_with_cursor_at_top(terminal, final_lines) {
+            Ok(()) => {
+                ratatui::restore();
+                if let Err(err) = print_lines_from_cursor(&final_text) {
+                    println!();
+                    eprintln!("tsdl: fancy display final report failed: {err}");
+                }
+            }
+            Err(err) => {
+                ratatui::restore();
+                println!();
+                eprintln!("tsdl: fancy display final render failed: {err}");
+            }
+        }
+
+        let _ = tx.send(());
     }
 
     /// Assemble `Vec<Line>` from the grid cache. Rebuilds row order and layout
