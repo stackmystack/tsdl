@@ -22,7 +22,7 @@ use crate::git::GitRef;
 
 #[derive(Debug)]
 pub enum DisplayMessage {
-    /// Register a repo-level progress line. Returns a ProgressAddr.
+    /// Register a repo-level progress line. Returns a `ProgressAddr`.
     RegisterLanguage {
         git_ref: GitRef,
         name: Arc<str>,
@@ -30,7 +30,7 @@ pub enum DisplayMessage {
         tx: oneshot::Sender<ProgressAddr>,
     },
 
-    /// Register a grammar-level progress line. Returns a ProgressAddr.
+    /// Register a grammar-level progress line. Returns a `ProgressAddr`.
     RegisterGrammar {
         git_ref: GitRef,
         language: Arc<str>,
@@ -141,7 +141,7 @@ impl DisplayAddr {
     }
 
     pub async fn shutdown(&self) {
-        self.request(|tx| DisplayMessage::Shutdown { tx }).await
+        self.request(|tx| DisplayMessage::Shutdown { tx }).await;
     }
 }
 
@@ -300,8 +300,7 @@ impl DisplayActor {
 
     async fn run_fancy(&mut self) {
         let term_height = crossterm::terminal::size()
-            .map(|(_, h)| h as usize)
-            .unwrap_or(40);
+            .map_or(40, |(_, h)| h as usize);
         let viewport_height = term_height.min(40);
 
         let mut terminal = ratatui::Terminal::with_options(
@@ -313,7 +312,7 @@ impl DisplayActor {
         .expect("Failed to initialize ratatui terminal");
 
         // Initial render
-        let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+        let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
         let _ = terminal.draw(|frame| {
             let area = frame.area();
             frame.render_widget(Paragraph::new(lines), area);
@@ -336,7 +335,7 @@ impl DisplayActor {
 
             if let Some(tx) = shutdown_tx {
                 // Final render before shutting down
-                let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+                let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
                 let _ = terminal.draw(|frame| {
                     let area = frame.area();
                     frame.render_widget(Paragraph::new(lines), area);
@@ -348,7 +347,7 @@ impl DisplayActor {
             }
 
             // Render current state
-            let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+            let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
             let _ = terminal.draw(|frame| {
                 let area = frame.area();
                 frame.render_widget(Paragraph::new(lines), area);
@@ -360,7 +359,7 @@ impl DisplayActor {
                     match msg {
                         Some(DisplayMessage::Shutdown { tx }) => {
                             // Final render then exit
-                            let lines = self.materialize(terminal.size().map(|s| s.width).unwrap_or(80));
+                            let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
                             let _ = terminal.draw(|frame| {
                                 let area = frame.area();
                                 frame.render_widget(Paragraph::new(lines), area);
@@ -659,8 +658,7 @@ impl DisplayActor {
             .repos
             .iter()
             .find(|(_, r)| r.name == language)
-            .map(|(id, _)| *id)
-            .unwrap_or(0);
+            .map_or(0, |(id, _)| *id);
 
         self.state.grammars.insert(
             id,
