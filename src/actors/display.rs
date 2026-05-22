@@ -50,9 +50,6 @@ pub enum DisplayMessage {
         msg: Arc<str>,
     },
 
-    /// Advance the elapsed-time display and trigger a re-render.
-    Tick,
-
     /// Flush and close the display actor. The response is sent after cleanup.
     Shutdown { tx: oneshot::Sender<()> },
 }
@@ -135,10 +132,6 @@ impl DisplayAddr {
             name: name.into(),
         })
         .await;
-    }
-
-    pub async fn tick(&self) {
-        self.fire(DisplayMessage::Tick).await;
     }
 
     pub async fn shutdown(&self) {
@@ -461,7 +454,7 @@ impl DisplayActor {
                     }
                 }
                 _ = tick_interval.tick() => {
-                    // Tick — next materialize will update live clocks
+                    // Next materialize will update live clocks.
                 }
             }
         }
@@ -638,7 +631,6 @@ impl DisplayActor {
                         self.print_plain_progress(&line);
                     }
                 }
-                DisplayMessage::Tick => {}
                 DisplayMessage::Shutdown { tx } => {
                     self.print_plain_summary();
                     let _ = tx.send(());
@@ -727,7 +719,7 @@ impl DisplayActor {
                 let addr = self.register_grammar(language, name, git_ref, num_tasks);
                 let _ = tx.send(addr);
             }
-            DisplayMessage::RegisterReference { .. } | DisplayMessage::Tick => {}
+            DisplayMessage::RegisterReference { .. } => {}
             DisplayMessage::Update { id, kind, msg } => {
                 self.apply_update(id, kind, msg);
             }
@@ -941,15 +933,15 @@ impl DisplayActor {
 
         if let Some(repo) = self.state.repos.get_mut(&repo_id) {
             repo.outcome = outcome;
-            if any_failed {
+            if any_active {
+                repo.status = ItemStatus::InProgress;
+                repo.msg = Arc::from("building");
+                repo.frozen_elapsed = None;
+            } else if any_failed {
                 repo.status = ItemStatus::Failed;
                 repo.msg = Arc::from("failed");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
-            } else if any_active {
-                repo.status = ItemStatus::InProgress;
-                repo.msg = Arc::from("building");
-                repo.frozen_elapsed = None;
             } else {
                 repo.status = ItemStatus::Done;
                 repo.msg = Arc::from("done");
@@ -1085,6 +1077,73 @@ mod tests {
         ]);
         terminal.backend().assert_scrollback_empty();
         terminal.backend_mut().assert_cursor_position((0, 4));
+    }
+
+    #[test]
+    fn summary_counts_include_repo_only_rows() {
+        let mut actor = actor();
+
+        let cached = actor.register_repo("tree-sitter-cli".into(), GitRef::from("HEAD"), 2);
+        actor.apply_update(cached.id, UpdateKind::MarkCached, Arc::from(""));
+        actor.apply_update(cached.id, UpdateKind::Fin, Arc::from("done"));
+
+        let built = actor.register_repo("standalone".into(), GitRef::from("HEAD"), 1);
+        actor.apply_update(built.id, UpdateKind::MarkBuilt, Arc::from(""));
+        actor.apply_update(built.id, UpdateKind::Fin, Arc::from("done"));
+
+        let active = actor.register_repo("active".into(), GitRef::from("HEAD"), 1);
+        actor.apply_update(active.id, UpdateKind::Step, Arc::from("working"));
+
+        let failed = actor.register_repo("failed".into(), GitRef::from("HEAD"), 1);
+        actor.apply_update(failed.id, UpdateKind::Err, Arc::from("failed"));
+
+        assert_eq!(actor.state.summary_counts(), (1, 1, 1, 1));
+    }
+
+    #[test]
+    fn summary_counts_do_not_double_count_parent_repos_with_grammars() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("json".into(), GitRef::from("HEAD"), 2);
+        actor.apply_update(repo.id, UpdateKind::MarkBuilt, Arc::from(""));
+        actor.apply_update(repo.id, UpdateKind::Fin, Arc::from("done"));
+
+        let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::from("HEAD"), 4);
+        actor.apply_update(grammar.id, UpdateKind::MarkCached, Arc::from(""));
+        actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
+
+        assert_eq!(actor.state.summary_counts(), (1, 0, 0, 0));
+    }
+
+    #[test]
+    fn parent_repo_stays_active_while_any_child_is_active() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("typescript".into(), GitRef::from("HEAD"), 2);
+        let failing = actor.register_grammar(
+            "typescript".into(),
+            "typescript".into(),
+            GitRef::from("HEAD"),
+            4,
+        );
+        let pending =
+            actor.register_grammar("typescript".into(), "tsx".into(), GitRef::from("HEAD"), 4);
+
+        actor.apply_update(failing.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(failing.id, UpdateKind::Err, Arc::from("build failed"));
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.status, ItemStatus::InProgress);
+        assert_eq!(repo_entry.msg.as_ref(), "building");
+        assert!(repo_entry.frozen_elapsed.is_none());
+
+        actor.apply_update(pending.id, UpdateKind::MarkBuilt, Arc::from(""));
+        actor.apply_update(pending.id, UpdateKind::Fin, Arc::from("done"));
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.status, ItemStatus::Failed);
+        assert_eq!(repo_entry.msg.as_ref(), "failed");
+        assert!(repo_entry.frozen_elapsed.is_some());
     }
 
     #[test]
