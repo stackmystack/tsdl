@@ -1,6 +1,7 @@
 use std::{fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use clap::Parser;
+use console::style;
 use self_update::self_replace;
 use semver::Version;
 use tracing::{error, info};
@@ -30,7 +31,12 @@ fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
     match &args.command {
         args::Command::Build(_) => {
             let (result, duration) = time(|| tsdl::build::run(app));
-            println!("Done in {duration}");
+            let done = format!("Done in {duration}");
+            if result.is_ok() {
+                println!("{}", style(done).green());
+            } else {
+                println!("{}", style(done).red());
+            }
             result
         }
         args::Command::Config { command } => tsdl::config::run(app, command),
