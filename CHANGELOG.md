@@ -9,6 +9,11 @@
   - `tsdl selfupdate patch` / `minor` / `major` filters compatible releases.
   - `tsdl selfupdate 2.5.0` installs an exact version with downgrade confirmation.
 
+### UI/UX
+
+The display backend moved to ratatui. The information displayed are more
+informative and more coherent.
+
 ## [2.0.0] - 2026-02-20
 
 This is a major rewrite, moving to a single-threaded async runtime, with actors.
