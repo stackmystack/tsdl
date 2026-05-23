@@ -54,6 +54,7 @@ enum_dispatch = "0.3"
 figment = { version = "0.10", features = ["toml", "env"] }
 fs2 = "0.4"
 futures = "0.3"
+libc = "0.2"
 human-panic = "2.0"
 ignore = "0.4"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color", "macros"] }
@@ -77,6 +78,7 @@ tokio = { version = "1", features = [
   "fs",
   "macros",
   "process",
+  "signal",
   "sync",
   "time",
 ] }

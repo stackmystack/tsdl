@@ -230,7 +230,7 @@ pub struct BuildCommand {
     pub tree_sitter: TreeSitter,
 
     /// Seconds to wait after terminating a lock owner for the build lock to be released.
-    #[arg(long, env = "TSDL_UNLOCK_TIMEOUT", default_value_t = TSDL_UNLOCK_TIMEOUT)]
+    #[arg(long, env = "TSDL_UNLOCK_TIMEOUT", default_value_t = TSDL_UNLOCK_TIMEOUT, value_parser = clap::value_parser!(u64).range(1..))]
     #[serde(default)]
     pub unlock_timeout: u64,
 }

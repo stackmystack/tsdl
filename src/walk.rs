@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 
-use crate::cache;
+use crate::{cache, shutdown};
 
 /// Holds the immutable rules for the traversal.
 struct FilterContext {
@@ -149,6 +149,7 @@ pub async fn collect_grammar_paths(
     let mut results = Vec::new();
 
     for file in files {
+        shutdown::check()?;
         let full_path = root.join(&file);
         let hash = cache::hash_file(&full_path).await?;
         results.push((full_path, hash));

@@ -126,6 +126,10 @@ impl Lock {
 
     /// Send SIGTERM to the process that held the lock when `owner` was captured.
     pub fn terminate_owner(&self, owner: &LockOwner) -> TsdlResult<()> {
+        info!(
+            "Sending SIGTERM to lock owner PID {} ({})",
+            owner.pid, owner.name
+        );
         let system = Self::system_for_pid(owner.pid);
         let process = system.process(owner.pid).ok_or_else(|| {
             TsdlError::message(format!(
@@ -142,7 +146,10 @@ impl Lock {
         }
 
         match process.kill_with(Signal::Term) {
-            Some(true) => Ok(()),
+            Some(true) => {
+                info!("Sent SIGTERM to lock owner PID {}", owner.pid);
+                Ok(())
+            }
             Some(false) => Err(TsdlError::message(format!(
                 "Failed to send SIGTERM to lock owner PID {}",
                 owner.pid
@@ -158,6 +165,7 @@ impl Lock {
     /// This races two signals: the owner process exiting and this process acquiring
     /// the OS lock. The returned guard is the proof of exclusive ownership.
     pub fn wait_for_release(&self, owner: &LockOwner, timeout: Duration) -> TsdlResult<LockGuard> {
+        info!("Waiting up to {} for lock release from PID {}", crate::format_duration(timeout), owner.pid);
         let (tx, rx) = mpsc::channel();
 
         let lock = self.clone();
