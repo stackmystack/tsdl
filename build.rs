@@ -55,6 +55,13 @@ macro_rules! generate_consts {
         writeln!($buf, "pub const {}: bool = {};", stringify!($name), val).unwrap();
     };
 
+    // Case: JSON u64
+    (@expand $buf:expr, $name:ident, u64, json($obj:expr, $key:literal)) => {
+        let val = $obj.get($key).expect(concat!("Key not found: ", $key))
+                      .as_u64().expect(concat!("Key not an unsigned integer: ", $key));
+        writeln!($buf, "pub const {}: u64 = {};", stringify!($name), val).unwrap();
+    };
+
     // Case: Raw Expression (String)
     (@expand $buf:expr, $name:ident, str, expr($val:expr)) => {
         writeln!($buf, "pub const {}: &str = {:?};", stringify!($name), $val).unwrap();
@@ -105,6 +112,7 @@ fn main() {
         TSDL_FROM          : str  = json(tsdl, "from"),
         TSDL_LOCK_FILE     : str  = json(tsdl, "lock-file"),
         TSDL_OUT_DIR       : str  = json(tsdl, "out-dir"),
+        TSDL_UNLOCK_TIMEOUT: u64  = json(tsdl, "unlock-timeout"),
         TSDL_PREFIX        : str  = json(tsdl, "prefix"),
         TSDL_REF           : str  = json(tsdl, "ref"),
         TSDL_SHOW_CONFIG   : bool = json(tsdl, "show-config"),

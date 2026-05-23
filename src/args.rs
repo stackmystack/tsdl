@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::consts::{
     TREE_SITTER_PLATFORM, TREE_SITTER_REPO, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE,
-    TSDL_FORCE, TSDL_FRESH, TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG,
+    TSDL_FORCE, TSDL_FRESH, TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG, TSDL_UNLOCK_TIMEOUT,
 };
 
 const TSDL_VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/tsdl.version"));
@@ -229,10 +229,10 @@ pub struct BuildCommand {
     #[serde(default)]
     pub tree_sitter: TreeSitter,
 
-    /// Force unlock the build directory.
-    #[arg(long, default_value_t = false)]
+    /// Seconds to wait after terminating a lock owner for the build lock to be released.
+    #[arg(long, env = "TSDL_UNLOCK_TIMEOUT", default_value_t = TSDL_UNLOCK_TIMEOUT)]
     #[serde(default)]
-    pub unlock: bool,
+    pub unlock_timeout: u64,
 }
 
 impl Default for BuildCommand {
@@ -249,7 +249,7 @@ impl Default for BuildCommand {
             show_config: TSDL_SHOW_CONFIG,
             target: Target::default(),
             tree_sitter: TreeSitter::default(),
-            unlock: false,
+            unlock_timeout: TSDL_UNLOCK_TIMEOUT,
         }
     }
 }

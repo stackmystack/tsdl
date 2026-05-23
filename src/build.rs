@@ -1,8 +1,10 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    fs::{self, create_dir_all},
-    path::PathBuf,
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -13,10 +15,11 @@ use crate::{
     app::App,
     args::{ParserConfig, Target, TreeSitter},
     cache::Db,
-    consts::TSDL_FROM,
+    consts::{TSDL_FROM, TSDL_LOCK_FILE},
     error::{self, TsdlError},
+    format_duration,
     git::GitRef,
-    lock::{Lock, LockStatus},
+    lock::{Lock, LockGuard, LockOwner, LockStatus},
     parser::LanguageBuild,
     prompt_user, SafeCanonicalize, TsdlResult,
 };
@@ -49,59 +52,90 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
     }
 
     let lock = Lock::new(&app.command.build_dir);
-
-    if app.command.unlock {
-        lock.force_unlock()?;
-    }
-
-    let _guard = match lock.try_acquire()? {
-        LockStatus::Acquired(lock) => lock,
-
-        LockStatus::Cyclic => {
-            eprintln!("Lock already held by this process. This should not happen.");
-            return Err(TsdlError::message("1+ lock acquisition"));
-        }
-
-        LockStatus::LockedBy { pid, exe } => {
-            eprintln!("Lock owned by different process: PID {pid} ({exe})");
-            if prompt_user("Proceed anyway?", false)? {
-                lock.force_acquire()?
-            } else {
-                return Err(TsdlError::message("Lock acquisition cancelled by user"));
-            }
-        }
-
-        LockStatus::Stale(pid) => {
-            eprintln!("Found stale lock from PID {pid} (process no longer exists)");
-            if prompt_user("Take over lock?", true)? {
-                lock.force_acquire()?
-            } else {
-                return Err(TsdlError::message("Lock acquisition cancelled by user"));
-            }
-        }
-
-        LockStatus::Unknown { pid, reason } => {
-            eprintln!("Could not verify lock owner PID {pid}: {reason}");
-            if prompt_user("Take over lock?", false)? {
-                lock.force_acquire()?
-            } else {
-                return Err(TsdlError::message("Lock acquisition cancelled by user"));
-            }
-        }
-    };
+    let _guard = acquire_lock(&lock, Duration::from_secs(app.command.unlock_timeout))?;
 
     clear(app)?;
     ignite(app)?;
     Ok(())
 }
 
+fn acquire_lock(lock: &Lock, unlock_timeout: Duration) -> TsdlResult<LockGuard> {
+    match lock.try_acquire()? {
+        LockStatus::Acquired(lock) => Ok(lock),
+
+        LockStatus::Cyclic => {
+            eprintln!("Lock already held by this process. This should not happen.");
+            Err(TsdlError::message("1+ lock acquisition"))
+        }
+
+        LockStatus::LockedBy(owner) => handle_locked_by(lock, &owner, unlock_timeout),
+
+        LockStatus::Unknown { pid, reason } => {
+            match pid {
+                Some(pid) => eprintln!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}"),
+                None => eprintln!("Build directory is locked, but tsdl could not identify the owner: {reason}"),
+            }
+            Err(TsdlError::message(format!(
+                "Could not identify build lock owner: {reason}"
+            )))
+        }
+    }
+}
+
+fn handle_locked_by(
+    lock: &Lock,
+    owner: &LockOwner,
+    unlock_timeout: Duration,
+) -> TsdlResult<crate::lock::LockGuard> {
+    eprintln!("Build directory is locked by another process:\n");
+    eprintln!("{owner}");
+    eprintln!();
+    eprintln!(
+        "If you continue, tsdl will send SIGTERM to PID {} and wait up to {} \
+         (--unlock-timeout {}) for the build lock to be released.",
+        owner.pid,
+        format_duration(unlock_timeout),
+        unlock_timeout.as_secs()
+    );
+
+    if !prompt_user("Terminate this process and continue?", false)? {
+        return Err(TsdlError::message("Lock acquisition cancelled by user"));
+    }
+
+    lock.terminate_owner(owner)?;
+    eprintln!(
+        "Sent SIGTERM to PID {}. Waiting for the build lock to be released...",
+        owner.pid
+    );
+    lock.wait_for_release(owner, unlock_timeout)
+}
+
 fn clear(app: &mut App) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
-        fs::remove_dir_all(&app.command.build_dir)?;
+        clear_build_dir(&app.command.build_dir)?;
         eprintln!("Cleaned {}", app.command.build_dir.display());
     }
 
     fs::create_dir_all(&app.command.build_dir)?;
+
+    Ok(())
+}
+
+fn clear_build_dir(build_dir: &Path) -> TsdlResult<()> {
+    for entry in fs::read_dir(build_dir)? {
+        let entry = entry?;
+        if entry.file_name().as_os_str() == OsStr::new(TSDL_LOCK_FILE) {
+            continue;
+        }
+
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
 
     Ok(())
 }
@@ -156,7 +190,7 @@ fn get_language_coords(
 }
 
 fn ignite(app: &App) -> TsdlResult<()> {
-    create_dir_all(&app.command.out_dir)?;
+    fs::create_dir_all(&app.command.out_dir)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

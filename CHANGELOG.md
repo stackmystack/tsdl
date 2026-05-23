@@ -14,6 +14,12 @@
 The display backend moved to ratatui. The information displayed are more
 informative and more coherent.
 
+### Bug Fixes
+
+- **lock**: Use OS-level build locks to avoid concurrent lock acquisition races,
+  and replace `--unlock` with an interactive SIGTERM takeover flow controlled by
+  `--unlock-timeout`.
+
 ## [2.0.0] - 2026-02-20
 
 This is a major rewrite, moving to a single-threaded async runtime, with actors.
