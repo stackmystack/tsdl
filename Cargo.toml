@@ -32,6 +32,7 @@ prefix = "libtree-sitter-"
 ref = "master"
 show-config = false
 sys = false
+unlock-timeout = 10
 
 [package.metadata.tree-sitter]
 # TODO: make it accept true git refs. For now it only uses versions.
@@ -51,6 +52,7 @@ derive_more = { version = "2", features = ["as_ref", "deref", "display"] }
 diff-struct = "0.5"
 enum_dispatch = "0.3"
 figment = { version = "0.10", features = ["toml", "env"] }
+fs2 = "0.4"
 futures = "0.3"
 human-panic = "2.0"
 ignore = "0.4"
