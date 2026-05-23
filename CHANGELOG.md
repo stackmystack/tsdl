@@ -19,6 +19,8 @@ informative and more coherent.
 - **lock**: Use OS-level build locks to avoid concurrent lock acquisition races,
   and replace `--unlock` with an interactive SIGTERM takeover flow controlled by
   `--unlock-timeout`.
+- **shutdown**: Handle `SIGTERM`/`SIGINT` gracefully by terminating running build
+  command process groups before releasing the build lock.
 
 ## [2.0.0] - 2026-02-20
 

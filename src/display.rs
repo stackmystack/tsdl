@@ -108,6 +108,8 @@ pub enum ItemOutcome {
     /// Cache hit.
     Cached,
     /// Not cached; work was needed.
+    /// Shut down before completion.
+    Cancelled,
     Built,
 }
 
@@ -117,6 +119,7 @@ impl ItemOutcome {
             ItemOutcome::Unknown => Color::DarkGray,
             ItemOutcome::Cached => Color::Yellow,
             ItemOutcome::Built => Color::Blue,
+            ItemOutcome::Cancelled => Color::DarkGray,
         }
     }
 }
@@ -505,11 +508,14 @@ impl DisplayState {
     }
 
     pub fn format_footer_counts(&self) -> Line<'static> {
-        let (cached, built, building, failed) = self.summary_counts();
+        let (cached, built, building, failed, cancelled) = self.summary_counts();
         let mut spans: Vec<Span<'static>> = Vec::new();
 
         push_summary_success(&mut spans, cached, "cached", Color::Yellow, true);
         push_summary_success(&mut spans, built, "built", Color::Blue, false);
+        if cancelled > 0 {
+            push_summary_cancelled(&mut spans, cancelled, false);
+        }
         if building > 0 {
             push_summary_building(&mut spans, building);
         }
@@ -629,11 +635,12 @@ impl DisplayState {
 
     // ── Summary counts ────────────────────────────────────────────
 
-    pub(crate) fn summary_counts(&self) -> (usize, usize, usize, usize) {
+    pub(crate) fn summary_counts(&self) -> (usize, usize, usize, usize, usize) {
         let mut cached = 0;
         let mut built = 0;
         let mut building = 0;
         let mut failed = 0;
+        let mut cancelled = 0;
 
         let mut repos_with_grammars: HashSet<u64> = HashSet::new();
         for grammar in self.grammars.values() {
@@ -645,6 +652,7 @@ impl DisplayState {
                 &mut built,
                 &mut building,
                 &mut failed,
+                &mut cancelled,
             );
         }
 
@@ -659,11 +667,12 @@ impl DisplayState {
                     &mut built,
                     &mut building,
                     &mut failed,
+                    &mut cancelled,
                 );
             }
         }
 
-        (cached, built, building, failed)
+        (cached, built, building, failed, cancelled)
     }
 }
 
@@ -678,12 +687,14 @@ fn count_grammar_status(
     built: &mut usize,
     building: &mut usize,
     failed: &mut usize,
+    cancelled: &mut usize,
 ) {
     match status {
         ItemStatus::New | ItemStatus::InProgress => *building += 1,
         ItemStatus::Done => match outcome {
             ItemOutcome::Cached => *cached += 1,
             ItemOutcome::Built | ItemOutcome::Unknown => *built += 1,
+            ItemOutcome::Cancelled => *cancelled += 1,
         },
         ItemStatus::Failed => *failed += 1,
     }
@@ -768,4 +779,16 @@ fn format_elapsed_duration(dur: Duration) -> String {
         let remaining = secs as u64 % 60;
         format!("{mins:>3}:{remaining:02}")
     }
+}
+
+fn push_summary_cancelled(spans: &mut Vec<Span<'static>>, count: usize, _leading: bool) {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("✗ {count} cancelled"),
+        Style::default().fg(if count > 0 {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        }),
+    ));
 }

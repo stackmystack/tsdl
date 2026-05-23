@@ -40,6 +40,16 @@ setup:
 test *args="--retries 0":
     cargo nextest run {{ args }}
 
+test-signals:
+    @echo "=== signal-handling smoke test ==="
+    @bash tests/test_signal.sh
+
+    @echo "=== lock takeover smoke test ==="
+    @sh tests/test_lock_takeover.sh
+
+    @echo "=== second-signal escalation test ==="
+    @sh tests/test_second_signal.sh
+
 typos:
     typos --sort
 

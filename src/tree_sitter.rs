@@ -6,12 +6,13 @@ use std::str::FromStr;
 
 use async_compression::tokio::bufread::GzipDecoder;
 use tokio::{fs, io, process::Command};
-use tracing::trace;
+use tracing::{debug, trace};
 use url::Url;
 
 use crate::actors::{DisplayAddr, ProgressAddr};
 use crate::args::TreeSitter;
 use crate::git::{self, GitRef};
+use crate::shutdown;
 use crate::SafeCanonicalize;
 use crate::{error::TsdlError, TsdlResult};
 use crate::{git::Tag, sh::Exec};
@@ -142,6 +143,10 @@ pub async fn prepare(
     display: DisplayAddr,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<PathBuf> {
+    shutdown::test_delay().await;
+    shutdown::check()?;
+    debug!("[prepare] tree-sitter-cli version={}", tree_sitter.version);
+
     let progress = display
         .add_language(
             display_tree_sitter_ref(&tree_sitter.version),

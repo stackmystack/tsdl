@@ -60,6 +60,7 @@ pub enum UpdateKind {
     Step,
     MarkCached,
     MarkBuilt,
+    MarkCancelled,
     Cached,
     Fin,
     Err,
@@ -171,10 +172,19 @@ impl ProgressAddr {
         });
     }
 
+    pub fn mark_cancelled(&self) {
+        let _ = self.tx.try_send(DisplayMessage::Update {
+            id: self.id,
+            kind: UpdateKind::MarkCancelled,
+            msg: Arc::from(""),
+        });
+    }
+
     pub fn mark_built(&self) {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::MarkBuilt,
+
             msg: Arc::from(""),
         });
     }
@@ -221,11 +231,13 @@ fn plain_repo_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> Stri
         UpdateKind::Cached => "cached".to_string(),
         UpdateKind::Fin => match outcome {
             ItemOutcome::Built | ItemOutcome::Cached => "done".to_string(),
-            ItemOutcome::Unknown => msg.to_string(),
+            ItemOutcome::Unknown | ItemOutcome::Cancelled => msg.to_string(),
         },
-        UpdateKind::MarkBuilt | UpdateKind::MarkCached | UpdateKind::Msg | UpdateKind::Step => {
-            msg.to_string()
-        }
+        UpdateKind::MarkBuilt
+        | UpdateKind::MarkCached
+        | UpdateKind::MarkCancelled
+        | UpdateKind::Msg
+        | UpdateKind::Step => msg.to_string(),
     }
 }
 
@@ -236,11 +248,13 @@ fn plain_grammar_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> S
         UpdateKind::Fin => match outcome {
             ItemOutcome::Cached => "cached".to_string(),
             ItemOutcome::Built => "built".to_string(),
-            ItemOutcome::Unknown => msg.to_string(),
+            ItemOutcome::Unknown | ItemOutcome::Cancelled => msg.to_string(),
         },
-        UpdateKind::MarkBuilt | UpdateKind::MarkCached | UpdateKind::Msg | UpdateKind::Step => {
-            msg.to_string()
-        }
+        UpdateKind::MarkBuilt
+        | UpdateKind::MarkCached
+        | UpdateKind::MarkCancelled
+        | UpdateKind::Msg
+        | UpdateKind::Step => msg.to_string(),
     }
 }
 
@@ -623,7 +637,10 @@ impl DisplayActor {
                     self.apply_update(id, kind, msg);
                     if matches!(
                         kind,
-                        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt
+                        UpdateKind::Msg
+                            | UpdateKind::MarkCached
+                            | UpdateKind::MarkBuilt
+                            | UpdateKind::MarkCancelled
                     ) {
                         continue;
                     }
@@ -673,9 +690,9 @@ impl DisplayActor {
     }
 
     fn print_plain_summary(&self) {
-        let (cached, built, _building, failed) = self.state.summary_counts();
+        let (cached, built, _building, failed, cancelled) = self.state.summary_counts();
         println!();
-        println!("✓ {cached} cached  ✓ {built} built  ✗ {failed} failed");
+        println!("✓ {cached} cached  ✓ {built} built  ✗ {cancelled} cancelled  ✗ {failed} failed");
     }
 
     fn plain_progress_line(&self, id: u64, kind: UpdateKind) -> Option<PlainLine> {
@@ -843,6 +860,10 @@ impl DisplayActor {
             UpdateKind::MarkCached => {
                 repo.outcome = ItemOutcome::Cached;
             }
+            UpdateKind::MarkCancelled => {
+                repo.outcome = ItemOutcome::Cancelled;
+            }
+
             UpdateKind::MarkBuilt => {
                 repo.outcome = ItemOutcome::Built;
             }
@@ -887,6 +908,10 @@ impl DisplayActor {
             UpdateKind::MarkCached => {
                 grammar.outcome = ItemOutcome::Cached;
             }
+            UpdateKind::MarkCancelled => {
+                grammar.outcome = ItemOutcome::Cancelled;
+            }
+
             UpdateKind::MarkBuilt => {
                 grammar.outcome = ItemOutcome::Built;
             }
@@ -967,6 +992,7 @@ impl DisplayActor {
                 ItemOutcome::Built => return ItemOutcome::Built,
                 ItemOutcome::Cached => saw_cached = true,
                 ItemOutcome::Unknown => saw_unknown = true,
+                ItemOutcome::Cancelled => (),
             }
         }
 
@@ -1097,7 +1123,7 @@ mod tests {
         let failed = actor.register_repo("failed".into(), GitRef::from("HEAD"), 1);
         actor.apply_update(failed.id, UpdateKind::Err, Arc::from("failed"));
 
-        assert_eq!(actor.state.summary_counts(), (1, 1, 1, 1));
+        assert_eq!(actor.state.summary_counts(), (1, 1, 1, 1, 0));
     }
 
     #[test]
@@ -1112,7 +1138,7 @@ mod tests {
         actor.apply_update(grammar.id, UpdateKind::MarkCached, Arc::from(""));
         actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
 
-        assert_eq!(actor.state.summary_counts(), (1, 0, 0, 0));
+        assert_eq!(actor.state.summary_counts(), (1, 0, 0, 0, 0));
     }
 
     #[test]

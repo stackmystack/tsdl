@@ -6,6 +6,7 @@ mod cache;
 mod config;
 #[cfg(test)]
 mod log;
+#[cfg(test)]
 
 use std::{env, fs, path::Path};
 

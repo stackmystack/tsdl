@@ -8,11 +8,13 @@ pub use display::{DisplayActor, DisplayAddr, DisplayMessage, ProgressAddr};
 use futures::{stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
+use tracing::{debug, info};
+
 use crate::{
     args::TreeSitter,
     error::TsdlError,
     parser::{GrammarBuild, LanguageBuild},
-    tree_sitter, TsdlResult,
+    shutdown, tree_sitter, TsdlResult,
 };
 
 pub trait Addr {
@@ -97,6 +99,13 @@ pub async fn run(
     // issues with the ratatui backend.
     display.shutdown().await;
 
+    // If shutdown was signalled, suppress build errors — they're expected
+    // cancellation artefacts, not real failures.
+    if shutdown::current().map_or(false, |s| s.is_cancelled()) {
+        info!("pipeline shutdown signalled, suppressing errors");
+        return Ok(());
+    }
+
     result
 }
 
@@ -151,10 +160,14 @@ async fn run_inner(
           .fold(Vec::new(), |mut errors, result| {
               let cache = cache.clone();
               async move {
+                  let is_shutdown = shutdown::current().map_or(false, |s| s.is_cancelled());
                   match result {
-                      Ok(Some(update)) => cache.update(update).await, // Side-effect: Cache Update
-                      Ok(None) => {}                                  // Cache hit
-                      Err(e) => errors.push(e),                       // Accumulate Error
+                      Ok(Some(update)) => cache.update(update).await,
+                      Ok(None) => {}
+                      Err(e) if is_shutdown => {
+                          debug!("[pipeline:fold] shutdown, dropping error: {e}");
+                      }
+                      Err(e) => errors.push(e),
                   }
                   errors
               }
@@ -180,6 +193,10 @@ async fn discover_grammars(
     language: LanguageBuild,
     ts_cli: Arc<PathBuf>,
 ) -> TsdlResult<Vec<crate::parser::GrammarBuild>> {
+    shutdown::test_delay().await;
+    shutdown::check()?;
+    debug!("[discover] lang={}", language.name);
+
     let progress = display
         .add_language(language.spec.git_ref.clone(), language.name.clone(), 2)
         .await;
@@ -208,6 +225,9 @@ async fn discover_grammars(
     // Map the raw discovery data into the Build struct immediately
     let mut builds = Vec::new();
     for (name, dir, hash) in grammars {
+        shutdown::test_delay().await;
+        shutdown::check()?;
+
         let key = format!("{}/{}", language.name, name);
         let entry = cache.get(key).await;
         let name_arc: std::sync::Arc<str> = name.into();

@@ -1,13 +1,13 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    ffi::OsStr,
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use url::Url;
 
 use crate::{
@@ -15,13 +15,15 @@ use crate::{
     app::App,
     args::{ParserConfig, Target, TreeSitter},
     cache::Db,
-    consts::{TSDL_FROM, TSDL_LOCK_FILE},
+    consts::TSDL_FROM,
     error::{self, TsdlError},
     format_duration,
     git::GitRef,
     lock::{Lock, LockGuard, LockOwner, LockStatus},
     parser::LanguageBuild,
-    prompt_user, SafeCanonicalize, TsdlResult,
+    prompt_user,
+    shutdown::{self, Shutdown},
+    SafeCanonicalize, TsdlResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,26 +62,46 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
 }
 
 fn acquire_lock(lock: &Lock, unlock_timeout: Duration) -> TsdlResult<LockGuard> {
-    match lock.try_acquire()? {
-        LockStatus::Acquired(lock) => Ok(lock),
+    // Loop because the lock owner may exit naturally between the prompt and
+    // SIGTERM, or another process may replace it.  Each iteration re-checks
+    // the lock status and presents the current owner to the user.
+    loop {
+        match lock.try_acquire()? {
+            LockStatus::Acquired(guard) => return Ok(guard),
 
-        LockStatus::Cyclic => {
-            eprintln!("Lock already held by this process. This should not happen.");
-            Err(TsdlError::message("1+ lock acquisition"))
-        }
-
-        LockStatus::LockedBy(owner) => handle_locked_by(lock, &owner, unlock_timeout),
-
-        LockStatus::Unknown { pid, reason } => {
-            match pid {
-                Some(pid) => eprintln!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}"),
-                None => eprintln!("Build directory is locked, but tsdl could not identify the owner: {reason}"),
+            LockStatus::Cyclic => {
+                info!("Lock already held by this process (cyclic).");
+                return Err(TsdlError::message("1+ lock acquisition"));
             }
-            Err(TsdlError::message(format!(
-                "Could not identify build lock owner: {reason}"
-            )))
+
+            LockStatus::LockedBy(owner) => match handle_locked_by(lock, &owner, unlock_timeout) {
+                Ok(guard) => return Ok(guard),
+                Err(ref e) if is_retryable_lock_error(e) => {
+                    info!("Lock owner changed; re-checking lock status...");
+                    // continue to the next loop iteration
+                }
+                Err(e) => return Err(e),
+            },
+
+            LockStatus::Unknown { pid, reason } => {
+                match pid {
+                    Some(pid) => info!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}"),
+                    None => info!("Build directory is locked, but tsdl could not identify the owner: {reason}"),
+                }
+                return Err(TsdlError::message(format!(
+                    "Could not identify build lock owner: {reason}"
+                )));
+            }
         }
     }
+}
+
+/// Returns `true` when the error indicates that the lock owner disappeared
+/// between inspection and the takeover attempt.  In that case the caller
+/// should re-check lock status instead of failing.
+fn is_retryable_lock_error(err: &TsdlError) -> bool {
+    let msg = err.to_string();
+    msg.contains("no longer running") || msg.contains("no longer matches the process")
 }
 
 fn handle_locked_by(
@@ -87,9 +109,8 @@ fn handle_locked_by(
     owner: &LockOwner,
     unlock_timeout: Duration,
 ) -> TsdlResult<crate::lock::LockGuard> {
-    eprintln!("Build directory is locked by another process:\n");
-    eprintln!("{owner}");
-    eprintln!();
+    info!("Build directory is locked by another process:");
+    info!("{owner}");
     eprintln!(
         "If you continue, tsdl will send SIGTERM to PID {} and wait up to {} \
          (--unlock-timeout {}) for the build lock to be released.",
@@ -103,7 +124,7 @@ fn handle_locked_by(
     }
 
     lock.terminate_owner(owner)?;
-    eprintln!(
+    info!(
         "Sent SIGTERM to PID {}. Waiting for the build lock to be released...",
         owner.pid
     );
@@ -112,30 +133,11 @@ fn handle_locked_by(
 
 fn clear(app: &mut App) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
-        clear_build_dir(&app.command.build_dir)?;
-        eprintln!("Cleaned {}", app.command.build_dir.display());
+        fs::remove_dir_all(&app.command.build_dir)?;
+        info!("Cleaned {}", app.command.build_dir.display());
     }
 
     fs::create_dir_all(&app.command.build_dir)?;
-
-    Ok(())
-}
-
-fn clear_build_dir(build_dir: &Path) -> TsdlResult<()> {
-    for entry in fs::read_dir(build_dir)? {
-        let entry = entry?;
-        if entry.file_name().as_os_str() == OsStr::new(TSDL_LOCK_FILE) {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
-        }
-    }
 
     Ok(())
 }
@@ -202,19 +204,24 @@ fn ignite(app: &App) -> TsdlResult<()> {
     let languages = collect_languages(app)?;
 
     let result = rt.block_on(async move {
+        let shutdown = Shutdown::new();
+        let _signals = shutdown.spawn_signal_listener()?;
         let cache = CacheActor::spawn(db, app.command.force);
         let build_dir: Arc<PathBuf> = app.command.build_dir.canon()?.into();
         let out_dir: Arc<PathBuf> = app.command.out_dir.canon()?.into();
         let display = DisplayActor::spawn(app.progress_mode, build_dir, out_dir);
 
-        actors::run(
-            &app.command.build_dir,
-            cache,
-            display,
-            app.command.jobs,
-            languages,
-            &app.command.tree_sitter,
-        )
+        shutdown::scope(shutdown, async move {
+            actors::run(
+                &app.command.build_dir,
+                cache,
+                display,
+                app.command.jobs,
+                languages,
+                &app.command.tree_sitter,
+            )
+            .await
+        })
         .await?;
 
         Ok(())

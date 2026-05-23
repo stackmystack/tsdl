@@ -6,7 +6,7 @@ use std::{
 };
 
 use tokio::{fs, process::Command};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     actors::ProgressAddr,
@@ -15,6 +15,7 @@ use crate::{
     error::{self, TsdlError},
     git::clone_fast,
     sh::{Exec, Script},
+    shutdown,
     walk::collect_grammar_paths,
     TsdlResult,
 };
@@ -48,6 +49,13 @@ impl GrammarBuild {
     /// Build this grammar, returning a cache update if it was built.
     /// Uses the language's progress handle for progress reporting.
     pub async fn build(&self) -> TsdlResult<Option<Update>> {
+        shutdown::test_delay().await;
+        shutdown::check()?;
+        debug!(
+            "[grammar:build] start: lang={} grammar={}",
+            self.language, self.name
+        );
+
         self.progress.step("checking cache");
         let key = format!("{}/{}", self.language, self.name);
 
@@ -80,7 +88,11 @@ impl GrammarBuild {
 
         // Build the grammar
         if let Err(e) = self.build_grammar().await {
-            self.progress.err("build failed");
+            if shutdown::current().map_or(false, |s| s.is_cancelled()) {
+                self.progress.mark_cancelled();
+            } else {
+                self.progress.err("build failed");
+            }
             return Err(e);
         }
 
@@ -115,6 +127,9 @@ impl GrammarBuild {
     }
 
     async fn build_grammar(&self) -> TsdlResult<()> {
+        shutdown::test_delay().await;
+        shutdown::check()?;
+
         // Generate parser if no custom build script
         self.progress.step("generating");
         if self.spec.build_script.is_none() {
@@ -135,6 +150,13 @@ impl GrammarBuild {
     }
 
     async fn build_target(&self, ext: &str) -> TsdlResult<()> {
+        shutdown::test_delay().await;
+        shutdown::check()?;
+        debug!(
+            "[grammar:build_target] lang={} grammar={} ext={ext}",
+            self.language, self.name
+        );
+
         let output_name = self.parser_name_and_ext(ext);
         let mut cmd = self.build_command(ext, &output_name);
 
