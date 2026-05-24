@@ -4,7 +4,7 @@ use clap::Parser;
 use console::style;
 use tracing::{error, info};
 
-use tsdl::{app::App, args, logging, TsdlResult};
+use tsdl::{TsdlResult, app::App, args, error::TsdlError, logging};
 
 fn main() -> ExitCode {
     set_panic_hook();

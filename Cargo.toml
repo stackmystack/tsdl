@@ -42,7 +42,6 @@ repo = "https://github.com/tree-sitter/tree-sitter"
 
 [dependencies]
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
-async-stream = "0.3"
 atty = "0.2"
 better-panic = "0.3"
 clap = { version = "4.6", features = ["cargo", "derive", "env"] }
@@ -57,7 +56,6 @@ fs2 = "0.4"
 futures = "0.3"
 libc = "0.2"
 human-panic = "2.0"
-ignore = "0.4"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color", "macros"] }
 log = "0.4"
 num_cpus = "1.17"
