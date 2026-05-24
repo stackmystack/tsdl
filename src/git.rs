@@ -1,9 +1,7 @@
 use std::{
     ffi::OsStr,
     fmt,
-    io::Write,
     path::{Component, Path, PathBuf},
-    process::{Output, Stdio},
 };
 
 use serde::{Deserialize, Serialize};
@@ -134,31 +132,6 @@ pub async fn clone_fast_with_force(
         init_fetch_and_checkout(cwd, repo, git_ref).await?;
     }
     Ok(())
-}
-
-pub fn column(input: &str, indent: &str, width: usize) -> TsdlResult<Output> {
-    let mut child = std::process::Command::new("git")
-        .arg("column")
-        .arg("--mode=always")
-        .arg(format!("--indent={indent}"))
-        .arg(format!("--width={width}"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-
-    let Some(mut stdin) = child.stdin.take() else {
-        return child
-            .wait_with_output()
-            .map_err(|e| TsdlError::context("git column did not finish normally", e));
-    };
-
-    stdin
-        .write_all(input.as_bytes())
-        .map_err(|e| TsdlError::context("Failed to write to git column stdin", e))?;
-
-    child
-        .wait_with_output()
-        .map_err(|e| TsdlError::context("git column did not finish normally", e))
 }
 
 async fn fetch_and_checkout(cwd: &Path, git_ref: &str) -> TsdlResult<()> {

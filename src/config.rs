@@ -10,8 +10,9 @@ use tracing::debug;
 use crate::{
     app::App,
     args::{BuildCommand, ConfigCommand},
+    columns,
     error::TsdlError,
-    git, TsdlResult,
+    TsdlResult,
 };
 
 pub fn current(config: &Path, command: Option<&BuildCommand>) -> TsdlResult<BuildCommand> {
@@ -69,18 +70,8 @@ pub fn show(command: &BuildCommand) -> TsdlResult<()> {
     if let Some(langs) = &command.languages {
         println!("Building the following languages:");
         println!();
-        println!(
-            "{}",
-            String::from_utf8(
-                git::column(&langs.join(" "), "  ", 80)
-                    .map_err(|e| TsdlError::context("Printing requested languages", e))?
-                    .stdout
-            )
-            .map_err(|e| TsdlError::context(
-                "Converting column-formatted languages to a string for printing",
-                e
-            ))?
-        );
+        print!("{}", columns::format_git(langs, "  ", 80));
+        println!();
     } else {
         println!("Building all languages.");
         println!();
