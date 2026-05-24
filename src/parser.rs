@@ -63,18 +63,18 @@ impl GrammarBuild {
         let hit = !self.context.force && !self.needs_rebuild(&key);
 
         if hit {
-            self.progress.mark_cached();
+            self.progress.set_outcome_cached().await;
             // Install the binary from the build directory
             if let Err(e) = self.install().await {
-                self.progress.err("install failed");
+                self.progress.err("install failed").await;
                 return Err(e);
             }
 
-            self.progress.cached("done");
+            self.progress.cached("done").await;
             return Ok(None);
         }
 
-        self.progress.mark_built();
+        self.progress.set_outcome_built().await;
 
         // Use the grammar directory path provided
         if !self.dir.exists() {
@@ -82,16 +82,16 @@ impl GrammarBuild {
                 "Grammar directory not found: {}",
                 self.dir.display()
             ));
-            self.progress.err("missing grammar directory");
+            self.progress.err("missing grammar directory").await;
             return Err(err);
         }
 
         // Build the grammar
         if let Err(e) = self.build_grammar().await {
             if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                self.progress.mark_cancelled();
+                self.progress.cancel().await;
             } else {
-                self.progress.err("build failed");
+                self.progress.err("build failed").await;
             }
             return Err(e);
         }
@@ -105,7 +105,7 @@ impl GrammarBuild {
             },
         };
 
-        self.progress.fin("done");
+        self.progress.fin("done").await;
 
         Ok(Some(update))
     }
