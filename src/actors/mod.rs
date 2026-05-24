@@ -95,14 +95,16 @@ pub async fn run(
     )
     .await;
 
+    let interrupted = shutdown::current().and_then(|s| s.reason());
+
     // We need to shut down before returning the results to avoid display
     // issues with the ratatui backend.
-    display.shutdown().await;
+    display.shutdown(interrupted.is_some()).await;
 
     // If shutdown was signalled, suppress build errors — they're expected
     // cancellation artefacts, not real failures — but still return the
     // interruption so the top-level process exits with the signal status.
-    if let Some(signal) = shutdown::current().and_then(|s| s.reason()) {
+    if let Some(signal) = interrupted {
         info!("pipeline shutdown signalled by {signal}, suppressing build errors");
         return Err(TsdlError::Interrupted(signal));
     }
@@ -202,19 +204,23 @@ async fn discover_grammars(
         .add_language(language.spec.git_ref.clone(), language.name.clone(), 2)
         .await;
 
-    if cache
+    let needs_clone = cache
         .needs_clone(language.name.clone(), language.spec.clone())
-        .await
-    {
+        .await;
+
+    if needs_clone {
+        progress.set_outcome_built().await;
         progress.step("cloning");
         if let Err(e) = language.clone().await {
             if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                progress.mark_cancelled();
+                progress.cancel().await;
             } else {
-                progress.err("clone failed");
+                progress.err("clone failed").await;
             }
             return Err(e);
         }
+    } else {
+        progress.set_outcome_cached().await;
     }
 
     progress.step("scanning");
@@ -222,14 +228,14 @@ async fn discover_grammars(
         Ok(grammars) => grammars,
         Err(e) => {
             if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                progress.mark_cancelled();
+                progress.cancel().await;
             } else {
-                progress.err("scan failed");
+                progress.err("scan failed").await;
             }
             return Err(e);
         }
     };
-    progress.fin("done");
+    progress.fin("done").await;
 
     // Map the raw discovery data into the Build struct immediately
     let mut builds = Vec::new();

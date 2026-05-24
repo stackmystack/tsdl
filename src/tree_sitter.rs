@@ -51,10 +51,10 @@ async fn cli(
         .canon()?;
 
     if res.exists() {
-        handle.mark_cached();
+        handle.set_outcome_cached().await;
         handle.step("cached");
     } else {
-        handle.mark_built();
+        handle.set_outcome_built().await;
         handle.step("downloading");
         let gz_basename = format!("{cli}.gz");
         let url = format!("{repo}/releases/download/{tag}/{gz_basename}");
@@ -164,9 +164,9 @@ pub async fn prepare(
         Ok(tag) => tag,
         Err(e) => {
             if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                progress.mark_cancelled();
+                progress.cancel().await;
             } else {
-                progress.err("resolve failed");
+                progress.err("resolve failed").await;
             }
             return Err(e);
         }
@@ -184,14 +184,14 @@ pub async fn prepare(
         Ok(cli) => cli,
         Err(e) => {
             if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                progress.mark_cancelled();
+                progress.cancel().await;
             } else {
-                progress.err("download failed");
+                progress.err("download failed").await;
             }
             return Err(e);
         }
     };
-    progress.fin("done");
+    progress.fin("done").await;
 
     Ok(cli)
 }

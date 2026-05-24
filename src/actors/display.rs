@@ -8,12 +8,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
+use tracing::error;
 
 use crate::actors::Addr;
 use crate::display::{
     compute_icon_cell, compute_msg_cell, compute_name_cell, compute_ref_cell, compute_step_cell,
-    compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemOutcome, ItemStatus,
-    Mode, RepoEntry, RowSpec,
+    compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemState, Mode, RepoEntry,
+    RowSpec, SuccessOutcome,
 };
 use crate::git::GitRef;
 
@@ -51,16 +52,19 @@ pub enum DisplayMessage {
     },
 
     /// Flush and close the display actor. The response is sent after cleanup.
-    Shutdown { tx: oneshot::Sender<()> },
+    Shutdown {
+        interrupted: bool,
+        tx: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateKind {
     Msg,
     Step,
-    MarkCached,
-    MarkBuilt,
-    MarkCancelled,
+    SetOutcomeCached,
+    SetOutcomeBuilt,
+    Cancel,
     Cached,
     Fin,
     Err,
@@ -135,8 +139,9 @@ impl DisplayAddr {
         .await;
     }
 
-    pub async fn shutdown(&self) {
-        self.request(|tx| DisplayMessage::Shutdown { tx }).await;
+    pub async fn shutdown(&self, interrupted: bool) {
+        self.request(|tx| DisplayMessage::Shutdown { interrupted, tx })
+            .await;
     }
 }
 
@@ -164,53 +169,42 @@ impl ProgressAddr {
         });
     }
 
-    pub fn mark_cached(&self) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
-            id: self.id,
-            kind: UpdateKind::MarkCached,
-            msg: Arc::from(""),
-        });
+    async fn send_state_update(&self, kind: UpdateKind, msg: Arc<str>) {
+        let _ = self
+            .tx
+            .send(DisplayMessage::Update {
+                id: self.id,
+                kind,
+                msg,
+            })
+            .await;
     }
 
-    pub fn mark_cancelled(&self) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
-            id: self.id,
-            kind: UpdateKind::MarkCancelled,
-            msg: Arc::from("cancelled"),
-        });
+    pub async fn set_outcome_cached(&self) {
+        self.send_state_update(UpdateKind::SetOutcomeCached, Arc::from(""))
+            .await;
     }
 
-    pub fn mark_built(&self) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
-            id: self.id,
-            kind: UpdateKind::MarkBuilt,
-
-            msg: Arc::from(""),
-        });
+    pub async fn cancel(&self) {
+        self.send_state_update(UpdateKind::Cancel, Arc::from("cancelled"))
+            .await;
     }
 
-    pub fn cached<S: Into<Arc<str>>>(&self, msg: S) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
-            id: self.id,
-            kind: UpdateKind::Cached,
-            msg: msg.into(),
-        });
+    pub async fn set_outcome_built(&self) {
+        self.send_state_update(UpdateKind::SetOutcomeBuilt, Arc::from(""))
+            .await;
     }
 
-    pub fn fin<S: Into<Arc<str>>>(&self, msg: S) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
-            id: self.id,
-            kind: UpdateKind::Fin,
-            msg: msg.into(),
-        });
+    pub async fn cached<S: Into<Arc<str>>>(&self, msg: S) {
+        self.send_state_update(UpdateKind::Cached, msg.into()).await;
     }
 
-    pub fn err<S: Into<Arc<str>>>(&self, msg: S) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
-            id: self.id,
-            kind: UpdateKind::Err,
-            msg: msg.into(),
-        });
+    pub async fn fin<S: Into<Arc<str>>>(&self, msg: S) {
+        self.send_state_update(UpdateKind::Fin, msg.into()).await;
+    }
+
+    pub async fn err<S: Into<Arc<str>>>(&self, msg: S) {
+        self.send_state_update(UpdateKind::Err, msg.into()).await;
     }
 }
 
@@ -225,34 +219,40 @@ struct PlainLine {
     message: String,
 }
 
-fn plain_repo_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> String {
+fn plain_repo_message(kind: UpdateKind, state: ItemState, msg: &str) -> String {
     match kind {
         UpdateKind::Err => format!("failed: {msg}"),
         UpdateKind::Cached => "cached".to_string(),
-        UpdateKind::Fin => match outcome {
-            ItemOutcome::Built | ItemOutcome::Cached => "done".to_string(),
-            ItemOutcome::Unknown | ItemOutcome::Cancelled => msg.to_string(),
+        UpdateKind::Fin => match state {
+            ItemState::Done(_) => "done".to_string(),
+            ItemState::New
+            | ItemState::InProgress(_)
+            | ItemState::Cancelled
+            | ItemState::Failed => msg.to_string(),
         },
-        UpdateKind::MarkBuilt
-        | UpdateKind::MarkCached
-        | UpdateKind::MarkCancelled
+        UpdateKind::SetOutcomeBuilt
+        | UpdateKind::SetOutcomeCached
+        | UpdateKind::Cancel
         | UpdateKind::Msg
         | UpdateKind::Step => msg.to_string(),
     }
 }
 
-fn plain_grammar_message(kind: UpdateKind, outcome: ItemOutcome, msg: &str) -> String {
+fn plain_grammar_message(kind: UpdateKind, state: ItemState, msg: &str) -> String {
     match kind {
         UpdateKind::Err => format!("failed: {msg}"),
         UpdateKind::Cached => "cached".to_string(),
-        UpdateKind::Fin => match outcome {
-            ItemOutcome::Cached => "cached".to_string(),
-            ItemOutcome::Built => "built".to_string(),
-            ItemOutcome::Unknown | ItemOutcome::Cancelled => msg.to_string(),
+        UpdateKind::Fin => match state {
+            ItemState::Done(SuccessOutcome::Cached) => "cached".to_string(),
+            ItemState::Done(SuccessOutcome::Built) => "built".to_string(),
+            ItemState::New
+            | ItemState::InProgress(_)
+            | ItemState::Cancelled
+            | ItemState::Failed => msg.to_string(),
         },
-        UpdateKind::MarkBuilt
-        | UpdateKind::MarkCached
-        | UpdateKind::MarkCancelled
+        UpdateKind::SetOutcomeBuilt
+        | UpdateKind::SetOutcomeCached
+        | UpdateKind::Cancel
         | UpdateKind::Msg
         | UpdateKind::Step => msg.to_string(),
     }
@@ -429,19 +429,19 @@ impl DisplayActor {
 
         loop {
             // Drain all pending messages before rendering
-            let mut shutdown_tx = None;
+            let mut shutdown = None;
             while let Ok(msg) = self.rx.try_recv() {
                 match msg {
-                    DisplayMessage::Shutdown { tx } => {
-                        shutdown_tx = Some(tx);
+                    DisplayMessage::Shutdown { interrupted, tx } => {
+                        shutdown = Some((interrupted, tx));
                         break;
                     }
                     other => self.handle_message(other),
                 }
             }
 
-            if let Some(tx) = shutdown_tx {
-                self.finish_fancy(&mut terminal, tx);
+            if let Some((interrupted, tx)) = shutdown {
+                self.finish_fancy(&mut terminal, interrupted, tx);
                 return;
             }
 
@@ -459,8 +459,8 @@ impl DisplayActor {
             tokio::select! {
                 msg = self.rx.recv() => {
                     match msg {
-                        Some(DisplayMessage::Shutdown { tx }) => {
-                            self.finish_fancy(&mut terminal, tx);
+                        Some(DisplayMessage::Shutdown { interrupted, tx }) => {
+                            self.finish_fancy(&mut terminal, interrupted, tx);
                             return;
                         }
                         Some(other) => self.handle_message(other),
@@ -480,8 +480,12 @@ impl DisplayActor {
     fn finish_fancy<B: Backend<Error = io::Error>>(
         &mut self,
         terminal: &mut ratatui::Terminal<B>,
+        interrupted: bool,
         tx: oneshot::Sender<()>,
     ) {
+        if interrupted {
+            self.cancel_live_rows();
+        }
         let term_width = terminal.size().map_or(80, |s| s.width);
         let mut final_lines = self.materialize(term_width);
         final_lines.push(Line::from(""));
@@ -547,8 +551,7 @@ impl DisplayActor {
             let is_dirty = self.grid.dirty_items.contains(&item_id);
 
             // TIME: stale when dirty OR clock is still running
-            let time_stale =
-                is_dirty || matches!(info.status(), ItemStatus::New | ItemStatus::InProgress);
+            let time_stale = is_dirty || info.state().is_live();
             let time = self.grid.cell(item_id, Column::Time, time_stale, || {
                 compute_time_cell(&info, &layout)
             });
@@ -637,7 +640,9 @@ impl DisplayActor {
                     self.apply_update(id, kind, msg);
                     if matches!(
                         kind,
-                        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt
+                        UpdateKind::Msg
+                            | UpdateKind::SetOutcomeCached
+                            | UpdateKind::SetOutcomeBuilt
                     ) {
                         continue;
                     }
@@ -645,7 +650,10 @@ impl DisplayActor {
                         self.print_plain_progress(&line);
                     }
                 }
-                DisplayMessage::Shutdown { tx } => {
+                DisplayMessage::Shutdown { interrupted, tx } => {
+                    if interrupted {
+                        self.cancel_live_rows();
+                    }
                     self.print_plain_summary();
                     let _ = tx.send(());
                     break;
@@ -698,7 +706,7 @@ impl DisplayActor {
                 name: repo.name.to_string(),
                 step: repo.step,
                 total: repo.total,
-                message: plain_repo_message(kind, repo.outcome, &repo.msg),
+                message: plain_repo_message(kind, repo.state, &repo.msg),
             });
         }
 
@@ -706,7 +714,7 @@ impl DisplayActor {
             name: format!("{}/{}", grammar.repo, grammar.name),
             step: grammar.step,
             total: grammar.total,
-            message: plain_grammar_message(kind, grammar.outcome, &grammar.msg),
+            message: plain_grammar_message(kind, grammar.state, &grammar.msg),
         })
     }
 
@@ -737,7 +745,10 @@ impl DisplayActor {
             DisplayMessage::Update { id, kind, msg } => {
                 self.apply_update(id, kind, msg);
             }
-            DisplayMessage::Shutdown { tx } => {
+            DisplayMessage::Shutdown { interrupted, tx } => {
+                if interrupted {
+                    self.cancel_live_rows();
+                }
                 let _ = tx.send(());
             }
         }
@@ -752,8 +763,7 @@ impl DisplayActor {
             RepoEntry {
                 name,
                 git_ref,
-                status: ItemStatus::New,
-                outcome: ItemOutcome::Unknown,
+                state: ItemState::New,
                 msg: Arc::from(""),
                 step: 0,
                 total: num_tasks,
@@ -794,8 +804,7 @@ impl DisplayActor {
                 repo_id,
                 name,
                 git_ref,
-                status: ItemStatus::New,
-                outcome: ItemOutcome::Unknown,
+                state: ItemState::New,
                 msg: Arc::from(""),
                 step: 0,
                 total: num_tasks,
@@ -815,6 +824,41 @@ impl DisplayActor {
         }
     }
 
+    fn cancel_live_rows(&mut self) {
+        let mut parent_ids = Vec::new();
+
+        for (id, grammar) in &mut self.state.grammars {
+            if grammar.state.is_live() {
+                grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+                grammar.state = ItemState::Cancelled;
+                grammar.step = grammar.total;
+                grammar.msg = Arc::from("cancelled");
+                parent_ids.push(grammar.repo_id);
+                self.grid.mark_dirty(*id);
+            }
+        }
+
+        parent_ids.sort_unstable();
+        parent_ids.dedup();
+        for repo_id in parent_ids {
+            if repo_id != 0 {
+                self.sync_parent_repo(repo_id);
+            }
+        }
+
+        for (id, repo) in &mut self.state.repos {
+            if repo.state.is_live() {
+                repo.frozen_elapsed = Some(repo.started_at.elapsed());
+                repo.state = ItemState::Cancelled;
+                if repo.total > 0 {
+                    repo.step = repo.total;
+                }
+                repo.msg = Arc::from("cancelled");
+                self.grid.mark_dirty(*id);
+            }
+        }
+    }
+
     fn apply_update(&mut self, id: u64, kind: UpdateKind, msg: Arc<str>) {
         if let Some(repo) = self.state.repos.get_mut(&id) {
             Self::apply_repo_update(repo, kind, msg);
@@ -828,13 +872,13 @@ impl DisplayActor {
             self.grid.mark_dirty(id);
             if matches!(
                 kind,
-                UpdateKind::Step
-                    | UpdateKind::MarkCached
-                    | UpdateKind::MarkBuilt
-                    | UpdateKind::MarkCancelled
-                    | UpdateKind::Cached
-                    | UpdateKind::Fin
+                UpdateKind::Cached
                     | UpdateKind::Err
+                    | UpdateKind::Fin
+                    | UpdateKind::SetOutcomeBuilt
+                    | UpdateKind::SetOutcomeCached
+                    | UpdateKind::Cancel
+                    | UpdateKind::Step
             ) {
                 maybe_parent_id = Some(grammar.repo_id);
             }
@@ -846,35 +890,36 @@ impl DisplayActor {
     }
 
     fn apply_repo_update(repo: &mut RepoEntry, kind: UpdateKind, msg: Arc<str>) {
+        if !repo.state.is_live() {
+            return;
+        }
+
         match kind {
             UpdateKind::Msg => {
                 repo.msg = msg;
             }
             UpdateKind::Step => {
-                repo.status = ItemStatus::InProgress;
+                repo.state = start_item(repo.state);
                 repo.step += 1;
                 repo.msg = msg;
             }
-            UpdateKind::MarkCached => {
-                repo.outcome = ItemOutcome::Cached;
+            UpdateKind::SetOutcomeCached => {
+                repo.state = mark_success(repo.state, SuccessOutcome::Cached);
             }
-            UpdateKind::MarkCancelled => {
+            UpdateKind::Cancel => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.status = ItemStatus::Cancelled;
-                repo.outcome = ItemOutcome::Cancelled;
+                repo.state = ItemState::Cancelled;
                 if repo.total > 0 {
                     repo.step = repo.total;
                 }
                 repo.msg = msg;
             }
-
-            UpdateKind::MarkBuilt => {
-                repo.outcome = ItemOutcome::Built;
+            UpdateKind::SetOutcomeBuilt => {
+                repo.state = mark_success(repo.state, SuccessOutcome::Built);
             }
             UpdateKind::Cached => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.status = ItemStatus::Done;
-                repo.outcome = ItemOutcome::Cached;
+                repo.state = ItemState::Done(SuccessOutcome::Cached);
                 if repo.total > 0 {
                     repo.step = repo.total;
                 }
@@ -882,66 +927,77 @@ impl DisplayActor {
             }
             UpdateKind::Fin => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.status = ItemStatus::Done;
-                if repo.outcome == ItemOutcome::Unknown {
-                    repo.outcome = ItemOutcome::Built;
+                match finish_item(repo.state) {
+                    Ok(state) => {
+                        repo.state = state;
+                        repo.msg = msg;
+                    }
+                    Err(message) => {
+                        repo.state = ItemState::Failed;
+                        repo.msg = message.into();
+                    }
                 }
                 if repo.total > 0 {
                     repo.step = repo.total;
                 }
-                repo.msg = msg;
             }
             UpdateKind::Err => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.status = ItemStatus::Failed;
+                repo.state = ItemState::Failed;
                 repo.msg = msg;
             }
         }
     }
 
     fn apply_grammar_update(grammar: &mut GrammarEntry, kind: UpdateKind, msg: Arc<str>) {
+        if !grammar.state.is_live() {
+            return;
+        }
+
         match kind {
             UpdateKind::Msg => {
                 grammar.msg = msg;
             }
             UpdateKind::Step => {
-                grammar.status = ItemStatus::InProgress;
+                grammar.state = start_item(grammar.state);
                 grammar.step += 1;
                 grammar.msg = msg;
             }
-            UpdateKind::MarkCached => {
-                grammar.outcome = ItemOutcome::Cached;
+            UpdateKind::SetOutcomeCached => {
+                grammar.state = mark_success(grammar.state, SuccessOutcome::Cached);
             }
-            UpdateKind::MarkCancelled => {
+            UpdateKind::Cancel => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.status = ItemStatus::Cancelled;
-                grammar.outcome = ItemOutcome::Cancelled;
+                grammar.state = ItemState::Cancelled;
                 grammar.step = grammar.total;
                 grammar.msg = msg;
             }
-
-            UpdateKind::MarkBuilt => {
-                grammar.outcome = ItemOutcome::Built;
+            UpdateKind::SetOutcomeBuilt => {
+                grammar.state = mark_success(grammar.state, SuccessOutcome::Built);
             }
             UpdateKind::Cached => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.status = ItemStatus::Done;
-                grammar.outcome = ItemOutcome::Cached;
+                grammar.state = ItemState::Done(SuccessOutcome::Cached);
                 grammar.step = grammar.total;
                 grammar.msg = msg;
             }
             UpdateKind::Fin => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.status = ItemStatus::Done;
-                if grammar.outcome == ItemOutcome::Unknown {
-                    grammar.outcome = ItemOutcome::Built;
+                match finish_item(grammar.state) {
+                    Ok(state) => {
+                        grammar.state = state;
+                        grammar.msg = msg;
+                    }
+                    Err(message) => {
+                        grammar.state = ItemState::Failed;
+                        grammar.msg = message.into();
+                    }
                 }
                 grammar.step = grammar.total;
-                grammar.msg = msg;
             }
             UpdateKind::Err => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.status = ItemStatus::Failed;
+                grammar.state = ItemState::Failed;
                 grammar.msg = msg;
             }
         }
@@ -957,36 +1013,38 @@ impl DisplayActor {
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == repo_id && g.status == ItemStatus::Failed);
+            .any(|g| g.repo_id == repo_id && g.state == ItemState::Failed);
         let any_cancelled = self
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == repo_id && g.status == ItemStatus::Cancelled);
-        let any_active = self.state.grammars.values().any(|g| {
-            g.repo_id == repo_id
-                && (g.status == ItemStatus::New || g.status == ItemStatus::InProgress)
-        });
-        let outcome = self.aggregate_child_outcome(repo_id);
+            .any(|g| g.repo_id == repo_id && g.state == ItemState::Cancelled);
+        let any_active = self
+            .state
+            .grammars
+            .values()
+            .any(|g| g.repo_id == repo_id && g.state.is_live());
+
+        let live_outcome = self.aggregate_child_live_outcome(repo_id);
+        let done_outcome = self.aggregate_child_done_outcome(repo_id);
 
         if let Some(repo) = self.state.repos.get_mut(&repo_id) {
-            repo.outcome = outcome;
             if any_active {
-                repo.status = ItemStatus::InProgress;
+                repo.state = ItemState::InProgress(live_outcome);
                 repo.msg = Arc::from("building");
                 repo.frozen_elapsed = None;
             } else if any_failed {
-                repo.status = ItemStatus::Failed;
+                repo.state = ItemState::Failed;
                 repo.msg = Arc::from("failed");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
             } else if any_cancelled {
-                repo.status = ItemStatus::Cancelled;
+                repo.state = ItemState::Cancelled;
                 repo.msg = Arc::from("cancelled");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
             } else {
-                repo.status = ItemStatus::Done;
+                repo.state = ItemState::Done(done_outcome.unwrap_or(SuccessOutcome::Built));
                 repo.msg = Arc::from("done");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
@@ -996,9 +1054,8 @@ impl DisplayActor {
         self.grid.mark_dirty(repo_id);
     }
 
-    fn aggregate_child_outcome(&self, repo_id: u64) -> ItemOutcome {
+    fn aggregate_child_live_outcome(&self, repo_id: u64) -> Option<SuccessOutcome> {
         let mut saw_cached = false;
-        let mut saw_cancelled = false;
         let mut saw_unknown = false;
 
         for grammar in self
@@ -1007,24 +1064,81 @@ impl DisplayActor {
             .values()
             .filter(|g| g.repo_id == repo_id)
         {
-            match grammar.outcome {
-                ItemOutcome::Built => return ItemOutcome::Built,
-                ItemOutcome::Cached => saw_cached = true,
-                ItemOutcome::Cancelled => saw_cancelled = true,
-                ItemOutcome::Unknown => saw_unknown = true,
+            match grammar.state {
+                ItemState::InProgress(Some(SuccessOutcome::Built))
+                | ItemState::Done(SuccessOutcome::Built) => return Some(SuccessOutcome::Built),
+                ItemState::InProgress(Some(SuccessOutcome::Cached))
+                | ItemState::Done(SuccessOutcome::Cached) => saw_cached = true,
+                ItemState::New | ItemState::InProgress(None) => saw_unknown = true,
+                ItemState::Cancelled | ItemState::Failed => {}
             }
         }
 
         if saw_unknown {
-            ItemOutcome::Unknown
-        } else if saw_cancelled {
-            ItemOutcome::Cancelled
+            None
         } else if saw_cached {
-            ItemOutcome::Cached
+            Some(SuccessOutcome::Cached)
         } else {
-            ItemOutcome::Unknown
+            None
         }
     }
+
+    fn aggregate_child_done_outcome(&self, repo_id: u64) -> Option<SuccessOutcome> {
+        let mut saw_cached = false;
+
+        for grammar in self
+            .state
+            .grammars
+            .values()
+            .filter(|g| g.repo_id == repo_id)
+        {
+            match grammar.state {
+                ItemState::Done(SuccessOutcome::Built) => return Some(SuccessOutcome::Built),
+                ItemState::Done(SuccessOutcome::Cached) => saw_cached = true,
+                ItemState::New
+                | ItemState::InProgress(_)
+                | ItemState::Cancelled
+                | ItemState::Failed => {}
+            }
+        }
+
+        saw_cached.then_some(SuccessOutcome::Cached)
+    }
+}
+
+fn start_item(state: ItemState) -> ItemState {
+    match state {
+        ItemState::New => ItemState::InProgress(None),
+        ItemState::InProgress(outcome) => ItemState::InProgress(outcome),
+        ItemState::Done(_) | ItemState::Cancelled | ItemState::Failed => state,
+    }
+}
+
+fn mark_success(state: ItemState, outcome: SuccessOutcome) -> ItemState {
+    match state {
+        ItemState::New | ItemState::InProgress(_) => ItemState::InProgress(Some(outcome)),
+        ItemState::Done(_) | ItemState::Cancelled | ItemState::Failed => state,
+    }
+}
+
+fn finish_item(state: ItemState) -> Result<ItemState, String> {
+    match state {
+        ItemState::InProgress(Some(outcome)) => Ok(ItemState::Done(outcome)),
+        ItemState::New | ItemState::InProgress(None) => invalid_finish(
+            "finish update received before cached/built path was set",
+            state,
+        ),
+        ItemState::Done(_) | ItemState::Cancelled | ItemState::Failed => {
+            invalid_finish("finish update received for terminal item state", state)
+        }
+    }
+}
+
+fn invalid_finish(reason: &str, state: ItemState) -> Result<ItemState, String> {
+    let message = format!("{reason}: {state:?}");
+    error!("{message}");
+    debug_assert!(matches!(state, ItemState::InProgress(Some(_))), "{message}");
+    Err(message)
 }
 
 fn spacer() -> Span<'static> {
@@ -1131,11 +1245,11 @@ mod tests {
         let mut actor = actor();
 
         let cached = actor.register_repo("tree-sitter-cli".into(), GitRef::from("HEAD"), 2);
-        actor.apply_update(cached.id, UpdateKind::MarkCached, Arc::from(""));
+        actor.apply_update(cached.id, UpdateKind::SetOutcomeCached, Arc::from(""));
         actor.apply_update(cached.id, UpdateKind::Fin, Arc::from("done"));
 
         let built = actor.register_repo("standalone".into(), GitRef::from("HEAD"), 1);
-        actor.apply_update(built.id, UpdateKind::MarkBuilt, Arc::from(""));
+        actor.apply_update(built.id, UpdateKind::SetOutcomeBuilt, Arc::from(""));
         actor.apply_update(built.id, UpdateKind::Fin, Arc::from("done"));
 
         let active = actor.register_repo("active".into(), GitRef::from("HEAD"), 1);
@@ -1152,14 +1266,154 @@ mod tests {
         let mut actor = actor();
 
         let repo = actor.register_repo("json".into(), GitRef::from("HEAD"), 2);
-        actor.apply_update(repo.id, UpdateKind::MarkBuilt, Arc::from(""));
+        actor.apply_update(repo.id, UpdateKind::SetOutcomeBuilt, Arc::from(""));
         actor.apply_update(repo.id, UpdateKind::Fin, Arc::from("done"));
 
         let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::from("HEAD"), 4);
-        actor.apply_update(grammar.id, UpdateKind::MarkCached, Arc::from(""));
+        actor.apply_update(grammar.id, UpdateKind::SetOutcomeCached, Arc::from(""));
         actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
 
         assert_eq!(actor.state.summary_counts(), (1, 0, 0, 0, 0));
+    }
+
+    #[test]
+    fn cancelled_grammar_is_terminal_and_updates_parent_repo() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("json".into(), GitRef::from("HEAD"), 2);
+        let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::from("HEAD"), 4);
+
+        actor.apply_update(grammar.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(grammar.id, UpdateKind::Cancel, Arc::from("cancelled"));
+
+        let grammar_entry = actor.state.grammars.get(&grammar.id).unwrap();
+        assert_eq!(grammar_entry.state, ItemState::Cancelled);
+        assert!(!grammar_entry.state.is_live());
+        assert_eq!(grammar_entry.step, grammar_entry.total);
+        assert!(grammar_entry.frozen_elapsed.is_some());
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.state, ItemState::Cancelled);
+        assert!(!repo_entry.state.is_live());
+        assert_eq!(repo_entry.msg.as_ref(), "cancelled");
+        assert!(repo_entry.frozen_elapsed.is_some());
+
+        assert_eq!(actor.state.summary_counts(), (0, 0, 0, 0, 1));
+    }
+
+    #[test]
+    fn cancelled_child_does_not_cancel_parent_while_sibling_is_active() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("typescript".into(), GitRef::from("HEAD"), 2);
+        let cancelled = actor.register_grammar(
+            "typescript".into(),
+            "typescript".into(),
+            GitRef::from("HEAD"),
+            4,
+        );
+        let active =
+            actor.register_grammar("typescript".into(), "tsx".into(), GitRef::from("HEAD"), 4);
+
+        actor.apply_update(cancelled.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(cancelled.id, UpdateKind::Cancel, Arc::from("cancelled"));
+        actor.apply_update(active.id, UpdateKind::Step, Arc::from("building"));
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.state, ItemState::InProgress(None));
+        assert_eq!(repo_entry.msg.as_ref(), "building");
+        assert!(repo_entry.frozen_elapsed.is_none());
+
+        actor.apply_update(active.id, UpdateKind::Cancel, Arc::from("cancelled"));
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.state, ItemState::Cancelled);
+        assert_eq!(repo_entry.msg.as_ref(), "cancelled");
+        assert!(repo_entry.frozen_elapsed.is_some());
+    }
+
+    #[test]
+    fn failed_child_wins_over_cancelled_child_when_parent_terminal() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("typescript".into(), GitRef::from("HEAD"), 2);
+        let failing = actor.register_grammar(
+            "typescript".into(),
+            "typescript".into(),
+            GitRef::from("HEAD"),
+            4,
+        );
+        let cancelled =
+            actor.register_grammar("typescript".into(), "tsx".into(), GitRef::from("HEAD"), 4);
+
+        actor.apply_update(failing.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(failing.id, UpdateKind::Err, Arc::from("build failed"));
+        actor.apply_update(cancelled.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(cancelled.id, UpdateKind::Cancel, Arc::from("cancelled"));
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.state, ItemState::Failed);
+        assert_eq!(repo_entry.msg.as_ref(), "failed");
+        assert!(repo_entry.frozen_elapsed.is_some());
+
+        assert_eq!(actor.state.summary_counts(), (0, 0, 0, 1, 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "finish update received before cached/built path was set")]
+    fn finish_without_cached_or_built_path_panics() {
+        let mut actor = actor();
+        let repo = actor.register_repo("json".into(), GitRef::from("HEAD"), 2);
+
+        actor.apply_update(repo.id, UpdateKind::Step, Arc::from("scanning"));
+        actor.apply_update(repo.id, UpdateKind::Fin, Arc::from("done"));
+    }
+
+    #[test]
+    fn interrupted_shutdown_cancels_live_rows() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("typescript".into(), GitRef::from("HEAD"), 2);
+        let grammar =
+            actor.register_grammar("typescript".into(), "tsx".into(), GitRef::from("HEAD"), 4);
+        actor.apply_update(grammar.id, UpdateKind::Step, Arc::from("building"));
+
+        actor.cancel_live_rows();
+
+        let grammar_entry = actor.state.grammars.get(&grammar.id).unwrap();
+        assert_eq!(grammar_entry.state, ItemState::Cancelled);
+        assert_eq!(grammar_entry.step, grammar_entry.total);
+
+        let repo_entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(repo_entry.state, ItemState::Cancelled);
+        assert_eq!(repo_entry.msg.as_ref(), "cancelled");
+
+        assert_eq!(actor.state.summary_counts(), (0, 0, 0, 0, 1));
+    }
+
+    #[test]
+    fn terminal_direct_updates_are_absorbing() {
+        let mut actor = actor();
+
+        let repo = actor.register_repo("json".into(), GitRef::from("HEAD"), 4);
+        actor.apply_update(repo.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(repo.id, UpdateKind::Cancel, Arc::from("cancelled"));
+        actor.apply_update(repo.id, UpdateKind::Cached, Arc::from("done"));
+        actor.apply_update(repo.id, UpdateKind::Err, Arc::from("failed"));
+
+        let entry = actor.state.repos.get(&repo.id).unwrap();
+        assert_eq!(entry.state, ItemState::Cancelled);
+        assert_eq!(entry.msg.as_ref(), "cancelled");
+
+        let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::from("HEAD"), 4);
+        actor.apply_update(grammar.id, UpdateKind::Step, Arc::from("building"));
+        actor.apply_update(grammar.id, UpdateKind::Cancel, Arc::from("cancelled"));
+        actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
+        actor.apply_update(grammar.id, UpdateKind::Err, Arc::from("failed"));
+
+        let entry = actor.state.grammars.get(&grammar.id).unwrap();
+        assert_eq!(entry.state, ItemState::Cancelled);
+        assert_eq!(entry.msg.as_ref(), "cancelled");
     }
 
     #[test]
@@ -1180,15 +1434,15 @@ mod tests {
         actor.apply_update(failing.id, UpdateKind::Err, Arc::from("build failed"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.status, ItemStatus::InProgress);
+        assert_eq!(repo_entry.state, ItemState::InProgress(None));
         assert_eq!(repo_entry.msg.as_ref(), "building");
         assert!(repo_entry.frozen_elapsed.is_none());
 
-        actor.apply_update(pending.id, UpdateKind::MarkBuilt, Arc::from(""));
+        actor.apply_update(pending.id, UpdateKind::SetOutcomeBuilt, Arc::from(""));
         actor.apply_update(pending.id, UpdateKind::Fin, Arc::from("done"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.status, ItemStatus::Failed);
+        assert_eq!(repo_entry.state, ItemState::Failed);
         assert_eq!(repo_entry.msg.as_ref(), "failed");
         assert!(repo_entry.frozen_elapsed.is_some());
     }

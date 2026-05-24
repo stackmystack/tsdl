@@ -80,65 +80,81 @@ pub fn mode_from_args(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemStatus {
+pub enum SuccessOutcome {
+    /// Cache hit.
+    Cached,
+    /// Not cached; work was needed.
+    Built,
+}
+
+impl SuccessOutcome {
+    fn color(self) -> Color {
+        match self {
+            SuccessOutcome::Cached => Color::Yellow,
+            SuccessOutcome::Built => Color::Blue,
+        }
+    }
+}
+
+/// Complete lifecycle state for a display row.
+///
+/// This intentionally keeps terminality and success classification in one
+/// field, so a row cannot be both "cancelled" and "still building".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemState {
     /// Just registered, not yet started.
     New,
-    /// In progress — cloning, generating, building, etc.
-    InProgress,
+    /// In progress. The optional outcome is known after cache classification:
+    /// cached rows stay live while they are re-installed, and built rows stay
+    /// live while they are generated/built/installed.
+    InProgress(Option<SuccessOutcome>),
     /// Successfully completed.
-    Done,
+    Done(SuccessOutcome),
     /// Cancelled by shutdown.
     Cancelled,
     /// Failed.
     Failed,
 }
 
-impl ItemStatus {
+impl ItemState {
+    #[must_use]
+    pub fn is_live(self) -> bool {
+        matches!(self, Self::New | Self::InProgress(_))
+    }
+
+    #[must_use]
+    pub fn success_outcome(self) -> Option<SuccessOutcome> {
+        match self {
+            Self::InProgress(outcome) => outcome,
+            Self::Done(outcome) => Some(outcome),
+            Self::New | Self::Cancelled | Self::Failed => None,
+        }
+    }
+
     fn icon(self) -> &'static str {
         match self {
-            ItemStatus::New | ItemStatus::InProgress => "●",
-            ItemStatus::Done => "✓",
-            ItemStatus::Cancelled | ItemStatus::Failed => "✗",
+            Self::New | Self::InProgress(_) => "●",
+            Self::Done(_) => "✓",
+            Self::Cancelled | Self::Failed => "✗",
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemOutcome {
-    /// We do not yet know whether this item is cached or needs work.
-    Unknown,
-    /// Cache hit.
-    Cached,
-    /// Shut down before completion.
-    Cancelled,
-    /// Not cached; work was needed.
-    Built,
-}
-
-impl ItemOutcome {
-    fn color(self) -> Color {
+    fn name_color(self) -> Color {
         match self {
-            ItemOutcome::Unknown | ItemOutcome::Cancelled => Color::DarkGray,
-            ItemOutcome::Cached => Color::Yellow,
-            ItemOutcome::Built => Color::Blue,
+            Self::Failed => Color::Red,
+            Self::Cancelled => Color::Yellow,
+            Self::New | Self::InProgress(None) => Color::DarkGray,
+            Self::InProgress(Some(outcome)) | Self::Done(outcome) => outcome.color(),
         }
     }
-}
 
-fn name_color(status: ItemStatus, outcome: ItemOutcome) -> Color {
-    match status {
-        ItemStatus::Failed => Color::Red,
-        ItemStatus::Cancelled => Color::Yellow,
-        ItemStatus::New | ItemStatus::InProgress | ItemStatus::Done => outcome.color(),
-    }
-}
-
-fn indicator_color(status: ItemStatus) -> Color {
-    match status {
-        ItemStatus::Done => Color::Green,
-        ItemStatus::Cancelled => Color::Yellow,
-        ItemStatus::Failed => Color::Red,
-        ItemStatus::New | ItemStatus::InProgress => Color::DarkGray,
+    fn indicator_color(self) -> Color {
+        match self {
+            Self::Done(_) => Color::Green,
+            Self::Cancelled => Color::Yellow,
+            Self::Failed => Color::Red,
+            Self::New | Self::InProgress(_) => Color::DarkGray,
+        }
     }
 }
 
@@ -150,8 +166,7 @@ fn indicator_color(status: ItemStatus) -> Color {
 pub(crate) struct RepoEntry {
     pub name: Arc<str>,
     pub git_ref: GitRef,
-    pub status: ItemStatus,
-    pub outcome: ItemOutcome,
+    pub state: ItemState,
     pub msg: Arc<str>,
     pub step: usize,
     pub total: usize,
@@ -174,8 +189,7 @@ pub(crate) struct GrammarEntry {
     pub repo_id: u64,
     pub name: Arc<str>,
     pub git_ref: GitRef,
-    pub status: ItemStatus,
-    pub outcome: ItemOutcome,
+    pub state: ItemState,
     pub msg: Arc<str>,
     pub step: usize,
     pub total: usize,
@@ -342,17 +356,10 @@ pub(crate) enum ItemInfo<'a> {
 }
 
 impl ItemInfo<'_> {
-    pub(crate) fn status(&self) -> ItemStatus {
+    pub(crate) fn state(&self) -> ItemState {
         match self {
-            ItemInfo::Repo(r) => r.status,
-            ItemInfo::Grammar(g) => g.status,
-        }
-    }
-
-    pub(crate) fn outcome(&self) -> ItemOutcome {
-        match self {
-            ItemInfo::Repo(r) => r.outcome,
-            ItemInfo::Grammar(g) => g.outcome,
+            ItemInfo::Repo(r) => r.state,
+            ItemInfo::Grammar(g) => g.state,
         }
     }
 
@@ -425,11 +432,11 @@ pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> S
 }
 
 pub(crate) fn compute_icon_cell(info: &ItemInfo<'_>) -> Span<'static> {
-    let status = info.status();
+    let state = info.state();
     Span::styled(
-        status.icon(),
+        state.icon(),
         Style::default()
-            .fg(indicator_color(status))
+            .fg(state.indicator_color())
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -445,7 +452,7 @@ pub(crate) fn compute_name_cell(
     Span::styled(
         padded,
         Style::default()
-            .fg(name_color(info.status(), info.outcome()))
+            .fg(info.state().name_color())
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -648,9 +655,8 @@ impl DisplayState {
         let mut repos_with_grammars: HashSet<u64> = HashSet::new();
         for grammar in self.grammars.values() {
             repos_with_grammars.insert(grammar.repo_id);
-            count_grammar_status(
-                grammar.status,
-                grammar.outcome,
+            count_item_state(
+                grammar.state,
                 &mut cached,
                 &mut built,
                 &mut building,
@@ -663,9 +669,8 @@ impl DisplayState {
         // tree-sitter-cli or a language that failed before grammar discovery).
         for (repo_id, repo) in &self.repos {
             if !repos_with_grammars.contains(repo_id) {
-                count_grammar_status(
-                    repo.status,
-                    repo.outcome,
+                count_item_state(
+                    repo.state,
                     &mut cached,
                     &mut built,
                     &mut building,
@@ -683,24 +688,20 @@ impl DisplayState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn count_grammar_status(
-    status: ItemStatus,
-    outcome: ItemOutcome,
+fn count_item_state(
+    state: ItemState,
     cached: &mut usize,
     built: &mut usize,
     building: &mut usize,
     failed: &mut usize,
     cancelled: &mut usize,
 ) {
-    match status {
-        ItemStatus::New | ItemStatus::InProgress => *building += 1,
-        ItemStatus::Done => match outcome {
-            ItemOutcome::Cached => *cached += 1,
-            ItemOutcome::Built | ItemOutcome::Unknown => *built += 1,
-            ItemOutcome::Cancelled => *cancelled += 1,
-        },
-        ItemStatus::Cancelled => *cancelled += 1,
-        ItemStatus::Failed => *failed += 1,
+    match state {
+        ItemState::New | ItemState::InProgress(_) => *building += 1,
+        ItemState::Done(SuccessOutcome::Cached) => *cached += 1,
+        ItemState::Done(SuccessOutcome::Built) => *built += 1,
+        ItemState::Cancelled => *cancelled += 1,
+        ItemState::Failed => *failed += 1,
     }
 }
 
