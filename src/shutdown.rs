@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     fmt,
     future::Future,
+    num::NonZeroU32,
     sync::{Arc, Mutex},
 };
 
@@ -76,6 +77,64 @@ impl fmt::Display for ShutdownSignal {
     }
 }
 
+/// A positive Unix process group ID.
+///
+/// `PgId` rejects zero and values that do not fit in `libc::pid_t`, so callers
+/// cannot accidentally use `killpg(0, ...)`/`kill(-0, ...)` semantics and signal
+/// the current process group.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PgId(NonZeroU32);
+
+impl PgId {
+    /// Return the raw positive process group ID value.
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    fn as_pid_t(self) -> libc::pid_t {
+        <libc::pid_t>::try_from(self.0.get()).expect("PgId invariant: value fits in libc::pid_t")
+    }
+}
+
+impl fmt::Display for PgId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
+
+impl TryFrom<u32> for PgId {
+    type Error = PgIdError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        let value = NonZeroU32::new(value).ok_or(PgIdError::Zero)?;
+        <libc::pid_t>::try_from(value.get()).map_err(|_| PgIdError::OutOfRange(value.get()))?;
+        Ok(Self(value))
+    }
+}
+
+/// Error returned when constructing a [`PgId`] from a raw value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PgIdError {
+    /// Process group ID zero would target the current process group.
+    Zero,
+    /// The value cannot be represented by the platform's `pid_t` type.
+    OutOfRange(u32),
+}
+
+impl fmt::Display for PgIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => write!(f, "process group id cannot be zero"),
+            Self::OutOfRange(value) => {
+                write!(f, "process group id {value} does not fit in libc::pid_t")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PgIdError {}
+
 /// Cooperative shutdown signal shared across build tasks.
 #[derive(Clone, Debug)]
 pub struct Shutdown {
@@ -83,19 +142,24 @@ pub struct Shutdown {
     rx: watch::Receiver<Option<ShutdownSignal>>,
     /// Active child process group IDs. Build commands are put in their own
     /// process groups so a signal can target each command's whole subprocess tree.
-    active_pgids: Arc<Mutex<HashSet<i32>>>,
+    active_pgids: Arc<Mutex<HashSet<PgId>>>,
 }
 
 /// Registration guard for an active child process group.
 ///
-/// Dropping the guard removes the PGID from the shutdown escalation set.
+/// Keep this guard alive while the child process group may still contain live
+/// processes. Dropping it removes the [`PgId`] from shutdown's active set, so a
+/// later second signal will no longer send `SIGKILL` to that process group.
+/// Drop it promptly after the child has exited and been reaped; this narrows the
+/// window where a stale, OS-reused process group ID could be signalled by a
+/// later shutdown escalation.
 #[derive(Debug)]
-pub struct PgidGuard {
+pub struct PgIdGuard {
     shutdown: Shutdown,
-    pgid: i32,
+    pgid: PgId,
 }
 
-impl Drop for PgidGuard {
+impl Drop for PgIdGuard {
     fn drop(&mut self) {
         self.shutdown.unregister_pgid(self.pgid);
     }
@@ -125,7 +189,7 @@ impl Shutdown {
     /// If shutdown was already requested, the process group is immediately sent
     /// the recorded shutdown signal so late-spawned children cannot escape it.
     #[must_use]
-    pub fn register_pgid(&self, pgid: i32) -> PgidGuard {
+    pub fn register_pgid(&self, pgid: PgId) -> PgIdGuard {
         {
             let mut active = self
                 .active_pgids
@@ -138,13 +202,13 @@ impl Shutdown {
             self.signal_pgid(pgid, signal);
         }
 
-        PgidGuard {
+        PgIdGuard {
             shutdown: self.clone(),
             pgid,
         }
     }
 
-    fn unregister_pgid(&self, pgid: i32) {
+    fn unregister_pgid(&self, pgid: PgId) {
         let mut active = self
             .active_pgids
             .lock()
@@ -194,7 +258,7 @@ impl Shutdown {
     }
 
     /// Send a signal to one child process group.
-    pub fn signal_pgid(&self, pgid: i32, signal: ShutdownSignal) {
+    pub fn signal_pgid(&self, pgid: PgId, signal: ShutdownSignal) {
         info!("SHUTDOWN sending {} to pgid={pgid}", signal.name);
         signal_process_group(pgid, signal);
     }
@@ -207,12 +271,12 @@ impl Shutdown {
     }
 
     /// Send SIGKILL to one child process group.
-    pub fn kill_pgid(&self, pgid: i32) {
+    pub fn kill_pgid(&self, pgid: PgId) {
         info!("SHUTDOWN killing pgid={pgid}");
         signal_process_group(pgid, ShutdownSignal::KILL);
     }
 
-    fn active_pgids(&self) -> Vec<i32> {
+    fn active_pgids(&self) -> Vec<PgId> {
         self.active_pgids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -275,8 +339,8 @@ impl Default for Shutdown {
     }
 }
 
-fn signal_process_group(pgid: i32, signal: ShutdownSignal) {
-    let rc = unsafe { libc::kill(-pgid, signal.number) };
+fn signal_process_group(pgid: PgId, signal: ShutdownSignal) {
+    let rc = unsafe { libc::killpg(pgid.as_pid_t(), signal.number) };
     if rc != 0 {
         debug!(
             "failed to send {} to pgid={pgid}: {}",
@@ -311,5 +375,35 @@ pub async fn cancelled() -> ShutdownSignal {
     match current() {
         Some(shutdown) => shutdown.cancelled().await,
         None => std::future::pending::<ShutdownSignal>().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pgid_rejects_zero() {
+        assert_eq!(PgId::try_from(0), Err(PgIdError::Zero));
+    }
+
+    #[test]
+    fn pgid_accepts_positive_value() {
+        let pgid = PgId::try_from(1).unwrap();
+        assert_eq!(pgid.get(), 1);
+    }
+
+    #[test]
+    fn pgid_rejects_values_that_do_not_fit_pid_t() {
+        let too_large = u32::try_from(<libc::pid_t>::MAX)
+            .unwrap_or(u32::MAX)
+            .saturating_add(1);
+
+        if <libc::pid_t>::try_from(too_large).is_err() {
+            assert_eq!(
+                PgId::try_from(too_large),
+                Err(PgIdError::OutOfRange(too_large))
+            );
+        }
     }
 }
