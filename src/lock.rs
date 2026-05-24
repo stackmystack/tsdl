@@ -1,4 +1,6 @@
 use std::{
+    collections::HashSet,
+    ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
@@ -12,9 +14,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, Update
 use tracing::info;
 
 use crate::{
-    consts::{TSDL_LOCK_FILE, TSDL_LOG_FILE},
-    error::TsdlError,
-    format_duration, TsdlResult,
+    absolute_normalize, consts::TSDL_LOCK_FILE, error::TsdlError, format_duration, TsdlResult,
 };
 
 /// Information about the process currently holding the build lock.
@@ -222,26 +222,35 @@ impl Drop for LockGuard {
 
 impl LockGuard {
     /// Delete every entry in the build directory except the lock file itself
-    /// and the log file (which is held open by the tracing subscriber).
+    /// and explicitly protected root-level files, such as the active log file.
     ///
     /// The build directory itself is preserved; only its children are removed.
     /// This is used by `--fresh` to clean the build directory without
-    /// invalidating the OS lock (which is tied to the lock file's inode).
-    pub fn clear_directory(&self) -> TsdlResult<()> {
-        const PROTECTED: &[&str] = &[TSDL_LOCK_FILE, TSDL_LOG_FILE];
-
+    /// invalidating OS locks or unlinking files held open by the current process.
+    pub fn clear_directory(&self, protected_files: &[PathBuf]) -> TsdlResult<()> {
         let build_dir = self.lock_path.parent().ok_or_else(|| {
             TsdlError::message(format!(
                 "Lock path has no parent directory: {}",
                 self.lock_path.display()
             ))
         })?;
+        let build_dir_abs = absolute_normalize(build_dir)?;
+        let mut protected_names = HashSet::<OsString>::new();
 
         let lock_name = self
             .lock_path
             .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(TSDL_LOCK_FILE);
+            .map_or_else(|| OsString::from(TSDL_LOCK_FILE), OsString::from);
+        protected_names.insert(lock_name);
+
+        for protected in protected_files {
+            let protected_abs = absolute_normalize(protected)?;
+            if protected_abs.parent() == Some(build_dir_abs.as_path()) {
+                if let Some(name) = protected_abs.file_name() {
+                    protected_names.insert(name.to_os_string());
+                }
+            }
+        }
 
         for entry in fs::read_dir(build_dir).map_err(|e| {
             TsdlError::context(
@@ -257,9 +266,8 @@ impl LockGuard {
             })?;
 
             let name = entry.file_name();
-            let name_str = name.to_str().unwrap_or("");
 
-            if name_str == lock_name || PROTECTED.contains(&name_str) {
+            if protected_names.contains(&name) {
                 continue;
             }
 
