@@ -7,11 +7,10 @@
 #   2. Second SIGTERM → escalation: libc::kill(-pgid, SIGKILL) + exit(143)
 #
 # Design:
-#   TSDL_TEST_DELAY_MS=500 guarantees every spawned child has a 500ms
+#   TSDL_TEST_DELAY_MS=2000 guarantees every spawned child has a long
 #   window mid-execution.  The first SIGTERM triggers graceful shutdown
-#   but the delay cascade keeps the process alive for 1-2 seconds.
-#   We send the second signal 500ms later — reliably during the graceful
-#   shutdown window — forcing the escalation path.
+#   but the delay cascade keeps the process alive long enough for the
+#   second signal to reliably hit the escalation path.
 #
 #   process::exit() kills the process with code 143 and flushes stderr,
 #   but may not flush the tracing log file.  We capture stderr for the
@@ -46,7 +45,7 @@ cargo build 2>&1 | tail -1
 echo "=== starting tsdl (will receive 2 signals) ==="
 LOG="$ROOT/tmp/test/test_2sig.log"
 STDERR="$ROOT/tmp/test/test_2sig.stderr"
-TSDL_TEST_DELAY_MS=500 \
+TSDL_TEST_DELAY_MS=2000 \
 ./target/debug/tsdl -v b json rust toml php --force --progress plain \
   --log "$LOG" --log-color no \
   2>"$STDERR" &
@@ -78,9 +77,9 @@ fi
 echo "=== sending first SIGTERM ==="
 kill -TERM $PID 2>/dev/null || true
 
-# 500ms is shorter than any single test_delay, so the second signal
+# This is shorter than any single test_delay, so the second signal
 # will reliably arrive during the graceful shutdown cascade.
-sleep 0.5
+sleep 0.2
 
 # ------------------------------------------------------------------
 # Second SIGTERM: escalation path.  process::exit(143) kills the

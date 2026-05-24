@@ -87,6 +87,8 @@ pub enum ItemStatus {
     InProgress,
     /// Successfully completed.
     Done,
+    /// Cancelled by shutdown.
+    Cancelled,
     /// Failed.
     Failed,
 }
@@ -96,7 +98,7 @@ impl ItemStatus {
         match self {
             ItemStatus::New | ItemStatus::InProgress => "●",
             ItemStatus::Done => "✓",
-            ItemStatus::Failed => "✗",
+            ItemStatus::Cancelled | ItemStatus::Failed => "✗",
         }
     }
 }
@@ -107,19 +109,18 @@ pub enum ItemOutcome {
     Unknown,
     /// Cache hit.
     Cached,
-    /// Not cached; work was needed.
     /// Shut down before completion.
     Cancelled,
+    /// Not cached; work was needed.
     Built,
 }
 
 impl ItemOutcome {
     fn color(self) -> Color {
         match self {
-            ItemOutcome::Unknown => Color::DarkGray,
+            ItemOutcome::Unknown | ItemOutcome::Cancelled => Color::DarkGray,
             ItemOutcome::Cached => Color::Yellow,
             ItemOutcome::Built => Color::Blue,
-            ItemOutcome::Cancelled => Color::DarkGray,
         }
     }
 }
@@ -127,6 +128,7 @@ impl ItemOutcome {
 fn name_color(status: ItemStatus, outcome: ItemOutcome) -> Color {
     match status {
         ItemStatus::Failed => Color::Red,
+        ItemStatus::Cancelled => Color::Yellow,
         ItemStatus::New | ItemStatus::InProgress | ItemStatus::Done => outcome.color(),
     }
 }
@@ -134,6 +136,7 @@ fn name_color(status: ItemStatus, outcome: ItemOutcome) -> Color {
 fn indicator_color(status: ItemStatus) -> Color {
     match status {
         ItemStatus::Done => Color::Green,
+        ItemStatus::Cancelled => Color::Yellow,
         ItemStatus::Failed => Color::Red,
         ItemStatus::New | ItemStatus::InProgress => Color::DarkGray,
     }
@@ -696,6 +699,7 @@ fn count_grammar_status(
             ItemOutcome::Built | ItemOutcome::Unknown => *built += 1,
             ItemOutcome::Cancelled => *cancelled += 1,
         },
+        ItemStatus::Cancelled => *cancelled += 1,
         ItemStatus::Failed => *failed += 1,
     }
 }

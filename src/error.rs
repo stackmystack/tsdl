@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use derive_more::derive::Display;
 
+use crate::shutdown::ShutdownSignal;
+
 /// Macro for creating Step errors with common patterns
 #[macro_export]
 macro_rules! step_error {
@@ -301,6 +303,9 @@ pub enum TsdlError {
     /// Generic IO error
     Io(std::io::Error),
 
+    /// Build was interrupted by a Unix signal.
+    Interrupted(ShutdownSignal),
+
     /// Simple error message
     Message(String),
 
@@ -331,6 +336,7 @@ impl fmt::Display for TsdlError {
             TsdlError::Config(msg) => write!(f, "Configuration error: {msg}"),
             TsdlError::Context(kind) => write!(f, "{kind}"),
             TsdlError::Io(e) => write!(f, "IO error: {e}"),
+            TsdlError::Interrupted(signal) => write!(f, "Interrupted by {signal}"),
             TsdlError::Language(e) => write!(f, "{e}"),
             TsdlError::LanguageCollection(e) => write!(f, "{e}"),
             TsdlError::Message(msg) => write!(f, "{msg}"),
@@ -343,7 +349,10 @@ impl fmt::Display for TsdlError {
 impl std::error::Error for TsdlError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            TsdlError::Build(_) | TsdlError::Config(_) | TsdlError::Message(_) => None,
+            TsdlError::Build(_)
+            | TsdlError::Config(_)
+            | TsdlError::Interrupted(_)
+            | TsdlError::Message(_) => None,
             TsdlError::Command(e) => Some(e),
             TsdlError::Context(kind) => Some(&kind.error),
             TsdlError::Io(e) => Some(e),
@@ -522,6 +531,7 @@ impl TsdlError {
                 )
             }
             TsdlError::Io(e) => write!(w, "{prefix}IO error: {e}"),
+            TsdlError::Interrupted(signal) => write!(w, "{prefix}Interrupted by {signal}"),
             TsdlError::Language(e) => e.format(w, indent),
             TsdlError::LanguageCollection(e) => write!(w, "{prefix}{e}"),
             TsdlError::Message(msg) => write!(w, "{prefix}{msg}"),
