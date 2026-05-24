@@ -3,9 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process,
-    sync::mpsc,
-    thread,
+    process, thread,
     time::{Duration, Instant},
 };
 
@@ -159,15 +157,9 @@ impl LockGuard {
 }
 
 /// Manages lock configuration and acquisition.
-#[derive(Clone)]
 pub struct Lock {
     current_pid: Pid,
     lock_path: PathBuf,
-}
-
-enum UnlockEvent {
-    LockAcquired(Result<LockGuard, String>),
-    OwnerExited,
 }
 
 impl Lock {
@@ -231,31 +223,24 @@ impl Lock {
 
     /// Wait for the build lock to become available after the lock owner was terminated.
     ///
-    /// This races two signals: the owner process exiting and this process acquiring
-    /// the OS lock. The returned guard is the proof of exclusive ownership.
+    /// Polls the OS lock with exponential backoff while periodically checking whether
+    /// the owner process has exited.  No background threads are spawned.
     pub fn wait_for_release(&self, owner: &LockOwner, timeout: Duration) -> TsdlResult<LockGuard> {
         info!(
             "Waiting up to {} for lock release from PID {}",
             crate::format_duration(timeout),
             owner.pid
         );
-        let (tx, rx) = mpsc::channel();
-
-        let lock = self.clone();
-        let lock_tx = tx.clone();
-        thread::spawn(move || {
-            let result = lock.wait_acquire().map_err(|err| err.to_string());
-            let _ = lock_tx.send(UnlockEvent::LockAcquired(result));
-        });
-
-        let owner_for_wait = owner.clone();
-        thread::spawn(move || {
-            Self::wait_for_owner_exit(&owner_for_wait);
-            let _ = tx.send(UnlockEvent::OwnerExited);
-        });
 
         let deadline = Instant::now() + timeout;
         let mut owner_exited = false;
+
+        // Open once; retry try_lock_exclusive on the same handle to avoid
+        // repeated open syscalls.
+        let file = self.open_lock_file()?;
+
+        // Polling delay: start short, back off up to a ceiling.
+        let mut delay = Duration::from_millis(50);
 
         loop {
             let now = Instant::now();
@@ -263,25 +248,38 @@ impl Lock {
                 return Err(timeout_error(owner, timeout, owner_exited));
             }
 
-            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
-                Ok(UnlockEvent::OwnerExited) => {
-                    owner_exited = true;
-                }
-                Ok(UnlockEvent::LockAcquired(Ok(guard))) => return Ok(guard),
-                Ok(UnlockEvent::LockAcquired(Err(err))) => return Err(TsdlError::message(err)),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(timeout_error(owner, timeout, owner_exited))
+            match file.try_lock_exclusive() {
+                Ok(()) => return self.activate(file),
+
+                Err(ref err) if is_lock_contention(err) => {
+                    // Still locked. Check whether the owner has exited (once).
+                    if !owner_exited {
+                        let system = Self::system_for_pid(owner.pid);
+                        owner_exited = system
+                            .process(owner.pid)
+                            .is_none_or(|p| p.start_time() != owner.start_time);
+                    }
+
+                    // If the owner exited, don't sleep. Retry immediately.
+                    if owner_exited {
+                        delay = Duration::from_millis(5);
+                        continue;
+                    }
                 }
 
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(TsdlError::message(
-                        "Stopped waiting for lock release because waiter threads disconnected",
-                    ))
+                Err(err) => {
+                    return Err(TsdlError::context(
+                        format!("Acquiring build lock {}", self.lock_path.display()),
+                        err,
+                    ));
                 }
             }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            thread::sleep(delay.min(remaining));
+            delay = delay.saturating_mul(2).min(Duration::from_millis(500));
         }
     }
-
     fn activate(&self, mut file: File) -> TsdlResult<LockGuard> {
         self.write_metadata(&mut file)?;
         info!("Acquired lock on build directory");
@@ -307,18 +305,6 @@ impl Lock {
             .map_err(|e| {
                 TsdlError::context(format!("Opening lock file {}", self.lock_path.display()), e)
             })
-    }
-
-    /// Blocking acquisition used after terminating a lock owner.
-    fn wait_acquire(&self) -> TsdlResult<LockGuard> {
-        let file = self.open_lock_file()?;
-        file.lock_exclusive().map_err(|e| {
-            TsdlError::context(
-                format!("Waiting for build lock {}", self.lock_path.display()),
-                e,
-            )
-        })?;
-        self.activate(file)
     }
 
     /// Helper for checking process status and determining lock conflicts.
@@ -391,19 +377,6 @@ impl Lock {
                 .with_user(UpdateKind::Always),
         );
         system
-    }
-
-    fn wait_for_owner_exit(owner: &LockOwner) {
-        let system = Self::system_for_pid(owner.pid);
-        let Some(process) = system.process(owner.pid) else {
-            return;
-        };
-
-        if process.start_time() != owner.start_time {
-            return;
-        }
-
-        let _ = process.wait();
     }
 
     fn write_metadata(&self, file: &mut File) -> TsdlResult<()> {
