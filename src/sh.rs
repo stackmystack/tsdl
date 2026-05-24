@@ -1,8 +1,8 @@
 use std::os::unix::process::CommandExt as _;
-use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output};
+use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output, time::Duration};
 
-use tokio::process::Command;
-use tracing::{debug, error, info, trace};
+use tokio::{process::Command, time};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{error, shutdown, TsdlResult};
 
@@ -69,38 +69,77 @@ impl Exec for Command {
             .map_err(|e| error::TsdlError::context("Failed to execute command", e))?;
 
         let child_pid = child.id();
+        let pgid = child_pid.map(i32::try_from).transpose().map_err(|e| {
+            error::TsdlError::message(format!("Child PID does not fit in a process group id: {e}"))
+        })?;
         debug!("spawned pid={child_pid:?} cmd={cmd_short}");
 
-        // Register PGID for second-signal SIGKILL escalation
-        if let (Some(pid), Some(s)) = (child_pid, shutdown::current()) {
-            s.set_pgid(pid as i32);
-            debug!("registered pgid={pid}");
+        let pgid_guard = match (pgid, shutdown::current()) {
+            (Some(pgid), Some(shutdown)) => {
+                debug!("registered pgid={pgid}");
+                Some(shutdown.register_pgid(pgid))
+            }
+            _ => None,
+        };
 
         // Test hook: pause while the child is running so an external
-        // SIGTERM has a guaranteed window to arrive mid-execution.
+        // shutdown signal has a guaranteed window to arrive mid-execution.
         shutdown::test_delay().await;
-        }
 
-        // Race: child completion vs. shutdown signal.
-        // `child_pid` is captured before the select! so the shutdown branch
-        // can kill the process group even though `child` is moved into the
-        // `wait_with_output` future (which is dropped on cancellation).
+        // Race: child completion vs. shutdown signal. The wait future is kept
+        // alive after cancellation so the child can be reaped before returning.
+        let wait = child.wait_with_output();
+        tokio::pin!(wait);
+
         let output = tokio::select! {
-            output = child.wait_with_output() => {
+            output = &mut wait => {
                 debug!("child exited pid={child_pid:?}");
                 output
             }
-            () = shutdown::cancelled() => {
-                if let Some(pid) = child_pid {
-                    info!("SHUTDOWN killing pgid={pid}");
-                    // Kill the entire process group (negative PID)
-                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+            signal = shutdown::cancelled() => {
+                let grace = Duration::from_secs(5);
+                info!("Command interrupted by {signal}; waiting up to {grace:?} for pid={child_pid:?}: {cmd_short}");
+                match time::timeout(grace, &mut wait).await {
+                    Ok(Ok(_)) => {
+                        debug!("child exited after {signal} pid={child_pid:?}");
+                    }
+                    Ok(Err(err)) => {
+                        debug!("child wait after {signal} failed pid={child_pid:?}: {err}");
+                    }
+                    Err(_) => {
+                        if let (Some(pgid), Some(shutdown)) = (pgid, shutdown::current()) {
+                            shutdown.kill_pgid(pgid);
+
+                            let kill_grace = Duration::from_secs(2);
+                            match time::timeout(kill_grace, &mut wait).await {
+                                Ok(Ok(_)) => {
+                                    debug!("child reaped after SIGKILL pid={child_pid:?}");
+                                }
+                                Ok(Err(err)) => {
+                                    debug!("child wait after SIGKILL failed pid={child_pid:?}: {err}");
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        "Timed out waiting {kill_grace:?} to reap pid={child_pid:?} after SIGKILL; returning interruption"
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!("Timed out waiting for pid={child_pid:?}, but no process group was registered; returning interruption");
+                        }
+                    }
                 }
-                return Err(error::TsdlError::message(format!(
-                    "Command cancelled (shutdown): {cmd_short}"
-                )));
+
+                // If a second signal arrives before we drop the pgid_guard,
+                // `kill_children()` could target a stale PGID. PGID reuse in such a
+                // tiny window is rare, but this is exactly the kind of edge case
+                // process-group code tries to avoid.
+                drop(pgid_guard);
+                return Err(error::TsdlError::Interrupted(signal));
             }
         };
+
+        drop(pgid_guard);
 
         let output =
             output.map_err(|e| error::TsdlError::context("Failed to execute command", e))?;
@@ -112,13 +151,14 @@ impl Exec for Command {
         let program = self.as_std().get_program().to_string_lossy();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
         let msg = match output.status.code() {
             Some(code) => format!("{cmd_short} failed with exit status {code}."),
-            None => format!(
-                "{} interrupted by signal {}.",
-                program,
-                output.status.signal().unwrap()
-            ),
+            None => {
+                let sig = signal_display(output.status.signal().expect("a proper status code"))
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+                format!("{} interrupted by signal {}.", program, sig)
+            }
         };
 
         error!("{msg}\nStdOut:\n{stdout}\nStdErr\n{stderr}");
@@ -138,5 +178,18 @@ impl Script for Command {
         let mut cmd = Command::new(shell);
         cmd.args(["-c", script]);
         cmd
+    }
+}
+
+fn signal_display(number: i32) -> Option<String> {
+    let ptr = unsafe { libc::strsignal(number) };
+    if ptr.is_null() {
+        None
+    } else {
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }

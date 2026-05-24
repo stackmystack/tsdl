@@ -7,7 +7,6 @@ mod config;
 #[cfg(test)]
 mod log;
 #[cfg(test)]
-
 use std::{env, fs, path::Path};
 
 use assert_cmd::{cargo::cargo_bin_cmd, Command};

@@ -13,7 +13,7 @@
 #   2. A received SIGTERM and shut down gracefully
 #   3. B sent SIGTERM to A via lock takeover
 #   4. B acquired the lock after A released it
-#   5. Both exit code 0
+#   5. A exits 143 (128 + SIGTERM); B exits 0
 #
 # Run:  sh tests/test_lock_takeover.sh
 # Requires: debug build (cargo build), Unix.
@@ -63,7 +63,7 @@ fi
 echo "=== waiting for A to start building ==="
 DEADLINE=$(($(date +%s) + 15))
 while [ $(date +%s) -lt $DEADLINE ]; do
-  if grep -q "tree-sitter-macos-arm64" "$LOG_A" 2>/dev/null; then
+  if grep -q "spawned pid=Some(" "$LOG_A" 2>/dev/null; then
     echo "  A has spawned subprocesses"
     break
   fi
@@ -83,8 +83,10 @@ TSDL_TEST_DELAY_MS=500 \
 PID_B=$!
 
 # Wait for both to finish.
+set +e
 wait $PID_A 2>/dev/null; EXIT_A=$?
 wait $PID_B 2>/dev/null; EXIT_B=$?
+set -e
 
 echo ""
 echo "=== A exit code: $EXIT_A ==="
@@ -104,9 +106,9 @@ if [ -f "$LOG_A" ]; then
   grep -q "Received SIGTERM" "$LOG_A" \
     && echo "  [PASS] received SIGTERM" \
     || { echo "  [FAIL] received SIGTERM — log: $LOG_A"; failures=$((failures+1)); }
-  grep -q "SHUTDOWN killing pgid=" "$LOG_A" \
-    && echo "  [PASS] child killed mid-exec" \
-    || echo "  [WARN] child killed mid-exec (may have completed before signal)"
+  grep -q "SHUTDOWN sending SIGTERM" "$LOG_A" \
+    && echo "  [PASS] signal forwarded to child" \
+    || echo "  [WARN] signal forwarded to child (may have completed before signal)"
 else
   echo "  [FAIL] log file not created: $LOG_A"
   failures=$((failures+1))
@@ -129,10 +131,11 @@ else
 fi
 
 echo ""
-if [ $EXIT_A -eq 0 ]; then
-  echo "  [PASS] A exit code 0"
+if [ $EXIT_A -eq 143 ]; then
+  echo "  [PASS] A exit code 143 (SIGTERM)"
 else
-  echo "  [WARN] A exit code $EXIT_A (may be 143 if SIGTERM killed tsdl before graceful shutdown)"
+  echo "  [FAIL] A exit code $EXIT_A (expected 143)"
+  failures=$((failures+1))
 fi
 
 if [ $EXIT_B -eq 0 ]; then

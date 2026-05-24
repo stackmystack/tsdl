@@ -16,6 +16,7 @@ fn main() -> ExitCode {
     } else {
         info!("Starting");
         match App::new(&args).and_then(|mut app| run(&mut app, &args)) {
+            Err(TsdlError::Interrupted(signal)) => ExitCode::from(signal.shell_exit_code()),
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE
@@ -29,11 +30,13 @@ fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
     match &args.command {
         args::Command::Build(_) => {
             let (result, duration) = time(|| tsdl::build::run(app));
-            let done = format!("Done in {duration}");
-            if result.is_ok() {
-                println!("{}", style(done).green());
-            } else {
-                println!("{}", style(done).red());
+            match &result {
+                Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
+                Err(TsdlError::Interrupted(signal)) => println!(
+                    "{}",
+                    style(format!("Interrupted by {signal} after {duration}")).yellow()
+                ),
+                Err(_) => println!("{}", style(format!("Done in {duration}")).red()),
             }
             result
         }

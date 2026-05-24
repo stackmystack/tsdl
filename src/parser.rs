@@ -88,7 +88,7 @@ impl GrammarBuild {
 
         // Build the grammar
         if let Err(e) = self.build_grammar().await {
-            if shutdown::current().map_or(false, |s| s.is_cancelled()) {
+            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
                 self.progress.mark_cancelled();
             } else {
                 self.progress.err("build failed");

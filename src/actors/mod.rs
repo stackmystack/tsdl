@@ -100,10 +100,11 @@ pub async fn run(
     display.shutdown().await;
 
     // If shutdown was signalled, suppress build errors — they're expected
-    // cancellation artefacts, not real failures.
-    if shutdown::current().map_or(false, |s| s.is_cancelled()) {
-        info!("pipeline shutdown signalled, suppressing errors");
-        return Ok(());
+    // cancellation artefacts, not real failures — but still return the
+    // interruption so the top-level process exits with the signal status.
+    if let Some(signal) = shutdown::current().and_then(|s| s.reason()) {
+        info!("pipeline shutdown signalled by {signal}, suppressing build errors");
+        return Err(TsdlError::Interrupted(signal));
     }
 
     result
@@ -160,7 +161,7 @@ async fn run_inner(
           .fold(Vec::new(), |mut errors, result| {
               let cache = cache.clone();
               async move {
-                  let is_shutdown = shutdown::current().map_or(false, |s| s.is_cancelled());
+                  let is_shutdown = shutdown::current().is_some_and(|s| s.is_cancelled());
                   match result {
                       Ok(Some(update)) => cache.update(update).await,
                       Ok(None) => {}
@@ -207,7 +208,11 @@ async fn discover_grammars(
     {
         progress.step("cloning");
         if let Err(e) = language.clone().await {
-            progress.err("clone failed");
+            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                progress.mark_cancelled();
+            } else {
+                progress.err("clone failed");
+            }
             return Err(e);
         }
     }
@@ -216,7 +221,11 @@ async fn discover_grammars(
     let grammars = match language.discover_grammars().await {
         Ok(grammars) => grammars,
         Err(e) => {
-            progress.err("scan failed");
+            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                progress.mark_cancelled();
+            } else {
+                progress.err("scan failed");
+            }
             return Err(e);
         }
     };

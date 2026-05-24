@@ -163,7 +163,11 @@ pub async fn prepare(
     let tag = match tag(repo.as_str(), git_ref).await {
         Ok(tag) => tag,
         Err(e) => {
-            progress.err("resolve failed");
+            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                progress.mark_cancelled();
+            } else {
+                progress.err("resolve failed");
+            }
             return Err(e);
         }
     };
@@ -179,7 +183,11 @@ pub async fn prepare(
     {
         Ok(cli) => cli,
         Err(e) => {
-            progress.err("download failed");
+            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                progress.mark_cancelled();
+            } else {
+                progress.err("download failed");
+            }
             return Err(e);
         }
     };

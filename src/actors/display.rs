@@ -176,7 +176,7 @@ impl ProgressAddr {
         let _ = self.tx.try_send(DisplayMessage::Update {
             id: self.id,
             kind: UpdateKind::MarkCancelled,
-            msg: Arc::from(""),
+            msg: Arc::from("cancelled"),
         });
     }
 
@@ -637,10 +637,7 @@ impl DisplayActor {
                     self.apply_update(id, kind, msg);
                     if matches!(
                         kind,
-                        UpdateKind::Msg
-                            | UpdateKind::MarkCached
-                            | UpdateKind::MarkBuilt
-                            | UpdateKind::MarkCancelled
+                        UpdateKind::Msg | UpdateKind::MarkCached | UpdateKind::MarkBuilt
                     ) {
                         continue;
                     }
@@ -834,6 +831,7 @@ impl DisplayActor {
                 UpdateKind::Step
                     | UpdateKind::MarkCached
                     | UpdateKind::MarkBuilt
+                    | UpdateKind::MarkCancelled
                     | UpdateKind::Cached
                     | UpdateKind::Fin
                     | UpdateKind::Err
@@ -861,7 +859,13 @@ impl DisplayActor {
                 repo.outcome = ItemOutcome::Cached;
             }
             UpdateKind::MarkCancelled => {
+                repo.frozen_elapsed = Some(repo.started_at.elapsed());
+                repo.status = ItemStatus::Cancelled;
                 repo.outcome = ItemOutcome::Cancelled;
+                if repo.total > 0 {
+                    repo.step = repo.total;
+                }
+                repo.msg = msg;
             }
 
             UpdateKind::MarkBuilt => {
@@ -909,7 +913,11 @@ impl DisplayActor {
                 grammar.outcome = ItemOutcome::Cached;
             }
             UpdateKind::MarkCancelled => {
+                grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+                grammar.status = ItemStatus::Cancelled;
                 grammar.outcome = ItemOutcome::Cancelled;
+                grammar.step = grammar.total;
+                grammar.msg = msg;
             }
 
             UpdateKind::MarkBuilt => {
@@ -950,6 +958,11 @@ impl DisplayActor {
             .grammars
             .values()
             .any(|g| g.repo_id == repo_id && g.status == ItemStatus::Failed);
+        let any_cancelled = self
+            .state
+            .grammars
+            .values()
+            .any(|g| g.repo_id == repo_id && g.status == ItemStatus::Cancelled);
         let any_active = self.state.grammars.values().any(|g| {
             g.repo_id == repo_id
                 && (g.status == ItemStatus::New || g.status == ItemStatus::InProgress)
@@ -967,6 +980,11 @@ impl DisplayActor {
                 repo.msg = Arc::from("failed");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
+            } else if any_cancelled {
+                repo.status = ItemStatus::Cancelled;
+                repo.msg = Arc::from("cancelled");
+                repo.frozen_elapsed
+                    .get_or_insert_with(|| repo.started_at.elapsed());
             } else {
                 repo.status = ItemStatus::Done;
                 repo.msg = Arc::from("done");
@@ -980,6 +998,7 @@ impl DisplayActor {
 
     fn aggregate_child_outcome(&self, repo_id: u64) -> ItemOutcome {
         let mut saw_cached = false;
+        let mut saw_cancelled = false;
         let mut saw_unknown = false;
 
         for grammar in self
@@ -991,13 +1010,15 @@ impl DisplayActor {
             match grammar.outcome {
                 ItemOutcome::Built => return ItemOutcome::Built,
                 ItemOutcome::Cached => saw_cached = true,
+                ItemOutcome::Cancelled => saw_cancelled = true,
                 ItemOutcome::Unknown => saw_unknown = true,
-                ItemOutcome::Cancelled => (),
             }
         }
 
         if saw_unknown {
             ItemOutcome::Unknown
+        } else if saw_cancelled {
+            ItemOutcome::Cancelled
         } else if saw_cached {
             ItemOutcome::Cached
         } else {

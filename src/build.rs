@@ -84,9 +84,10 @@ fn acquire_lock(lock: &Lock, unlock_timeout: Duration) -> TsdlResult<LockGuard> 
             },
 
             LockStatus::Unknown { pid, reason } => {
-                match pid {
-                    Some(pid) => info!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}"),
-                    None => info!("Build directory is locked, but tsdl could not identify the owner: {reason}"),
+                if let Some(pid) = pid {
+                    info!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}");
+                } else {
+                    info!("Build directory is locked, but tsdl could not identify the owner: {reason}");
                 }
                 return Err(TsdlError::message(format!(
                     "Could not identify build lock owner: {reason}"
