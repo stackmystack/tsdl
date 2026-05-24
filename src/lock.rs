@@ -75,6 +75,134 @@ pub enum LockStatus {
     Unknown { pid: Option<Pid>, reason: String },
 }
 
+/// Last observed state while waiting for a lock takeover to complete.
+#[derive(Debug, Clone)]
+pub enum LockObservation {
+    /// The lock is still held by an identifiable owner.
+    LockedBy(Box<LockOwner>),
+    /// The lock is still held, but owner metadata could not be resolved.
+    Unknown { pid: Option<Pid>, reason: String },
+}
+
+impl fmt::Display for LockObservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LockedBy(owner) => {
+                write!(f, "lock is held by PID {} ({})", owner.pid, owner.name)
+            }
+            Self::Unknown { pid, reason } => {
+                if let Some(pid) = pid {
+                    write!(
+                        f,
+                        "lock is held by PID {pid}, but owner is unknown: {reason}"
+                    )
+                } else {
+                    write!(f, "lock is held by an unknown owner: {reason}")
+                }
+            }
+        }
+    }
+}
+
+/// Error returned while terminating a lock owner or waiting for its lock to release.
+#[derive(Debug)]
+pub enum LockTakeoverError {
+    /// The previously observed owner exited before it could be signalled.
+    OwnerDisappeared { previous: Box<LockOwner> },
+    /// The lock owner changed while takeover was in progress.
+    OwnerChanged {
+        previous: Box<LockOwner>,
+        current: Box<LockOwner>,
+    },
+    /// Lock status became cyclic while waiting.
+    Cyclic,
+    /// The lock remained held by an unidentifiable owner.
+    Unknown { pid: Option<Pid>, reason: String },
+    /// Sending SIGTERM to the owner failed.
+    SignalFailed { owner: Box<LockOwner> },
+    /// SIGTERM is unavailable on this platform.
+    SignalUnsupported { owner: Box<LockOwner> },
+    /// The timeout elapsed before the lock could be acquired.
+    Timeout {
+        previous: Box<LockOwner>,
+        timeout: Duration,
+        last_observation: Box<LockObservation>,
+    },
+    /// An underlying tsdl error occurred while taking over the lock.
+    Source(TsdlError),
+}
+
+impl LockTakeoverError {
+    /// Whether the caller should re-check lock status and retry the outer takeover loop.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::OwnerDisappeared { .. } | Self::OwnerChanged { .. }
+        )
+    }
+}
+
+impl fmt::Display for LockTakeoverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OwnerDisappeared { previous } => write!(
+                f,
+                "Lock owner PID {} ({}) is no longer running; retry lock acquisition",
+                previous.pid, previous.name
+            ),
+            Self::OwnerChanged { previous, current } => write!(
+                f,
+                "Lock owner changed while taking over: previous PID {} ({}), current PID {} ({})",
+                previous.pid, previous.name, current.pid, current.name
+            ),
+            Self::Cyclic => write!(f, "Lock became cyclic while waiting for release"),
+            Self::Unknown { pid, reason } => {
+                if let Some(pid) = pid {
+                    write!(f, "Could not identify build lock owner PID {pid}: {reason}")
+                } else {
+                    write!(f, "Could not identify build lock owner: {reason}")
+                }
+            }
+            Self::SignalFailed { owner } => write!(
+                f,
+                "Failed to send SIGTERM to lock owner PID {} ({})",
+                owner.pid, owner.name
+            ),
+            Self::SignalUnsupported { .. } => write!(
+                f,
+                "SIGTERM is not supported on this platform; cannot terminate lock owner"
+            ),
+            Self::Timeout {
+                previous,
+                timeout,
+                last_observation,
+            } => write!(
+                f,
+                "Timed out after {} waiting for PID {} ({}) to release the build lock; last observation: {last_observation}",
+                format_duration(*timeout),
+                previous.pid,
+                previous.name
+            ),
+            Self::Source(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for LockTakeoverError {}
+
+impl From<TsdlError> for LockTakeoverError {
+    fn from(err: TsdlError) -> Self {
+        Self::Source(err)
+    }
+}
+
+impl From<LockTakeoverError> for TsdlError {
+    fn from(err: LockTakeoverError) -> Self {
+        Self::message(err.to_string())
+    }
+}
+
 /// A guard that holds an exclusive OS lock on the build directory lock file.
 ///
 /// The lock is released when this guard is dropped. The lock file itself is
@@ -186,24 +314,29 @@ impl Lock {
     }
 
     /// Send SIGTERM to the process that held the lock when `owner` was captured.
-    pub fn terminate_owner(&self, owner: &LockOwner) -> TsdlResult<()> {
+    pub fn terminate_owner(&self, owner: &LockOwner) -> Result<(), LockTakeoverError> {
         info!(
             "Sending SIGTERM to lock owner PID {} ({})",
             owner.pid, owner.name
         );
         let system = Self::system_for_pid(owner.pid);
-        let process = system.process(owner.pid).ok_or_else(|| {
-            TsdlError::message(format!(
-                "Lock owner PID {} is no longer running; retry lock acquisition",
-                owner.pid
-            ))
-        })?;
+        let process =
+            system
+                .process(owner.pid)
+                .ok_or_else(|| LockTakeoverError::OwnerDisappeared {
+                    previous: Box::new(owner.clone()),
+                })?;
 
         if process.start_time() != owner.start_time {
-            return Err(TsdlError::message(format!(
-                "Refusing to send SIGTERM to PID {} because it no longer matches the process that owns the lock",
-                owner.pid
-            )));
+            let current = Self::owner_for_pid(owner.pid).ok_or_else(|| {
+                LockTakeoverError::OwnerDisappeared {
+                    previous: Box::new(owner.clone()),
+                }
+            })?;
+            return Err(LockTakeoverError::OwnerChanged {
+                previous: Box::new(owner.clone()),
+                current: Box::new(current),
+            });
         }
 
         match process.kill_with(Signal::Term) {
@@ -211,21 +344,25 @@ impl Lock {
                 info!("Sent SIGTERM to lock owner PID {}", owner.pid);
                 Ok(())
             }
-            Some(false) => Err(TsdlError::message(format!(
-                "Failed to send SIGTERM to lock owner PID {}",
-                owner.pid
-            ))),
-            None => Err(TsdlError::message(
-                "SIGTERM is not supported on this platform; cannot terminate lock owner",
-            )),
+            Some(false) => Err(LockTakeoverError::SignalFailed {
+                owner: Box::new(owner.clone()),
+            }),
+            None => Err(LockTakeoverError::SignalUnsupported {
+                owner: Box::new(owner.clone()),
+            }),
         }
     }
 
     /// Wait for the build lock to become available after the lock owner was terminated.
     ///
-    /// Polls the OS lock with exponential backoff while periodically checking whether
-    /// the owner process has exited.  No background threads are spawned.
-    pub fn wait_for_release(&self, owner: &LockOwner, timeout: Duration) -> TsdlResult<LockGuard> {
+    /// The OS lock remains the source of truth. Each poll tries to acquire it first;
+    /// if it is still held, owner metadata is re-read so races with a new lock owner
+    /// are reported explicitly instead of waiting on stale information.
+    pub fn wait_for_release(
+        &self,
+        owner: &LockOwner,
+        timeout: Duration,
+    ) -> Result<LockGuard, LockTakeoverError> {
         info!(
             "Waiting up to {} for lock release from PID {}",
             crate::format_duration(timeout),
@@ -233,45 +370,44 @@ impl Lock {
         );
 
         let deadline = Instant::now() + timeout;
-        let mut owner_exited = false;
-
-        // Open once; retry try_lock_exclusive on the same handle to avoid
-        // repeated open syscalls.
-        let file = self.open_lock_file()?;
-
-        // Polling delay: start short, back off up to a ceiling.
         let mut delay = Duration::from_millis(50);
+        let mut last_observation = LockObservation::LockedBy(Box::new(owner.clone()));
 
         loop {
             let now = Instant::now();
             if now >= deadline {
-                return Err(timeout_error(owner, timeout, owner_exited));
+                return Err(LockTakeoverError::Timeout {
+                    previous: Box::new(owner.clone()),
+                    timeout,
+                    last_observation: Box::new(last_observation),
+                });
             }
 
-            match file.try_lock_exclusive() {
-                Ok(()) => return self.activate(file),
+            match self.try_acquire()? {
+                LockStatus::Acquired(guard) => return Ok(guard),
 
-                Err(ref err) if is_lock_contention(err) => {
-                    // Still locked. Check whether the owner has exited (once).
-                    if !owner_exited {
-                        let system = Self::system_for_pid(owner.pid);
-                        owner_exited = system
-                            .process(owner.pid)
-                            .is_none_or(|p| p.start_time() != owner.start_time);
-                    }
+                LockStatus::Cyclic => return Err(LockTakeoverError::Cyclic),
 
-                    // If the owner exited, don't sleep. Retry immediately.
-                    if owner_exited {
-                        delay = Duration::from_millis(5);
-                        continue;
+                LockStatus::LockedBy(current) => {
+                    if same_owner(&current, owner) {
+                        last_observation = LockObservation::LockedBy(Box::new(current));
+                    } else {
+                        return Err(LockTakeoverError::OwnerChanged {
+                            previous: Box::new(owner.clone()),
+                            current: Box::new(current),
+                        });
                     }
                 }
 
-                Err(err) => {
-                    return Err(TsdlError::context(
-                        format!("Acquiring build lock {}", self.lock_path.display()),
-                        err,
-                    ));
+                LockStatus::Unknown { pid, reason } => {
+                    // If metadata now points at a different PID that we cannot inspect,
+                    // stop waiting on the previous owner. Otherwise keep polling until
+                    // timeout so transient metadata reads or inherited lock handles have
+                    // time to settle.
+                    if pid.is_some_and(|pid| pid != owner.pid) {
+                        return Err(LockTakeoverError::Unknown { pid, reason });
+                    }
+                    last_observation = LockObservation::Unknown { pid, reason };
                 }
             }
 
@@ -418,27 +554,12 @@ fn command_line(cmd: &[std::ffi::OsString]) -> Option<String> {
     )
 }
 
-fn is_lock_contention(err: &io::Error) -> bool {
-    err.kind() == io::ErrorKind::WouldBlock
+fn same_owner(current: &LockOwner, previous: &LockOwner) -> bool {
+    current.pid == previous.pid && current.start_time == previous.start_time
 }
 
-fn timeout_error(owner: &LockOwner, timeout: Duration, owner_exited: bool) -> TsdlError {
-    let timeout = format_duration(timeout);
-    if owner_exited {
-        TsdlError::message(format!(
-            "PID {} exited, but tsdl did not acquire the build lock within {timeout}. \
-             Another process may have acquired it first. Retry the command or use a larger \
-             --unlock-timeout if shutdown is slow.",
-            owner.pid
-        ))
-    } else {
-        TsdlError::message(format!(
-            "Timed out after {timeout} waiting for PID {} to exit and release the build lock. \
-             The process may be ignoring SIGTERM or still shutting down. Stop it manually or \
-             retry with a larger --unlock-timeout.",
-            owner.pid
-        ))
-    }
+fn is_lock_contention(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock
 }
 
 #[cfg(test)]

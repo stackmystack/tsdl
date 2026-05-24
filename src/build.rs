@@ -19,7 +19,7 @@ use crate::{
     error::{self, TsdlError},
     format_duration,
     git::GitRef,
-    lock::{Lock, LockGuard, LockOwner, LockStatus},
+    lock::{Lock, LockGuard, LockOwner, LockStatus, LockTakeoverError},
     parser::LanguageBuild,
     prompt_user,
     shutdown::{self, Shutdown},
@@ -76,11 +76,11 @@ fn acquire_lock(lock: &Lock, unlock_timeout: Duration) -> TsdlResult<LockGuard> 
 
             LockStatus::LockedBy(owner) => match handle_locked_by(lock, &owner, unlock_timeout) {
                 Ok(guard) => return Ok(guard),
-                Err(ref e) if is_retryable_lock_error(e) => {
-                    info!("Lock owner changed; re-checking lock status...");
+                Err(ref err) if err.is_retryable() => {
+                    info!("{err}; re-checking lock status...");
                     // continue to the next loop iteration
                 }
-                Err(e) => return Err(e),
+                Err(err) => return Err(err.into()),
             },
 
             LockStatus::Unknown { pid, reason } => {
@@ -97,19 +97,11 @@ fn acquire_lock(lock: &Lock, unlock_timeout: Duration) -> TsdlResult<LockGuard> 
     }
 }
 
-/// Returns `true` when the error indicates that the lock owner disappeared
-/// between inspection and the takeover attempt.  In that case the caller
-/// should re-check lock status instead of failing.
-fn is_retryable_lock_error(err: &TsdlError) -> bool {
-    let msg = err.to_string();
-    msg.contains("no longer running") || msg.contains("no longer matches the process")
-}
-
 fn handle_locked_by(
     lock: &Lock,
     owner: &LockOwner,
     unlock_timeout: Duration,
-) -> TsdlResult<crate::lock::LockGuard> {
+) -> Result<LockGuard, LockTakeoverError> {
     info!("Build directory is locked by another process:");
     info!("{owner}");
     eprintln!(
@@ -121,7 +113,7 @@ fn handle_locked_by(
     );
 
     if !prompt_user("Terminate this process and continue?", false)? {
-        return Err(TsdlError::message("Lock acquisition cancelled by user"));
+        return Err(TsdlError::message("Lock acquisition cancelled by user").into());
     }
 
     lock.terminate_owner(owner)?;
