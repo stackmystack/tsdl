@@ -52,7 +52,7 @@
 use std::{
     env,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Duration,
 };
 
@@ -100,6 +100,38 @@ impl SafeCanonicalize for PathBuf {
     fn canon(&self) -> TsdlResult<PathBuf> {
         self.as_path().canon()
     }
+}
+
+/// Convert a path to an absolute, lexically-normalized path without requiring
+/// the final path to exist.
+pub fn absolute_normalize(path: &Path) -> TsdlResult<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|e| TsdlError::context("Failed to get current directory", e))?
+            .join(path)
+    };
+
+    Ok(normalize_components(&absolute))
+}
+
+fn normalize_components(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    normalized
 }
 
 #[must_use]

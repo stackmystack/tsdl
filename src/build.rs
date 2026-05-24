@@ -126,7 +126,7 @@ fn handle_locked_by(
 
 fn clear(app: &mut App, guard: &LockGuard) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
-        guard.clear_directory()?;
+        guard.clear_directory(std::slice::from_ref(&app.log_path))?;
     }
 
     fs::create_dir_all(&app.command.build_dir)?;

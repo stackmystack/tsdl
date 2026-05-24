@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs::{self, File},
     path::{Path, PathBuf},
 };
@@ -9,14 +10,20 @@ use tracing_log::AsTrace;
 use tracing_subscriber::{layer::SubscriberExt, Layer};
 
 use crate::{
+    absolute_normalize,
     args::{Args, LogColor},
     config::current,
-    consts::{TSDL_BUILD_DIR, TSDL_LOG_FILE},
+    consts::{TSDL_BUILD_DIR, TSDL_CACHE_FILE, TSDL_LOCK_FILE, TSDL_LOG_FILE},
     error::TsdlError,
     TsdlResult,
 };
 
-pub fn init(args: &Args) -> TsdlResult<WorkerGuard> {
+pub struct Logging {
+    pub path: PathBuf,
+    _guard: WorkerGuard,
+}
+
+pub fn init(args: &Args) -> TsdlResult<Logging> {
     let color = match args.log_color {
         LogColor::Auto => atty::is(atty::Stream::Stdout),
         LogColor::No => false,
@@ -24,8 +31,13 @@ pub fn init(args: &Args) -> TsdlResult<WorkerGuard> {
     };
     console::set_colors_enabled(color);
     let filter = args.verbose.log_level_filter().as_trace();
-    let file = init_log_file(args)?;
-    Ok(init_tracing(file, color, filter))
+    let path = resolve_log_path(args)?;
+    let file = open_log_file(&path)?;
+    let guard = init_tracing(file, color, filter);
+    Ok(Logging {
+        path,
+        _guard: guard,
+    })
 }
 
 fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
@@ -63,19 +75,77 @@ fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
     guard
 }
 
-fn init_log_file(args: &Args) -> TsdlResult<File> {
-    let log = args.log.as_ref().map_or_else(
-        || {
-            current(&args.config, args.command.as_build()).map_or_else(
-                |_| PathBuf::from(TSDL_BUILD_DIR).join(TSDL_LOG_FILE),
-                |c| c.build_dir.clone().join(TSDL_LOG_FILE),
-            )
-        },
-        std::clone::Clone::clone,
-    );
+fn resolve_log_path(args: &Args) -> TsdlResult<PathBuf> {
+    let command = current(&args.config, args.command.as_build()).ok();
+    let build_dir = command
+        .as_ref()
+        .map_or_else(|| PathBuf::from(TSDL_BUILD_DIR), |c| c.build_dir.clone());
+    let log = args
+        .log
+        .as_ref()
+        .map_or_else(|| build_dir.join(TSDL_LOG_FILE), std::clone::Clone::clone);
+
+    validate_log_path(&build_dir, &log)
+}
+
+fn validate_log_path(build_dir: &Path, log: &Path) -> TsdlResult<PathBuf> {
+    let build_dir = absolute_normalize(build_dir)?;
+    let log = absolute_normalize(log)?;
+
+    if log == build_dir {
+        return Err(TsdlError::message(format!(
+            "--log must be a file path, not the build directory {}",
+            build_dir.display()
+        )));
+    }
+
+    if log.is_dir() {
+        return Err(TsdlError::message(format!(
+            "--log must be a file path, not a directory: {}",
+            log.display()
+        )));
+    }
+
+    if log.starts_with(&build_dir) {
+        let relative = log.strip_prefix(&build_dir).map_err(|e| {
+            TsdlError::message(format!(
+                "Could not compare log path {} with build directory {}: {e}",
+                log.display(),
+                build_dir.display()
+            ))
+        })?;
+        let component_count = relative.components().count();
+
+        if component_count != 1 {
+            return Err(TsdlError::message(format!(
+                "--log path {} is nested inside --build-dir {}. Put logs directly under the build directory root or outside it.",
+                log.display(),
+                build_dir.display()
+            )));
+        }
+
+        let Some(name) = relative.file_name() else {
+            return Err(TsdlError::message(format!(
+                "--log must be a file path: {}",
+                log.display()
+            )));
+        };
+
+        if name == OsStr::new(TSDL_LOCK_FILE) || name == OsStr::new(TSDL_CACHE_FILE) {
+            return Err(TsdlError::message(format!(
+                "--log path {} conflicts with a tsdl runtime/build file",
+                log.display()
+            )));
+        }
+    }
+
+    Ok(log)
+}
+
+fn open_log_file(log: &Path) -> TsdlResult<File> {
     let parent = log.parent().unwrap_or(Path::new("."));
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(|e| TsdlError::context("Preparing log directory", e))?;
     }
-    File::create(&log).map_err(|e| TsdlError::context("Creating log file", e))
+    File::create(log).map_err(|e| TsdlError::context("Creating log file", e))
 }

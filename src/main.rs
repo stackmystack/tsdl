@@ -10,19 +10,22 @@ fn main() -> ExitCode {
     set_panic_hook();
     let args = args::Args::parse();
 
-    if let Err(e) = logging::init(&args) {
-        eprintln!("Could not initialize logging: {e}");
-        ExitCode::FAILURE
-    } else {
-        info!("Starting");
-        match App::new(&args).and_then(|mut app| run(&mut app, &args)) {
-            Err(TsdlError::Interrupted(signal)) => ExitCode::from(signal.shell_exit_code()),
-            Err(e) => {
-                eprintln!("{e}");
-                ExitCode::FAILURE
-            }
-            Ok(()) => ExitCode::SUCCESS,
+    let logging = match logging::init(&args) {
+        Ok(logging) => logging,
+        Err(e) => {
+            eprintln!("Could not initialize logging: {e}");
+            return ExitCode::FAILURE;
         }
+    };
+
+    info!("Starting");
+    match App::new(&args, logging.path.clone()).and_then(|mut app| run(&mut app, &args)) {
+        Err(TsdlError::Interrupted(signal)) => ExitCode::from(signal.shell_exit_code()),
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+        Ok(()) => ExitCode::SUCCESS,
     }
 }
 

@@ -34,6 +34,7 @@ pub struct Args {
     pub config: PathBuf,
 
     /// Path to the logging file. If unspecified, it will go to `build-dir/log`.
+    /// If the path is inside `build-dir`, it must be directly under that directory.
     #[arg(short, long, env = "TSDL_LOG", global = true)]
     pub log: Option<PathBuf>,
 
