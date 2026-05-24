@@ -45,7 +45,8 @@ pub struct OutputConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuildContext {
     pub cache_hit: bool,
-    pub force: bool,
+    pub ignore_cache: bool,
+    pub overwrite_output: bool,
 }
 
 pub fn run(app: &mut App) -> TsdlResult<()> {
@@ -257,8 +258,9 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
         let result = match url {
             Ok(repo) => Ok(LanguageBuild::new(
                 BuildContext {
-                    force: app.command.force || app.command.fresh,
                     cache_hit: false,
+                    ignore_cache: app.command.force || app.command.fresh,
+                    overwrite_output: app.command.force,
                 },
                 Arc::new(BuildSpec {
                     build_script,
