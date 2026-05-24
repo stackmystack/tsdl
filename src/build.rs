@@ -54,9 +54,9 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
     }
 
     let lock = Lock::new(&app.command.build_dir);
-    let _guard = acquire_lock(&lock, Duration::from_secs(app.command.unlock_timeout))?;
+    let guard = acquire_lock(&lock, Duration::from_secs(app.command.unlock_timeout))?;
 
-    clear(app)?;
+    clear(app, &guard)?;
     ignite(app)?;
     Ok(())
 }
@@ -131,10 +131,9 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
-fn clear(app: &mut App) -> TsdlResult<()> {
+fn clear(app: &mut App, guard: &LockGuard) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
-        fs::remove_dir_all(&app.command.build_dir)?;
-        info!("Cleaned {}", app.command.build_dir.display());
+        guard.clear_directory()?;
     }
 
     fs::create_dir_all(&app.command.build_dir)?;

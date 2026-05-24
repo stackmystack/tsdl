@@ -27,6 +27,7 @@ force = false
 fresh = false
 from = "https://github.com/tree-sitter/tree-sitter-"
 lock-file = "tsdl.lock"
+log-file = "log"
 out-dir = "parsers"
 prefix = "libtree-sitter-"
 ref = "master"

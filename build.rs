@@ -111,6 +111,7 @@ fn main() {
         TSDL_FRESH         : bool = json(tsdl, "fresh"),
         TSDL_FROM          : str  = json(tsdl, "from"),
         TSDL_LOCK_FILE     : str  = json(tsdl, "lock-file"),
+        TSDL_LOG_FILE      : str  = json(tsdl, "log-file"),
         TSDL_OUT_DIR       : str  = json(tsdl, "out-dir"),
         TSDL_UNLOCK_TIMEOUT: u64  = json(tsdl, "unlock-timeout"),
         TSDL_PREFIX        : str  = json(tsdl, "prefix"),

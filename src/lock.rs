@@ -13,7 +13,11 @@ use fs2::FileExt;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 use tracing::info;
 
-use crate::{consts::TSDL_LOCK_FILE, error::TsdlError, format_duration, TsdlResult};
+use crate::{
+    consts::{TSDL_LOCK_FILE, TSDL_LOG_FILE},
+    error::TsdlError,
+    format_duration, TsdlResult,
+};
 
 /// Information about the process currently holding the build lock.
 #[derive(Debug, Clone)]
@@ -81,11 +85,76 @@ pub enum LockStatus {
 #[derive(Debug)]
 pub struct LockGuard {
     file: File,
+    lock_path: PathBuf,
 }
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
         let _ = self.file.unlock();
+    }
+}
+
+impl LockGuard {
+    /// Delete every entry in the build directory except the lock file itself
+    /// and the log file (which is held open by the tracing subscriber).
+    ///
+    /// The build directory itself is preserved; only its children are removed.
+    /// This is used by `--fresh` to clean the build directory without
+    /// invalidating the OS lock (which is tied to the lock file's inode).
+    pub fn clear_directory(&self) -> TsdlResult<()> {
+        const PROTECTED: &[&str] = &[TSDL_LOCK_FILE, TSDL_LOG_FILE];
+
+        let build_dir = self.lock_path.parent().ok_or_else(|| {
+            TsdlError::message(format!(
+                "Lock path has no parent directory: {}",
+                self.lock_path.display()
+            ))
+        })?;
+
+        let lock_name = self
+            .lock_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(TSDL_LOCK_FILE);
+
+        for entry in fs::read_dir(build_dir).map_err(|e| {
+            TsdlError::context(
+                format!("Reading build directory {}", build_dir.display()),
+                e,
+            )
+        })? {
+            let entry = entry.map_err(|e| {
+                TsdlError::context(
+                    format!("Reading directory entry in {}", build_dir.display()),
+                    e,
+                )
+            })?;
+
+            let name = entry.file_name();
+            let name_str = name.to_str().unwrap_or("");
+
+            if name_str == lock_name || PROTECTED.contains(&name_str) {
+                continue;
+            }
+
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| TsdlError::context(format!("Statting {}", path.display()), e))?;
+
+            if file_type.is_dir() {
+                fs::remove_dir_all(&path).map_err(|e| {
+                    TsdlError::context(format!("Removing directory {}", path.display()), e)
+                })?;
+            } else {
+                fs::remove_file(&path).map_err(|e| {
+                    TsdlError::context(format!("Removing file {}", path.display()), e)
+                })?;
+            }
+        }
+
+        info!("Cleaned {}", build_dir.display());
+        Ok(())
     }
 }
 
@@ -165,7 +234,11 @@ impl Lock {
     /// This races two signals: the owner process exiting and this process acquiring
     /// the OS lock. The returned guard is the proof of exclusive ownership.
     pub fn wait_for_release(&self, owner: &LockOwner, timeout: Duration) -> TsdlResult<LockGuard> {
-        info!("Waiting up to {} for lock release from PID {}", crate::format_duration(timeout), owner.pid);
+        info!(
+            "Waiting up to {} for lock release from PID {}",
+            crate::format_duration(timeout),
+            owner.pid
+        );
         let (tx, rx) = mpsc::channel();
 
         let lock = self.clone();
@@ -212,7 +285,10 @@ impl Lock {
     fn activate(&self, mut file: File) -> TsdlResult<LockGuard> {
         self.write_metadata(&mut file)?;
         info!("Acquired lock on build directory");
-        Ok(LockGuard { file })
+        Ok(LockGuard {
+            file,
+            lock_path: self.lock_path.clone(),
+        })
     }
 
     fn open_lock_file(&self) -> TsdlResult<File> {

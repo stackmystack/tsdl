@@ -11,7 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, Layer};
 use crate::{
     args::{Args, LogColor},
     config::current,
-    consts::TSDL_BUILD_DIR,
+    consts::{TSDL_BUILD_DIR, TSDL_LOG_FILE},
     error::TsdlError,
     TsdlResult,
 };
@@ -67,8 +67,8 @@ fn init_log_file(args: &Args) -> TsdlResult<File> {
     let log = args.log.as_ref().map_or_else(
         || {
             current(&args.config, args.command.as_build()).map_or_else(
-                |_| PathBuf::from(TSDL_BUILD_DIR).join("log"),
-                |c| c.build_dir.clone().join("log"),
+                |_| PathBuf::from(TSDL_BUILD_DIR).join(TSDL_LOG_FILE),
+                |c| c.build_dir.clone().join(TSDL_LOG_FILE),
             )
         },
         std::clone::Clone::clone,
