@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
     sync::Arc,
@@ -250,8 +250,8 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
             .unwrap_or_default(),
     };
 
-    let unique = final_languages.into_iter().collect::<HashSet<_>>();
-    let mut results = Vec::new();
+    let unique = final_languages.into_iter().collect::<BTreeSet<_>>();
+    let mut results = Vec::with_capacity(unique.len());
 
     for language in unique {
         let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
@@ -293,4 +293,40 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{args::BuildCommand, display::Mode};
+
+    fn app_with_languages(languages: &[&str]) -> App {
+        let mut command = BuildCommand::default();
+        command.languages = Some(
+            languages
+                .iter()
+                .map(|language| (*language).to_string())
+                .collect(),
+        );
+
+        App {
+            command,
+            config_path: PathBuf::from("parsers.toml"),
+            log_path: PathBuf::from("tmp/log"),
+            progress_mode: Mode::Plain,
+            verbose: Default::default(),
+        }
+    }
+
+    #[test]
+    fn unique_languages_sorts_and_deduplicates_requested_languages() {
+        let app = app_with_languages(&["rust", "json", "ruby", "json", "rust"]);
+
+        let languages = unique_languages(&app)
+            .into_iter()
+            .map(|language| language.unwrap().name.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(languages, vec!["json", "ruby", "rust"]);
+    }
 }
