@@ -4,7 +4,11 @@ use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output, ti
 use tokio::{process::Command, time};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{error, shutdown, TsdlResult};
+use crate::{
+    error,
+    shutdown::{self, PgId},
+    TsdlResult,
+};
 
 pub trait Exec {
     fn display(&self) -> TsdlResult<String>;
@@ -69,8 +73,8 @@ impl Exec for Command {
             .map_err(|e| error::TsdlError::context("Failed to execute command", e))?;
 
         let child_pid = child.id();
-        let pgid = child_pid.map(i32::try_from).transpose().map_err(|e| {
-            error::TsdlError::message(format!("Child PID does not fit in a process group id: {e}"))
+        let pgid = child_pid.map(PgId::try_from).transpose().map_err(|e| {
+            error::TsdlError::message(format!("Invalid child process group id: {e}"))
         })?;
         debug!("spawned pid={child_pid:?} cmd={cmd_short}");
 
@@ -152,13 +156,12 @@ impl Exec for Command {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
-        let msg = match output.status.code() {
-            Some(code) => format!("{cmd_short} failed with exit status {code}."),
-            None => {
-                let sig = signal_display(output.status.signal().expect("a proper status code"))
-                    .unwrap_or_else(|| "UNKNOWN".to_string());
-                format!("{} interrupted by signal {}.", program, sig)
-            }
+        let msg = if let Some(code) = output.status.code() {
+            format!("{cmd_short} failed with exit status {code}.")
+        } else {
+            let sig = signal_display(output.status.signal().expect("a proper signal code"))
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            format!("{program} interrupted by signal {sig}.")
         };
 
         error!("{msg}\nStdOut:\n{stdout}\nStdErr\n{stderr}");
