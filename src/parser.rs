@@ -1,8 +1,12 @@
 use std::{
     env::consts::DLL_EXTENSION,
+    fs::Metadata,
+    io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    process,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio::{fs, process::Command};
@@ -11,7 +15,7 @@ use tracing::{debug, warn};
 use crate::{
     actors::ProgressAddr,
     build::{BuildContext, BuildSpec, OutputConfig},
-    cache::{Entry, Update},
+    cache::{self, Entry, Update},
     error::{self, TsdlError},
     git::clone_fast,
     sh::{Exec, Script},
@@ -60,7 +64,7 @@ impl GrammarBuild {
         let key = format!("{}/{}", self.language, self.name);
 
         // Check cache: if cached and definitions match, skip build but still install
-        let hit = !self.context.force && !self.needs_rebuild(&key);
+        let hit = !self.context.ignore_cache && !self.needs_rebuild(&key);
 
         if hit {
             self.progress.set_outcome_cached().await;
@@ -190,7 +194,14 @@ impl GrammarBuild {
 
     async fn create_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
         fs::hard_link(src, dst).await.map_err(|e| {
-            TsdlError::context(format!("Linking {} -> {}", src.display(), dst.display()), e)
+            TsdlError::context(
+                format!(
+                    "Could not hardlink {} to {}. build-dir and out-dir must be on the same filesystem",
+                    src.display(),
+                    dst.display()
+                ),
+                e,
+            )
         })
     }
 
@@ -266,49 +277,97 @@ impl GrammarBuild {
     async fn install_binary(&self, ext: &str) -> TsdlResult<()> {
         let src = self.find_parser_binary(ext).await?;
         let dst = self.output.out_dir.join(self.parser_name_and_ext(ext));
+        let src_metadata = fs::metadata(&src)
+            .await
+            .map_err(|e| TsdlError::context(format!("Reading {}", src.display()), e))?;
 
-        // Check if different file exists
-        if dst.exists() {
-            let src_metadata = fs::metadata(&src)
-                .await
-                .map_err(|e| TsdlError::context(format!("Reading {}", src.display()), e))?;
-            let dst_metadata = fs::metadata(&dst)
-                .await
-                .map_err(|e| TsdlError::context(format!("Reading {}", dst.display()), e))?;
-
-            let src_size = src_metadata.size();
-            let dst_size = dst_metadata.size();
-            let src_inode = src_metadata.ino();
-            let dst_inode = dst_metadata.ino();
-
-            // Check if hardlink is broken (inodes don't match when they should)
-            let hardlink_broken = src_inode != dst_inode;
-
-            if src_size != dst_size || hardlink_broken {
-                if src_size != dst_size && !self.context.force {
-                    return Err(TsdlError::message(format!(
-                        "Binary differs at {}. Use --force to overwrite",
-                        dst.display()
-                    )));
-                }
-
-                fs::remove_file(&dst)
-                    .await
-                    .map_err(|e| TsdlError::context(format!("Removing {}", dst.display()), e))?;
-
-                // Report reinstallation when fixing broken hardlink
-                if hardlink_broken {
-                    self.progress.msg("Reinstalled");
-                }
-
-                // Create the hardlink after removing the old one
+        let dst_link_metadata = match fs::symlink_metadata(&dst).await {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 self.create_hardlink(&src, &dst).await?;
-            } else {
-                // Inodes match and sizes match - hardlink is already correct, skip
+                return Ok(());
             }
-        } else {
-            // Destination doesn't exist, create the hardlink
-            self.create_hardlink(&src, &dst).await?;
+            Err(err) => {
+                return Err(TsdlError::context(
+                    format!("Reading {}", dst.display()),
+                    err,
+                ));
+            }
+        };
+
+        self.install_over_existing(&src, &src_metadata, &dst, &dst_link_metadata)
+            .await
+    }
+
+    async fn install_over_existing(
+        &self,
+        src: &Path,
+        src_metadata: &Metadata,
+        dst: &Path,
+        dst_link_metadata: &Metadata,
+    ) -> TsdlResult<()> {
+        let dst_file_type = dst_link_metadata.file_type();
+
+        if dst_file_type.is_dir() {
+            return Err(TsdlError::message(format!(
+                "Output path is a directory and cannot be replaced: {}",
+                dst.display()
+            )));
+        }
+
+        if dst_file_type.is_symlink() {
+            if !self.context.overwrite_output {
+                return Err(TsdlError::message(format!(
+                    "Output path is a symlink and will not be replaced without --force: {}",
+                    dst.display()
+                )));
+            }
+
+            self.replace_with_hardlink(src, dst).await?;
+            self.progress.msg("Reinstalled");
+            return Ok(());
+        }
+
+        if !dst_file_type.is_file() {
+            return Err(TsdlError::message(format!(
+                "Output path is not a regular file and cannot be replaced: {}",
+                dst.display()
+            )));
+        }
+
+        let dst_metadata = fs::metadata(dst)
+            .await
+            .map_err(|e| TsdlError::context(format!("Reading {}", dst.display()), e))?;
+
+        if same_file_identity(src_metadata, &dst_metadata) {
+            return Ok(());
+        }
+
+        let same_contents =
+            same_regular_file_contents(src, src_metadata, dst, &dst_metadata).await?;
+
+        if !same_contents && !self.context.overwrite_output {
+            return Err(TsdlError::message(format!(
+                "Output already exists and differs from the built parser: {}. Use --force to replace it.",
+                dst.display()
+            )));
+        }
+
+        self.replace_with_hardlink(src, dst).await?;
+        self.progress.msg("reinstalled");
+        Ok(())
+    }
+
+    async fn replace_with_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
+        let tmp = temp_install_path(dst)?;
+        self.create_hardlink(src, &tmp).await?;
+
+        if let Err(err) = fs::rename(&tmp, dst).await {
+            let _ = fs::remove_file(&tmp).await;
+            return Err(TsdlError::context(
+                format!("Installing {} to {}", src.display(), dst.display()),
+                err,
+            ));
         }
 
         Ok(())
@@ -414,6 +473,46 @@ impl LanguageBuild {
     }
 }
 
+fn same_file_identity(a: &Metadata, b: &Metadata) -> bool {
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+async fn same_regular_file_contents(
+    src: &Path,
+    src_metadata: &Metadata,
+    dst: &Path,
+    dst_metadata: &Metadata,
+) -> TsdlResult<bool> {
+    if src_metadata.len() != dst_metadata.len() {
+        return Ok(false);
+    }
+
+    let src_hash = cache::hash_file(src).await?;
+    let dst_hash = cache::hash_file(dst).await?;
+    Ok(src_hash == dst_hash)
+}
+
+fn temp_install_path(dst: &Path) -> TsdlResult<PathBuf> {
+    let file_name = dst.file_name().ok_or_else(|| {
+        TsdlError::message(format!(
+            "Could not create temporary install path for {}",
+            dst.display()
+        ))
+    })?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| {
+            TsdlError::message(format!(
+                "System clock is before UNIX epoch while creating temporary install path: {e}"
+            ))
+        })?
+        .as_nanos();
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(format!(".tsdl-{}-{nanos}", process::id()));
+
+    Ok(dst.with_file_name(tmp_name))
+}
+
 fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
     dir.file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -430,6 +529,14 @@ fn extract_grammar_name(dir: &Path) -> TsdlResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
+
+    use crate::{
+        actors::{DisplayActor, DisplayAddr},
+        args::{Target, TreeSitter},
+        display::Mode,
+        git::GitRef,
+    };
     use tempfile::TempDir;
 
     /// Extract directory name from a path
@@ -466,6 +573,55 @@ mod tests {
         } else {
             format!("{prefix}{grammar_name}.{ext}")
         }
+    }
+
+    async fn test_grammar_build(
+        grammar_dir: PathBuf,
+        out_dir: PathBuf,
+        overwrite_output: bool,
+    ) -> (GrammarBuild, DisplayAddr) {
+        let display = DisplayActor::spawn(
+            Mode::Plain,
+            Arc::new(grammar_dir.clone()),
+            Arc::new(out_dir.clone()),
+        );
+        let progress = display
+            .add_grammar(GitRef::from("HEAD"), "rust", "rust", 1)
+            .await;
+        let build = GrammarBuild {
+            context: BuildContext {
+                cache_hit: false,
+                ignore_cache: false,
+                overwrite_output,
+            },
+            dir: grammar_dir.clone().into(),
+            entry: None,
+            hash: "test".into(),
+            language: "rust".into(),
+            name: "rust".into(),
+            output: OutputConfig {
+                build_dir: grammar_dir.into(),
+                out_dir: out_dir.into(),
+            },
+            progress,
+            spec: Arc::new(BuildSpec {
+                build_script: None,
+                git_ref: GitRef::from("HEAD"),
+                prefix: String::new(),
+                repo: "https://example.com/tree-sitter-rust".parse().unwrap(),
+                target: Target::Native,
+                tree_sitter: TreeSitter::default(),
+            }),
+            ts_cli: Arc::new(PathBuf::from("tree-sitter")),
+        };
+
+        (build, display)
+    }
+
+    fn same_identity(a: &Path, b: &Path) -> bool {
+        let a = std::fs::metadata(a).unwrap();
+        let b = std::fs::metadata(b).unwrap();
+        same_file_identity(&a, &b)
     }
 
     #[test]
@@ -518,6 +674,134 @@ mod tests {
     fn test_parser_name_with_prefix() {
         let name = parser_name_and_ext("typescript", "lib", "so");
         assert_eq!(name, "libtypescript.so");
+    }
+
+    #[tokio::test]
+    async fn install_missing_destination_creates_hardlink() {
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("grammar");
+        let out_dir = temp_dir.path().join("out");
+        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let src = grammar_dir.join("rust.so");
+        let dst = out_dir.join("rust.so");
+        tokio::fs::write(&src, b"parser").await.unwrap();
+
+        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+        build.install_binary("so").await.unwrap();
+        display.shutdown(false).await;
+
+        assert!(same_identity(&src, &dst));
+    }
+
+    #[tokio::test]
+    async fn install_same_content_relinks_without_force() {
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("grammar");
+        let out_dir = temp_dir.path().join("out");
+        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let src = grammar_dir.join("rust.so");
+        let dst = out_dir.join("rust.so");
+        tokio::fs::write(&src, b"parser").await.unwrap();
+        tokio::fs::write(&dst, b"parser").await.unwrap();
+        assert!(!same_identity(&src, &dst));
+
+        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+        build.install_binary("so").await.unwrap();
+        display.shutdown(false).await;
+
+        assert!(same_identity(&src, &dst));
+    }
+
+    #[tokio::test]
+    async fn install_same_size_different_content_requires_force() {
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("grammar");
+        let out_dir = temp_dir.path().join("out");
+        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let src = grammar_dir.join("rust.so");
+        let dst = out_dir.join("rust.so");
+        tokio::fs::write(&src, b"new").await.unwrap();
+        tokio::fs::write(&dst, b"old").await.unwrap();
+
+        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+        let err = build.install_binary("so").await.unwrap_err();
+        display.shutdown(false).await;
+
+        assert!(err.to_string().contains("differs from the built parser"));
+        assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"old");
+        assert!(!same_identity(&src, &dst));
+    }
+
+    #[tokio::test]
+    async fn install_same_size_different_content_with_force_replaces() {
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("grammar");
+        let out_dir = temp_dir.path().join("out");
+        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let src = grammar_dir.join("rust.so");
+        let dst = out_dir.join("rust.so");
+        tokio::fs::write(&src, b"new").await.unwrap();
+        tokio::fs::write(&dst, b"old").await.unwrap();
+
+        let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
+        build.install_binary("so").await.unwrap();
+        display.shutdown(false).await;
+
+        assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"new");
+        assert!(same_identity(&src, &dst));
+    }
+
+    #[tokio::test]
+    async fn install_symlink_requires_force() {
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("grammar");
+        let out_dir = temp_dir.path().join("out");
+        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let src = grammar_dir.join("rust.so");
+        let dst = out_dir.join("rust.so");
+        let target = out_dir.join("target.so");
+        tokio::fs::write(&src, b"new").await.unwrap();
+        tokio::fs::write(&target, b"old").await.unwrap();
+        symlink(&target, &dst).unwrap();
+
+        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+        let err = build.install_binary("so").await.unwrap_err();
+        display.shutdown(false).await;
+
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(std::fs::read_link(&dst).unwrap(), target);
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    async fn install_directory_destination_errors_even_with_force() {
+        let temp_dir = TempDir::new().unwrap();
+        let grammar_dir = temp_dir.path().join("grammar");
+        let out_dir = temp_dir.path().join("out");
+        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let src = grammar_dir.join("rust.so");
+        let dst = out_dir.join("rust.so");
+        tokio::fs::write(&src, b"new").await.unwrap();
+        tokio::fs::create_dir(&dst).await.unwrap();
+
+        let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
+        let err = build.install_binary("so").await.unwrap_err();
+        display.shutdown(false).await;
+
+        assert!(err.to_string().contains("directory"));
+        assert!(dst.is_dir());
     }
 
     #[tokio::test]

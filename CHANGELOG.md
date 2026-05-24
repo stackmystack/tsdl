@@ -21,6 +21,9 @@ informative and more coherent.
   `--unlock-timeout`.
 - **shutdown**: Handle `SIGTERM`/`SIGINT` gracefully by terminating running build
   command process groups before releasing the build lock.
+- **install**: Avoid replacing existing output files unless they are already the
+  same file, have identical contents, or `--force` is used; replacements are now
+  installed through visible temporary hardlinks.
 
 ## [2.0.0] - 2026-02-20
 
