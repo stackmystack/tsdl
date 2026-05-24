@@ -44,7 +44,6 @@ pub struct OutputConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuildContext {
-    pub cache_hit: bool,
     pub ignore_cache: bool,
     pub overwrite_output: bool,
 }
@@ -258,7 +257,6 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
         let result = match url {
             Ok(repo) => Ok(LanguageBuild::new(
                 BuildContext {
-                    cache_hit: false,
                     ignore_cache: app.command.force || app.command.fresh,
                     overwrite_output: app.command.force,
                 },

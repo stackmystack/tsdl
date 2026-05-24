@@ -6,14 +6,6 @@ use derive_more::derive::Display;
 
 use crate::shutdown::ShutdownSignal;
 
-/// Macro for creating Step errors with common patterns
-#[macro_export]
-macro_rules! step_error {
-    ($name:expr, $kind:expr, $source:expr) => {
-        error::Step::new($name.to_string(), $kind, $source)
-    };
-}
-
 /// Represents a single layer in the context chain
 #[derive(Debug)]
 pub struct ContextKind {
@@ -168,46 +160,6 @@ impl std::error::Error for Language {
 }
 
 #[derive(Debug)]
-pub struct Parser {
-    pub related: Vec<TsdlError>,
-}
-
-impl fmt::Display for Parser {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format(f, 0)
-    }
-}
-
-// TODO: review formatting; duplicates?
-impl Parser {
-    fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
-        let prefix = " ".repeat(indent);
-        write!(w, "{prefix}Could not build all parsers.")?;
-
-        for err in &self.related {
-            write!(w, "\n\n{}", err.format_indent(indent + 2))?;
-        }
-
-        Ok(())
-    }
-
-    /// Format with indentation
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if writing to the string fails, which should never happen
-    /// since we're writing to a String which doesn't fail.
-    #[must_use]
-    pub fn format_indent(&self, indent: usize) -> String {
-        let mut s = String::new();
-        self.format(&mut s, indent).unwrap();
-        s
-    }
-}
-
-impl std::error::Error for Parser {}
-
-#[derive(Debug)]
 pub struct Step {
     pub name: Arc<str>,
     pub kind: ParserOp,
@@ -285,6 +237,22 @@ fn format_languages_inner(w: &mut impl fmt::Write, langs: &[Language]) -> fmt::R
     Ok(())
 }
 
+fn format_build_errors(
+    w: &mut impl fmt::Write,
+    errors: &[TsdlError],
+    indent: usize,
+) -> fmt::Result {
+    let prefix = " ".repeat(indent);
+    write!(w, "{prefix}Could not build all parsers.")?;
+
+    for error in errors {
+        write!(w, "\n\n")?;
+        error.format(w, indent + 2)?;
+    }
+
+    Ok(())
+}
+
 /// Main error type for tsdl operations
 #[derive(Debug)]
 pub enum TsdlError {
@@ -315,9 +283,6 @@ pub enum TsdlError {
     /// Individual language failed
     Language(Language),
 
-    /// Parser building failed
-    Parser(Parser),
-
     /// Specific step failed
     Step(Step),
 }
@@ -325,13 +290,7 @@ pub enum TsdlError {
 impl fmt::Display for TsdlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TsdlError::Build(errs) => {
-                write!(f, "Could not build all parsers.")?;
-                for e in errs {
-                    write!(f, "\n\n{}", e.format_indent(2))?;
-                }
-                Ok(())
-            }
+            TsdlError::Build(errs) => format_build_errors(f, errs, 0),
             TsdlError::Command(e) => write!(f, "{e}"),
             TsdlError::Config(msg) => write!(f, "Configuration error: {msg}"),
             TsdlError::Context(kind) => write!(f, "{kind}"),
@@ -340,7 +299,6 @@ impl fmt::Display for TsdlError {
             TsdlError::Language(e) => write!(f, "{e}"),
             TsdlError::LanguageCollection(e) => write!(f, "{e}"),
             TsdlError::Message(msg) => write!(f, "{msg}"),
-            TsdlError::Parser(e) => write!(f, "{e}"),
             TsdlError::Step(e) => write!(f, "{e}"),
         }
     }
@@ -358,7 +316,6 @@ impl std::error::Error for TsdlError {
             TsdlError::Io(e) => Some(e),
             TsdlError::Language(e) => Some(e),
             TsdlError::LanguageCollection(e) => Some(e),
-            TsdlError::Parser(e) => Some(e),
             TsdlError::Step(e) => Some(e),
         }
     }
@@ -380,12 +337,6 @@ impl From<LanguageCollection> for TsdlError {
 impl From<Language> for TsdlError {
     fn from(e: Language) -> Self {
         TsdlError::Language(e)
-    }
-}
-
-impl From<Parser> for TsdlError {
-    fn from(e: Parser) -> Self {
-        TsdlError::Parser(e)
     }
 }
 
@@ -494,7 +445,6 @@ impl TsdlError {
     }
 
     /// Format the error with indentation support
-    /// Format the error with indentation support
     ///
     /// # Panics
     ///
@@ -510,15 +460,7 @@ impl TsdlError {
     fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         match self {
-            TsdlError::Build(errs) => {
-                for (i, e) in errs.iter().enumerate() {
-                    e.format(w, indent)?;
-                    if i < errs.len() - 1 {
-                        writeln!(w)?;
-                    }
-                }
-                Ok(())
-            }
+            TsdlError::Build(errs) => format_build_errors(w, errs, indent),
             TsdlError::Command(e) => e.format(w, indent),
             TsdlError::Config(msg) => write!(w, "{prefix}Configuration error: {msg}"),
             TsdlError::Context(kind) => {
@@ -527,7 +469,7 @@ impl TsdlError {
                     "{}{}\n{}",
                     prefix,
                     kind.message,
-                    TsdlError::format_context_error(&kind.error, indent + 2)
+                    kind.error.format_indent(indent + 2)
                 )
             }
             TsdlError::Io(e) => write!(w, "{prefix}IO error: {e}"),
@@ -535,13 +477,8 @@ impl TsdlError {
             TsdlError::Language(e) => e.format(w, indent),
             TsdlError::LanguageCollection(e) => write!(w, "{prefix}{e}"),
             TsdlError::Message(msg) => write!(w, "{prefix}{msg}"),
-            TsdlError::Parser(e) => e.format(w, indent),
             TsdlError::Step(e) => e.format(w, indent),
         }
-    }
-
-    fn format_context_error(err: &TsdlError, indent: usize) -> String {
-        err.format_indent(indent)
     }
 }
 
@@ -569,11 +506,7 @@ mod tests {
             source: Box::new(command_error.into()),
         };
 
-        let parser_error = Parser {
-            related: vec![TsdlError::Step(step_error)],
-        };
-
-        let tsdl_error = TsdlError::Parser(parser_error);
+        let tsdl_error = TsdlError::Build(vec![TsdlError::Step(step_error)]);
         let formatted = tsdl_error.format_indent(0);
 
         let expected = r"Could not build all parsers.

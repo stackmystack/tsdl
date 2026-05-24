@@ -24,15 +24,7 @@ use crate::{
     TsdlResult,
 };
 
-pub const NUM_STEPS: usize = 3;
 pub const WASM_EXTENSION: &str = "wasm";
-
-/// Result message from a grammar build
-#[derive(Debug, Clone)]
-pub enum GrammarMessage {
-    Completed(Update),
-    Failed(String),
-}
 
 /// A grammar ready to be built, combining definition and cache state
 #[derive(Clone, Debug)]
@@ -590,7 +582,6 @@ mod tests {
             .await;
         let build = GrammarBuild {
             context: BuildContext {
-                cache_hit: false,
                 ignore_cache: false,
                 overwrite_output,
             },
