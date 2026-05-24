@@ -65,6 +65,7 @@ pub mod app;
 pub mod args;
 pub mod build;
 pub mod cache;
+pub mod columns;
 pub mod config;
 pub mod consts;
 pub mod display;
