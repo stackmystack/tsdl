@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, num::NonZeroUsize, path::PathBuf};
 
 use clap::{
     builder::styling::{AnsiColor, Color, Style},
@@ -199,9 +199,9 @@ pub struct BuildCommand {
     pub languages: Option<Vec<String>>,
 
     /// Number of threads; defaults to the number of available CPUs.
-    #[arg(short, long, env = "TSDL_NCPUS", default_value_t = num_cpus::get())]
-    #[serde(default)]
-    pub jobs: usize,
+    #[arg(short, long, env = "TSDL_NCPUS", default_value_t = NonZeroUsize::new(num_cpus::get()).unwrap())]
+    #[serde(default = "default_jobs")]
+    pub jobs: NonZeroUsize,
 
     /// Output Directory.
     #[arg(short, long, env = "TSDL_OUT_DIR", default_value = TSDL_OUT_DIR)]
@@ -243,7 +243,7 @@ impl Default for BuildCommand {
             force: TSDL_FORCE,
             fresh: TSDL_FRESH,
             languages: None,
-            jobs: num_cpus::get(),
+            jobs: default_jobs(),
             out_dir: PathBuf::from(TSDL_OUT_DIR),
             parsers: None,
             prefix: String::from(TSDL_PREFIX),
@@ -253,6 +253,10 @@ impl Default for BuildCommand {
             unlock_timeout: TSDL_UNLOCK_TIMEOUT,
         }
     }
+}
+
+fn default_jobs() -> NonZeroUsize {
+    NonZeroUsize::new(num_cpus::get()).unwrap_or(NonZeroUsize::MIN)
 }
 
 #[derive(Clone, Debug, Deserialize, Diff, Serialize, PartialEq, Eq)]
