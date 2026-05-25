@@ -150,7 +150,7 @@ pub async fn hash_file(path: &Path) -> TsdlResult<String> {
     }
 
     let result = hasher.finalize();
-    Ok(format!("{result:x}"))
+    Ok(result.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
 #[cfg(test)]
