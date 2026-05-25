@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fmt,
-    fmt::Write,
+    fmt::{self, Write as _},
     fs,
     path::{Path, PathBuf},
     sync::Arc,

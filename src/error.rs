@@ -388,12 +388,6 @@ impl From<toml::de::Error> for TsdlError {
     }
 }
 
-impl From<figment::Error> for TsdlError {
-    fn from(e: figment::Error) -> Self {
-        TsdlError::Message(format!("Configuration error: {e}"))
-    }
-}
-
 impl From<semver::Error> for TsdlError {
     fn from(e: semver::Error) -> Self {
         TsdlError::Message(format!("Semver error: {e}"))

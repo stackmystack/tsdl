@@ -11,12 +11,8 @@ use std::{env, fs, path::Path};
 
 use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use assert_fs::TempDir;
-use figment::{
-    providers::{Format, Serialized, Toml},
-    Figment,
-};
 
-use tsdl::{args::BuildCommand, consts::TSDL_CONFIG_FILE};
+use tsdl::{args::BuildCommand, config as tsdl_config, consts::TSDL_CONFIG_FILE};
 
 pub struct Sandbox {
     pub build: BuildCommand,
@@ -40,13 +36,9 @@ impl Sandbox {
         self.config_at(config, &self.tmp.path().join(TSDL_CONFIG_FILE))
     }
 
-    pub fn config_at(&mut self, config: &str, dst: &Path) -> &mut Self {
-        self.build = Figment::new()
-            .merge(Serialized::defaults(BuildCommand::default()))
-            .merge(Toml::string(config))
-            .extract()
-            .unwrap();
-        fs::write(dst, config).unwrap();
+    pub fn config_at(&mut self, config_contents: &str, dst: &Path) -> &mut Self {
+        fs::write(dst, config_contents).unwrap();
+        self.build = tsdl_config::current(dst, None).unwrap();
         self
     }
 
