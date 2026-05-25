@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Write as _},
-    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -20,7 +19,7 @@ use crate::{
     TsdlResult,
 };
 
-/// The build cache stored in  `build-dir/TSDL_CACHE_FILE`
+/// The build cache stored in  `[build-dir]/[TSDL_CACHE_FILE]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
     pub parsers: BTreeMap<String, Entry>,
@@ -318,10 +317,10 @@ impl Db {
     }
 
     /// Delete the cache file from disk
-    pub fn delete(build_dir: &Path) -> TsdlResult<()> {
+    pub async fn delete(build_dir: &Path) -> TsdlResult<()> {
         let file = build_dir.join(TSDL_CACHE_FILE);
-        if file.exists() {
-            fs::remove_file(&file).map_err(|e| {
+        if tokio::fs::metadata(&file).await.is_ok() {
+            tokio::fs::remove_file(&file).await.map_err(|e| {
                 TsdlError::context(format!("Deleting cache file at {}", file.display()), e)
             })?;
             debug!("Cache file deleted");
@@ -349,7 +348,7 @@ impl Db {
             });
         }
 
-        let contents = fs::read_to_string(&file).map_err(|e| {
+        let contents = std::fs::read_to_string(&file).map_err(|e| {
             TsdlError::context(format!("Reading cache file at {}", file.display()), e)
         })?;
 
@@ -376,11 +375,11 @@ impl Db {
     }
 
     /// Save the cache to disk
-    pub fn save(&self) -> TsdlResult<()> {
+    pub async fn save(&self) -> TsdlResult<()> {
         let contents = toml::to_string_pretty(self)
             .map_err(|e| TsdlError::context("Serializing cache to TOML", e))?;
 
-        fs::write(&self.file, contents).map_err(|e| {
+        tokio::fs::write(&self.file, contents).await.map_err(|e| {
             TsdlError::context(format!("Writing cache file to {}", self.file.display()), e)
         })?;
 
