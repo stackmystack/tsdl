@@ -44,7 +44,6 @@ pub struct OutputConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuildContext {
-    pub ignore_cache: bool,
     pub overwrite_output: bool,
 }
 
@@ -257,7 +256,6 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
         let result = match url {
             Ok(repo) => Ok(LanguageBuild::new(
                 BuildContext {
-                    ignore_cache: app.command.force || app.command.fresh,
                     overwrite_output: app.command.force,
                 },
                 Arc::new(BuildSpec {
@@ -299,20 +297,22 @@ mod tests {
     use crate::{args::BuildCommand, display::Mode};
 
     fn app_with_languages(languages: &[&str]) -> App {
-        let mut command = BuildCommand::default();
-        command.languages = Some(
-            languages
-                .iter()
-                .map(|language| (*language).to_string())
-                .collect(),
-        );
+        let command = BuildCommand {
+            languages: Some(
+                languages
+                    .iter()
+                    .map(|language| (*language).to_string())
+                    .collect(),
+            ),
+            ..BuildCommand::default()
+        };
 
         App {
             command,
             config_path: PathBuf::from("parsers.toml"),
             log_path: PathBuf::from("tmp/log"),
             progress_mode: Mode::Plain,
-            verbose: Default::default(),
+            verbose: clap_verbosity_flag::Verbosity::default(),
         }
     }
 

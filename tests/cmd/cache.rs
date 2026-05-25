@@ -5,7 +5,9 @@ use assert_fs::prelude::*;
 use predicates::{self as p, prelude::*};
 use rstest::*;
 
-use tsdl::consts::{TSDL_BUILD_DIR, TSDL_OUT_DIR, TSDL_PREFIX};
+use tsdl::consts::{
+    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_OUT_DIR, TSDL_PREFIX,
+};
 
 use crate::cmd::Sandbox;
 
@@ -153,6 +155,9 @@ fn force_flag_reinstalls_hardlink() {
         .tmp
         .child(TSDL_BUILD_DIR)
         .child("tree-sitter-json")
+        .child(format!(
+            "tsdl-{TREE_SITTER_PLATFORM}-v{TREE_SITTER_VERSION}"
+        ))
         .child(format!("libtree-sitter-json.{DLL_EXTENSION}"));
 
     let first_inode_out = binary.metadata().unwrap().ino();

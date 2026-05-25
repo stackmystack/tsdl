@@ -80,6 +80,16 @@ pub enum CacheMissReason {
         cached: Target,
         current: Target,
     },
+    ArtifactMissing {
+        path: PathBuf,
+    },
+    ArtifactNotFile {
+        path: PathBuf,
+    },
+    ArtifactInaccessible {
+        path: PathBuf,
+        error: String,
+    },
 }
 
 impl CacheDecision {
@@ -170,6 +180,9 @@ impl CacheMissReason {
             Self::BuildScriptChanged => "script",
             Self::PrefixChanged { .. } => "prefix",
             Self::TargetChanged { .. } => "target",
+            Self::ArtifactMissing { .. }
+            | Self::ArtifactNotFile { .. }
+            | Self::ArtifactInaccessible { .. } => "artifact",
         }
     }
 
@@ -185,6 +198,9 @@ impl CacheMissReason {
             Self::BuildScriptChanged => "build script changed",
             Self::PrefixChanged { .. } => "prefix changed",
             Self::TargetChanged { .. } => "target changed",
+            Self::ArtifactMissing { .. } => "artifact missing",
+            Self::ArtifactNotFile { .. } => "artifact invalid",
+            Self::ArtifactInaccessible { .. } => "artifact inaccessible",
         }
     }
 }
@@ -219,6 +235,15 @@ impl fmt::Display for CacheMissReason {
             }
             Self::TargetChanged { cached, current } => {
                 write!(f, "target changed cached={cached:?} current={current:?}")
+            }
+            Self::ArtifactMissing { path } => {
+                write!(f, "artifact missing path={}", path.display())
+            }
+            Self::ArtifactNotFile { path } => {
+                write!(f, "artifact is not a regular file path={}", path.display())
+            }
+            Self::ArtifactInaccessible { path, error } => {
+                write!(f, "artifact inaccessible path={} error={error}", path.display())
             }
         }
     }

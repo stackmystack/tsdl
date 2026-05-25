@@ -9,6 +9,11 @@
   - `tsdl selfupdate patch` / `minor` / `major` filters compatible releases.
   - `tsdl selfupdate 2.5.0` installs an exact version with downgrade confirmation.
 
+### Performance
+
+- Artifact (wasm, dylib, so) discovery is now exact except for custom `script`
+  builds.
+
 ### UI/UX
 
 The display backend moved to ratatui. The information displayed are more
