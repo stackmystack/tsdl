@@ -1,7 +1,7 @@
 mod cache;
 mod display;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 
 pub use cache::{CacheActor, CacheAddr};
 pub use display::{DisplayActor, DisplayAddr, DisplayMessage, ProgressAddr};
@@ -69,7 +69,7 @@ pub async fn run(
     build_dir: &PathBuf,
     cache: CacheAddr,
     display: DisplayAddr,
-    jobs: usize,
+    jobs: NonZeroUsize,
     languages: Vec<LanguageBuild>,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<()> {
@@ -116,7 +116,7 @@ async fn run_inner(
     build_dir: &PathBuf,
     cache: CacheAddr,
     display: DisplayAddr,
-    jobs: usize,
+    jobs: NonZeroUsize,
     languages: Vec<LanguageBuild>,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<()> {
@@ -135,7 +135,7 @@ async fn run_inner(
               }
           })
           // Run up to `concurrency` discovery tasks at once
-          .buffer_unordered(jobs)
+          .buffer_unordered(jobs.into())
           // 3. Flattening & Error Propagation
           // Turn the stream of "Lists of Grammars" into a flat stream of "Individual Grammars"
           // If discovery failed, pass the error through as an Item
@@ -156,7 +156,7 @@ async fn run_inner(
               }
           })
           // Run up to `concurrency` build tasks at once
-          .buffer_unordered(jobs)
+          .buffer_unordered(jobs.into())
           // 5. Sink: Accumulator
           // Fold the stream into the final error vector.
           // This implicitly waits for ALL tasks to finish.

@@ -24,6 +24,7 @@ informative and more coherent.
 - **install**: Avoid replacing existing output files unless they are already the
   same file, have identical contents, or `--force` is used; replacements are now
   installed through visible temporary hardlinks.
+- `--jobs` is a strictly positive numbet now.
 
 ## [2.0.0] - 2026-02-20
 
