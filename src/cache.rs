@@ -151,12 +151,11 @@ pub async fn hash_file(path: &Path) -> TsdlResult<String> {
     }
 
     let result = hasher.finalize();
-    Ok(result
-        .iter()
-        .fold(String::with_capacity(result.len() * 2), |mut acc, b| {
-            let _ = write!(acc, "{b:02x}");
-            acc
-        }))
+    let mut hex = String::with_capacity(result.len() * 2);
+    for byte in result {
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(hex)
 }
 
 #[cfg(test)]
