@@ -11,37 +11,36 @@ use tracing_subscriber::{layer::SubscriberExt, Layer};
 
 use crate::{
     absolute_normalize,
-    args::{Args, LogColor},
-    config::current,
-    consts::{TSDL_BUILD_DIR, TSDL_CACHE_FILE, TSDL_LOCK_FILE, TSDL_LOG_FILE},
+    args::LogColor,
+    consts::{TSDL_CACHE_FILE, TSDL_LOCK_FILE, TSDL_LOG_FILE},
     error::TsdlError,
     TsdlResult,
 };
 
-pub struct Logging {
-    pub path: PathBuf,
-    _guard: WorkerGuard,
-}
+#[allow(dead_code)]
+pub struct Guard(WorkerGuard);
 
-pub fn init(args: &Args) -> TsdlResult<Logging> {
-    let color = match args.log_color {
+pub fn init(
+    log: Option<PathBuf>,
+    log_color: LogColor,
+    verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
+    build_dir: &Path,
+) -> TsdlResult<(PathBuf, Guard)> {
+    let color = match log_color {
         LogColor::Auto => atty::is(atty::Stream::Stdout),
         LogColor::No => false,
         LogColor::Yes => true,
     };
     console::set_colors_enabled(color);
-    let filter = args.verbose.log_level_filter().as_trace();
-    let path = resolve_log_path(args)?;
+    let filter = verbose.log_level_filter().as_trace();
+    let path = resolve_log_path(log.as_ref(), build_dir)?;
     let file = open_log_file(&path)?;
-    let guard = init_tracing(file, color, filter);
-    Ok(Logging {
-        path,
-        _guard: guard,
-    })
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    init_tracing(writer, color, filter);
+    Ok((path, Guard(guard)))
 }
 
-fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
-    let (writer, guard) = tracing_appender::non_blocking(file);
+fn init_tracing(writer: tracing_appender::non_blocking::NonBlocking, color: bool, filter: LevelFilter) {
     let stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_ansi(color)
@@ -72,20 +71,13 @@ fn init_tracing(file: File, color: bool, filter: LevelFilter) -> WorkerGuard {
         let subscriber = tracing_subscriber::registry().with(file_layer);
         tracing::subscriber::set_global_default(subscriber).unwrap();
     }
-    guard
 }
 
-fn resolve_log_path(args: &Args) -> TsdlResult<PathBuf> {
-    let command = current(&args.config, args.command.as_build()).ok();
-    let build_dir = command
-        .as_ref()
-        .map_or_else(|| PathBuf::from(TSDL_BUILD_DIR), |c| c.build_dir.clone());
-    let log = args
-        .log
-        .as_ref()
-        .map_or_else(|| build_dir.join(TSDL_LOG_FILE), std::clone::Clone::clone);
+fn resolve_log_path(log: Option<&PathBuf>, build_dir: &Path) -> TsdlResult<PathBuf> {
+    let log = log
+        .map_or_else(|| build_dir.join(TSDL_LOG_FILE), Clone::clone);
 
-    validate_log_path(&build_dir, &log)
+    validate_log_path(build_dir, &log)
 }
 
 fn validate_log_path(build_dir: &Path, log: &Path) -> TsdlResult<PathBuf> {

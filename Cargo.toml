@@ -49,9 +49,7 @@ clap-verbosity-flag = "3.0"
 console = "0.16"
 crossterm = "0.29"
 derive_more = { version = "2", features = ["as_ref", "deref", "display"] }
-diff-struct = "0.5"
 enum_dispatch = "0.3"
-figment = { version = "0.10", features = ["toml", "env"] }
 fs2 = "0.4"
 futures = "0.3"
 libc = "0.2"

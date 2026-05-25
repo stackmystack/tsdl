@@ -1,25 +1,22 @@
 use std::{process::ExitCode, time::Instant};
 
-use clap::Parser;
 use console::style;
 use tracing::{error, info};
 
-use tsdl::{TsdlResult, app::App, args, error::TsdlError, logging};
+use tsdl::{TsdlResult, app, args, error::TsdlError};
 
 fn main() -> ExitCode {
     set_panic_hook();
-    let args = args::Args::parse();
-
-    let logging = match logging::init(&args) {
-        Ok(logging) => logging,
+    let app = match app::setup() {
+        Ok(app) => app,
         Err(e) => {
-            eprintln!("Could not initialize logging: {e}");
+            eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
 
     info!("Starting");
-    match App::new(&args, logging.path.clone()).and_then(|mut app| run(&mut app, &args)) {
+    match run(app) {
         Err(TsdlError::Interrupted(signal)) => ExitCode::from(signal.shell_exit_code()),
         Err(e) => {
             eprintln!("{e}");
@@ -29,10 +26,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
-    match &args.command {
-        args::Command::Build(_) => {
-            let (result, duration) = time(|| tsdl::build::run(app));
+fn run(app: app::App) -> TsdlResult<()> {
+    match app.subcommand {
+        tsdl::args::Command::Build => {
+            let (result, duration) = time(|| tsdl::build::run(&app));
             match &result {
                 Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
                 Err(TsdlError::Interrupted(signal)) => println!(
@@ -43,10 +40,10 @@ fn run(app: &mut App, args: &args::Args) -> TsdlResult<()> {
             }
             result
         }
-        args::Command::Config { command } => tsdl::config::run(app, command),
-        args::Command::Selfupdate{ force, target} => tsdl::selfupdate::run(*force, target),
+        args::Command::Config { command } => tsdl::config::run(&app.config_path, &command),
+        args::Command::Selfupdate{ force, target} => tsdl::selfupdate::run(force, target.as_str()),
     }
-}
+ }
 
 pub fn set_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
@@ -56,7 +53,6 @@ pub fn set_panic_hook() {
             let meta = Metadata::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
                 .authors(env!("CARGO_PKG_AUTHORS").replace(':', ", "))
                 .homepage(env!("CARGO_PKG_HOMEPAGE"));
-
             let file_path = handle_dump(&meta, info);
             print_msg(file_path, &meta)
                 .expect("human-panic: printing error message to console failed");

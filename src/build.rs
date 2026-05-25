@@ -47,7 +47,7 @@ pub struct BuildContext {
     pub overwrite_output: bool,
 }
 
-pub fn run(app: &mut App) -> TsdlResult<()> {
+pub fn run(app: &App) -> TsdlResult<()> {
     if app.command.show_config {
         crate::config::show(&app.command)?;
     }
@@ -123,7 +123,7 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
-fn clear(app: &mut App, guard: &LockGuard) -> TsdlResult<()> {
+fn clear(app: &App, guard: &LockGuard) -> TsdlResult<()> {
     if app.command.fresh && app.command.build_dir.exists() {
         guard.clear_directory(std::slice::from_ref(&app.log_path))?;
     }
@@ -294,7 +294,7 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{args::BuildCommand, display::Mode};
+    use crate::{args::BuildCommand, config::BuildProvenance, display::Mode};
 
     fn app_with_languages(languages: &[&str]) -> App {
         let command = BuildCommand {
@@ -308,11 +308,14 @@ mod tests {
         };
 
         App {
+            subcommand: crate::args::Command::Build,
             command,
             config_path: PathBuf::from("parsers.toml"),
             log_path: PathBuf::from("tmp/log"),
             progress_mode: Mode::Plain,
+            provenance: BuildProvenance::default(),
             verbose: clap_verbosity_flag::Verbosity::default(),
+            _logging: None,
         }
     }
 

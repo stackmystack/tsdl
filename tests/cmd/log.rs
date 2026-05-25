@@ -59,7 +59,6 @@ fn build_rejects_log_paths_that_conflict_with_fresh_cleanup(
         .cmd
         .assert()
         .failure()
-        .stderr(p::str::contains("Could not initialize logging"))
         .stderr(p::str::contains(expected));
 }
 
