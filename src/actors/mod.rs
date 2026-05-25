@@ -244,8 +244,16 @@ async fn discover_grammars(
         shutdown::check()?;
 
         let key = format!("{}/{}", language.name, name);
-        let entry = cache.get(key).await;
         let name_arc: std::sync::Arc<str> = name.into();
+        let artifacts = GrammarBuild::required_artifacts_for(
+            &language.output.build_dir,
+            &ts_cli,
+            &language.spec,
+            &name_arc,
+        )?;
+        let cache_decision = cache
+            .needs_rebuild(key, hash.clone(), language.spec.clone(), artifacts)
+            .await;
 
         let progress = display
             .add_grammar(
@@ -258,8 +266,8 @@ async fn discover_grammars(
 
         builds.push(GrammarBuild {
             context: language.context.clone(),
+            cache_decision,
             dir: dir.into(),
-            entry,
             hash: hash.into(),
             language: language.name.clone(),
             name: name_arc,
