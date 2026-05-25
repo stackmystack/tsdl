@@ -188,7 +188,7 @@ impl CacheActor {
                         tx,
                         kind: ResponseKind::SaveComplete,
                     }
-                    .send(self.db.save());
+                    .send(self.db.save().await);
                 }
 
                 CacheMessage::NeedsClone { language, spec, tx } => {
