@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     actors::{Addr, Response},
     build::BuildSpec,
-    cache::{Db, Entry, Update},
+    cache::{CacheDecision, CacheMissReason, Db, Entry, Update},
     TsdlResult,
 };
 
@@ -25,7 +25,7 @@ pub enum CacheMessage {
         hash: Arc<str>,
         name: Arc<str>,
         spec: Arc<BuildSpec>,
-        tx: oneshot::Sender<bool>,
+        tx: oneshot::Sender<CacheDecision>,
     },
     /// Update a cache entry
     Update { entry: Entry, name: Arc<str> },
@@ -91,7 +91,7 @@ impl CacheAddr {
         name: S,
         hash: S,
         spec: Arc<BuildSpec>,
-    ) -> bool {
+    ) -> CacheDecision {
         self.request(|tx| CacheMessage::NeedsRebuild {
             name: name.into(),
             hash: hash.into(),
@@ -138,7 +138,11 @@ impl CacheActor {
                             hash: &hash,
                         },
                     }
-                    .send(self.db.needs_rebuild(&name, &hash, &spec));
+                    .send(if self.force {
+                        CacheDecision::miss(CacheMissReason::CacheIgnored)
+                    } else {
+                        self.db.rebuild_decision(&name, &hash, &spec)
+                    });
                 }
 
                 CacheMessage::Update { entry, name } => {

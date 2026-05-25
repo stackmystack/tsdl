@@ -15,7 +15,7 @@ use tracing::{debug, warn};
 use crate::{
     actors::ProgressAddr,
     build::{BuildContext, BuildSpec, OutputConfig},
-    cache::{self, Entry, Update},
+    cache::{self, CacheDecision, CacheMissReason, Entry, Update},
     error::{self, TsdlError},
     git::clone_fast,
     sh::{Exec, Script},
@@ -56,9 +56,10 @@ impl GrammarBuild {
         let key = format!("{}/{}", self.language, self.name);
 
         // Check cache: if cached and definitions match, skip build but still install
-        let hit = !self.context.ignore_cache && !self.needs_rebuild(&key);
+        let cache_decision = self.cache_decision();
+        debug!("[grammar:cache] {key}: {cache_decision}");
 
-        if hit {
+        if cache_decision.is_hit() {
             self.progress.set_outcome_cached().await;
             // Install the binary from the build directory
             if let Err(e) = self.install().await {
@@ -71,6 +72,7 @@ impl GrammarBuild {
         }
 
         self.progress.set_outcome_built().await;
+        self.progress.msg(cache_decision.short_message());
 
         // Use the grammar directory path provided
         if !self.dir.exists() {
@@ -386,16 +388,15 @@ impl GrammarBuild {
         ))
     }
 
-    /// Check if this grammar needs rebuilding based on cache
-    fn needs_rebuild(&self, _cache_key: &str) -> bool {
+    /// Explain whether this grammar's cache entry can satisfy the requested build.
+    fn cache_decision(&self) -> CacheDecision {
+        if self.context.ignore_cache {
+            return CacheDecision::miss(CacheMissReason::CacheIgnored);
+        }
+
         match &self.entry {
-            None => true, // No cache entry - rebuild needed
-            Some(entry) => {
-                // Check if hash or definition changed
-                let hash_eq = entry.hash == self.hash;
-                let def_eq = entry.spec == self.spec;
-                !(hash_eq && def_eq)
-            }
+            None => CacheDecision::miss(CacheMissReason::MissingEntry),
+            Some(entry) => entry.rebuild_decision(&self.hash, &self.spec),
         }
     }
 
