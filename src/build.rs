@@ -155,30 +155,40 @@ fn default_repo(language: &str) -> TsdlResult<Url> {
 fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-) -> (Option<String>, GitRef, TsdlResult<Url>) {
+) -> TsdlResult<(Option<String>, GitRef, Url)> {
     let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
     match config {
-        Some(ParserConfig::Ref(git_ref)) => {
-            (None, resolve_git_ref(git_ref), default_repo(language))
-        }
+        Some(ParserConfig::Ref(git_ref)) => Ok((
+            None,
+            GitRef::from_version_or_ref(git_ref).map_err(|e| {
+                TsdlError::context(format!("Parsing git ref {git_ref:?} for {language}"), e)
+            })?,
+            default_repo(language)?,
+        )),
 
         Some(ParserConfig::Full {
             build_script,
             git_ref,
             from,
         }) => {
-            let url_result = match from {
+            let repo = match from {
                 Some(url_str) => Url::parse(url_str).map_err(|e| {
                     TsdlError::context(format!("Parsing {url_str} for {language}"), e)
-                }),
-                None => default_repo(language),
+                })?,
+                None => default_repo(language)?,
             };
 
-            (build_script.clone(), resolve_git_ref(git_ref), url_result)
+            Ok((
+                build_script.clone(),
+                GitRef::from_version_or_ref(git_ref).map_err(|e| {
+                    TsdlError::context(format!("Parsing git ref {git_ref:?} for {language}"), e)
+                })?,
+                repo,
+            ))
         }
 
-        None => (None, GitRef::from("HEAD"), default_repo(language)),
+        None => Ok((None, GitRef::head(), default_repo(language)?)),
     }
 }
 
@@ -223,20 +233,6 @@ fn ignite(app: &App) -> TsdlResult<()> {
     result
 }
 
-fn resolve_git_ref(git_ref: &str) -> GitRef {
-    let is_sha1 = git_ref.len() == 40 && git_ref.chars().all(|c| c.is_ascii_hexdigit());
-
-    if is_sha1 || git_ref.starts_with('v') {
-        return GitRef::from(git_ref);
-    }
-
-    if git_ref.split('.').all(|part| part.parse::<u32>().is_ok()) {
-        GitRef::from(format!("v{git_ref}"))
-    } else {
-        GitRef::from(git_ref)
-    }
-}
-
 fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
     let requested_languages = &app.command.languages;
     let defined_parsers = app.command.parsers.as_ref();
@@ -252,9 +248,8 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
     let mut results = Vec::with_capacity(unique.len());
 
     for language in unique {
-        let (build_script, git_ref, url) = get_language_coords(&language, defined_parsers);
-        let result = match url {
-            Ok(repo) => Ok(LanguageBuild::new(
+        let result = match get_language_coords(&language, defined_parsers) {
+            Ok((build_script, git_ref, repo)) => Ok(LanguageBuild::new(
                 BuildContext {
                     overwrite_output: app.command.force,
                 },

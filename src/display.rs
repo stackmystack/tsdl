@@ -415,7 +415,7 @@ pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> S
 }
 
 pub(crate) fn compute_ref_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
-    let ref_str = info.git_ref().to_string();
+    let ref_str = info.git_ref().short();
     let padded = format!("{:<width$}", ref_str, width = layout.ref_);
     Span::styled(padded, REF_STYLE)
 }
@@ -628,7 +628,7 @@ impl DisplayState {
         let mut layout = CachedLayout::default();
         for spec in row_specs {
             let info = self.get_item_info(spec);
-            let ref_str = info.git_ref().to_string();
+            let ref_str = info.git_ref().short();
             let step_str = if info.total() > 0 {
                 format!("[{}/{}]", info.step().min(info.total()), info.total())
             } else {
