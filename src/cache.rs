@@ -214,9 +214,12 @@ impl fmt::Display for CacheMissReason {
             Self::RepoChanged { cached, current } => {
                 write!(f, "repo changed cached={cached} current={current}")
             }
-            Self::GitRefChanged { cached, current } => {
-                write!(f, "git ref changed cached={cached} current={current}")
-            }
+            Self::GitRefChanged { cached, current } => write!(
+                f,
+                "git ref changed cached={} current={}",
+                cached.as_str(),
+                current.as_str()
+            ),
             Self::TreeSitterChanged { cached, current } => write!(
                 f,
                 "tree-sitter changed cached=version:{} repo:{} platform:{} current=version:{} repo:{} platform:{}",
@@ -430,7 +433,7 @@ mod tests {
     fn test_spec() -> BuildSpec {
         BuildSpec {
             build_script: None,
-            git_ref: GitRef::from("master"),
+            git_ref: GitRef::new("master").unwrap(),
             repo: "https://github.com/example/parser".parse().unwrap(),
             tree_sitter: TreeSitter::default(),
             prefix: String::new(),
@@ -486,14 +489,14 @@ mod tests {
     fn test_rebuild_decision_git_ref_mismatch() {
         let cached = test_spec();
         let mut requested = cached.clone();
-        requested.git_ref = GitRef::from("v1.0.0");
+        requested.git_ref = GitRef::new("v1.0.0").unwrap();
         let cache = cache_with_entry("abc123", cached);
 
         assert_miss(
             cache.rebuild_decision("test-parser", "abc123", &requested),
             &[CacheMissReason::GitRefChanged {
-                cached: GitRef::from("master"),
-                current: GitRef::from("v1.0.0"),
+                cached: GitRef::new("master").unwrap(),
+                current: GitRef::new("v1.0.0").unwrap(),
             }],
         );
     }

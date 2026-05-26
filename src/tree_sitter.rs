@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use async_compression::tokio::bufread::GzipDecoder;
 use tokio::{fs, io, process::Command};
@@ -11,11 +10,11 @@ use url::Url;
 
 use crate::actors::{DisplayAddr, ProgressAddr};
 use crate::args::TreeSitter;
-use crate::git::{self, GitRef};
+use crate::git::{self, GitRef, GitSha, ResolvedRef};
+use crate::sh::Exec;
 use crate::shutdown;
 use crate::SafeCanonicalize;
 use crate::{error::TsdlError, TsdlResult};
-use crate::{git::Tag, sh::Exec};
 
 async fn chmod_x(prog: &Path) -> TsdlResult<()> {
     let metadata = fs::metadata(prog)
@@ -33,12 +32,12 @@ async fn cli(
     handle: &ProgressAddr,
     platform: &str,
     repo: &str,
-    tag: &Tag,
+    resolved_ref: &ResolvedRef,
 ) -> TsdlResult<PathBuf> {
-    let tag = match tag {
-        Tag::Exact { label, .. } => Cow::Borrowed(label),
-        Tag::Ref(git_ref) => {
-            handle.msg(format!("resolving exact tag for {tag}"));
+    let tag = match resolved_ref {
+        ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
+        ResolvedRef::Ref(git_ref) => {
+            handle.msg(format!("resolving exact tag for {resolved_ref}"));
             let tree_sitter = PathBuf::new().join(build_dir).join("tree-sitter");
             git::clone(repo, &tree_sitter).await?;
             Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
@@ -90,17 +89,20 @@ async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> TsdlResult<()
     Ok(())
 }
 
-fn find_tag(refs: &HashMap<String, String>, version: &str) -> Tag {
+fn find_tag(
+    refs: &HashMap<String, String>,
+    version: &str,
+) -> Result<ResolvedRef, crate::git::GitRefParseError> {
     refs.get_key_value(&format!("v{version}"))
         .or_else(|| refs.get_key_value(version))
         .map_or_else(
-            || Tag::Ref(GitRef::from_str(version).unwrap()),
+            || GitRef::from_version_or_ref(version).map(ResolvedRef::Ref),
             |(k, v)| {
                 trace!("Found! {k} -> {v}");
-                Tag::Exact {
-                    sha1: GitRef::from_str(v).unwrap(),
+                Ok(ResolvedRef::Tag {
+                    sha: GitSha::new(v.as_str())?,
                     label: k.clone(),
-                }
+                })
             },
         )
 }
@@ -149,7 +151,7 @@ pub async fn prepare(
 
     let progress = display
         .add_language(
-            display_tree_sitter_ref(&tree_sitter.version),
+            display_tree_sitter_ref(&tree_sitter.version)?,
             "tree-sitter-cli",
             2,
         )
@@ -196,23 +198,22 @@ pub async fn prepare(
     Ok(cli)
 }
 
-pub(crate) fn display_tree_sitter_ref(version: &str) -> GitRef {
-    if version.starts_with('v') || !version.split('.').all(|part| part.parse::<u32>().is_ok()) {
-        GitRef::from(version.to_string())
-    } else {
-        GitRef::from(format!("v{version}"))
-    }
+pub(crate) fn display_tree_sitter_ref(
+    version: &str,
+) -> Result<GitRef, crate::git::GitRefParseError> {
+    GitRef::from_version_or_ref(version)
 }
 
 #[allow(clippy::missing_panics_doc)]
-pub async fn tag(repo: &str, version: &str) -> TsdlResult<Tag> {
+pub async fn tag(repo: &str, version: &str) -> TsdlResult<ResolvedRef> {
     let output = Command::new("git")
         .args(["ls-remote", "--refs", "--tags", repo])
         .exec()
         .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let refs = parse_refs(&stdout);
-    Ok(find_tag(&refs, version))
+    find_tag(&refs, version)
+        .map_err(|e| TsdlError::context(format!("Parsing tree-sitter git ref {version:?}"), e))
 }
 
 #[cfg(test)]
@@ -239,26 +240,29 @@ mod tests {
     #[test]
     fn test_find_tag_exact() {
         let mut refs = HashMap::new();
-        refs.insert("v1.0.0".to_string(), "abc123".to_string());
-        let tag = find_tag(&refs, "1.0.0");
+        refs.insert(
+            "v1.0.0".to_string(),
+            "636801770eea172d140e64b691815ff11f6b556f".to_string(),
+        );
+        let tag = find_tag(&refs, "1.0.0").unwrap();
         match tag {
-            Tag::Exact { sha1, label } => {
-                assert_eq!(sha1.as_str(), "abc123");
+            ResolvedRef::Tag { sha, label } => {
+                assert_eq!(sha.as_str(), "636801770eea172d140e64b691815ff11f6b556f");
                 assert_eq!(label, "v1.0.0");
             }
-            Tag::Ref(_) => panic!("Expected Tag::Exact"),
+            ResolvedRef::Ref(_) => panic!("Expected ResolvedRef::Tag"),
         }
     }
 
     #[test]
     fn test_find_tag_ref() {
         let refs = HashMap::new();
-        let tag = find_tag(&refs, "1.0.0");
+        let tag = find_tag(&refs, "1.0.0").unwrap();
         match tag {
-            Tag::Ref(git_ref) => {
-                assert_eq!(git_ref.as_str(), "1.0.0");
+            ResolvedRef::Ref(git_ref) => {
+                assert_eq!(git_ref.as_str(), "v1.0.0");
             }
-            Tag::Exact { .. } => panic!("Expected Tag::Ref"),
+            ResolvedRef::Tag { .. } => panic!("Expected ResolvedRef::Ref"),
         }
     }
 }

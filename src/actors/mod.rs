@@ -73,12 +73,18 @@ pub async fn run(
     languages: Vec<LanguageBuild>,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<()> {
-    display
-        .reference(
-            tree_sitter::display_tree_sitter_ref(&tree_sitter.version),
-            "tree-sitter-cli",
-        )
-        .await;
+    let tree_sitter_ref = match tree_sitter::display_tree_sitter_ref(&tree_sitter.version) {
+        Ok(git_ref) => git_ref,
+        Err(err) => {
+            display.shutdown(false).await;
+            return Err(TsdlError::context(
+                format!("Parsing tree-sitter git ref {:?}", tree_sitter.version),
+                err,
+            ));
+        }
+    };
+
+    display.reference(tree_sitter_ref, "tree-sitter-cli").await;
     for language in &languages {
         display
             .reference(language.spec.git_ref.clone(), language.name.clone())

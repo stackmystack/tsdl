@@ -19,6 +19,11 @@
 The display backend moved to ratatui. The information displayed are more
 informative and more coherent.
 
+### Changed
+
+- **git**: Strongly type git refs with validated `GitRef`, `GitSha`, and
+  `ResolvedRef` values.
+
 ### Bug Fixes
 
 - **lock**: Use OS-level build locks to avoid concurrent lock acquisition races,

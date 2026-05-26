@@ -48,7 +48,7 @@ clap = { version = "4.6", features = ["cargo", "derive", "env"] }
 clap-verbosity-flag = "3.0"
 console = "0.16"
 crossterm = "0.29"
-derive_more = { version = "2", features = ["as_ref", "deref", "display"] }
+derive_more = { version = "2", features = ["display"] }
 fs2 = "0.4"
 futures = "0.3"
 libc = "0.2"

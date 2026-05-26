@@ -752,9 +752,7 @@ mod tests {
             Arc::new(grammar_dir.clone()),
             Arc::new(out_dir.clone()),
         );
-        let progress = display
-            .add_grammar(GitRef::from("HEAD"), "rust", "rust", 1)
-            .await;
+        let progress = display.add_grammar(GitRef::head(), "rust", "rust", 1).await;
         let build = GrammarBuild {
             context: BuildContext { overwrite_output },
             cache_decision: CacheDecision::miss(cache::CacheMissReason::MissingEntry),
@@ -769,7 +767,7 @@ mod tests {
             progress,
             spec: Arc::new(BuildSpec {
                 build_script: None,
-                git_ref: GitRef::from("HEAD"),
+                git_ref: GitRef::head(),
                 prefix: String::new(),
                 repo: "https://example.com/tree-sitter-rust".parse().unwrap(),
                 target: Target::Native,
