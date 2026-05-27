@@ -63,6 +63,8 @@ pub enum ParserOp {
     Build { dir: PathBuf },
     #[display("Could not clone to {}", dir.display())]
     Clone { dir: PathBuf },
+    #[display("Could not discover grammars in {}", dir.display())]
+    Discover { dir: PathBuf },
     #[display("Could not copy {} to {}", src.display(), dst.display())]
     Copy { src: PathBuf, dst: PathBuf },
     #[display("Could not generate in {}", dir.display())]
