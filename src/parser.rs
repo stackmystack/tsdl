@@ -21,7 +21,7 @@ use crate::{
     build::{BuildContext, BuildSpec, OutputConfig},
     cache::{self, CacheDecision, Entry, Update},
     error::{self, TsdlError},
-    git::{self, clone_fast, Sha},
+    git,
     sh::{Exec, Script},
     shutdown,
     walk::collect_grammar_paths,
@@ -46,7 +46,8 @@ impl Ref {
     /// Create a parser source ref from user input, preserving parser-version
     /// normalization while classifying refs for cache semantics.
     pub fn parse(value: &str) -> Result<Self, git::RefError> {
-        let git_ref = git::Ref::from_version_or_ref(value)?;
+        let normalized = normalize_source_ref(value);
+        let git_ref = git::Ref::new(normalized)?;
         if is_stable_source_ref(value, &git_ref) {
             Ok(Self::Stable(git_ref))
         } else {
@@ -68,21 +69,6 @@ impl Ref {
     pub fn requested(&self) -> &git::Ref {
         match self {
             Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
-        }
-    }
-
-    #[must_use]
-    pub fn stable_source(&self) -> cache::Source {
-        cache::Source::Stable {
-            requested: self.requested().clone(),
-        }
-    }
-
-    #[must_use]
-    pub fn moving_source(&self, commit: Sha) -> cache::Source {
-        cache::Source::Moving {
-            requested: self.requested().clone(),
-            commit,
         }
     }
 }
@@ -117,6 +103,16 @@ fn is_dotted_numeric_version(value: &str) -> bool {
         && value
             .split('.')
             .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+}
+
+fn normalize_source_ref(value: &str) -> String {
+    if git::Sha::is_full_sha(value) || value.starts_with('v') {
+        value.to_string()
+    } else if is_dotted_numeric_version(value) {
+        format!("v{value}")
+    } else {
+        value.to_string()
+    }
 }
 
 fn is_v_dotted_numeric_version(value: &str) -> bool {
@@ -207,7 +203,7 @@ impl GrammarBuild {
             entry: Entry {
                 hash: self.hash.clone(),
                 spec: self.spec.clone(),
-                source: Some(self.source.clone()),
+                source: self.source.clone(),
             },
         };
 
@@ -660,8 +656,8 @@ impl LanguageBuild {
         self
     }
 
-    pub async fn checkout(&self) -> TsdlResult<Sha> {
-        clone_fast(
+    pub async fn checkout(&self) -> TsdlResult<git::Checkout> {
+        git::checkout(
             self.spec.repo.as_str(),
             self.spec.git_ref.requested(),
             &self.output.build_dir,
@@ -676,6 +672,10 @@ impl LanguageBuild {
                 err,
             ))
         })
+    }
+
+    pub async fn is_checkout_usable(&self) -> bool {
+        git::is_checkout_usable(self.spec.repo.as_str(), &self.output.build_dir).await
     }
 }
 
@@ -917,7 +917,7 @@ mod tests {
                 out_dir: out_dir.into(),
             },
             progress,
-            source: source_ref.stable_source(),
+            source: cache::Source::stable(),
             spec: Arc::new(BuildSpec {
                 build_script: None,
                 git_ref: source_ref,

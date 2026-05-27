@@ -33,42 +33,34 @@ pub struct Entry {
     /// Complete build definition that affects parser output
     pub spec: Arc<BuildSpec>,
     /// Parser source identity used by the cache. Moving refs include the
-    /// resolved commit; older cache files do not have this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<Source>,
+    /// checked-out commit.
+    pub source: Source,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Source {
-    Stable {
-        requested: git::Ref,
-    },
-    Moving {
-        requested: git::Ref,
-        commit: git::Sha,
-    },
+    Stable,
+    Moving { commit: git::Sha },
 }
 
 impl Source {
     #[must_use]
-    pub const fn is_moving(&self) -> bool {
-        matches!(self, Self::Moving { .. })
+    pub const fn stable() -> Self {
+        Self::Stable
+    }
+
+    #[must_use]
+    pub const fn moving(commit: git::Sha) -> Self {
+        Self::Moving { commit }
     }
 }
 
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stable { requested } => write!(f, "requested={}", requested.as_str()),
-            Self::Moving { requested, commit } => {
-                write!(
-                    f,
-                    "requested={} commit={}",
-                    requested.as_str(),
-                    commit.as_str()
-                )
-            }
+            Self::Stable => write!(f, "stable"),
+            Self::Moving { commit } => write!(f, "moving commit={}", commit.as_str()),
         }
     }
 }
@@ -103,10 +95,7 @@ pub enum CacheMissReason {
         cached: parser::Ref,
         current: parser::Ref,
     },
-    SourceIdentityMissing {
-        current: Source,
-    },
-    SourceIdentityChanged {
+    SourceChanged {
         cached: Source,
         current: Source,
     },
@@ -219,7 +208,7 @@ impl CacheMissReason {
             Self::HashChanged { .. } => "hash",
             Self::RepoChanged { .. } => "repo",
             Self::RefChanged { .. } => "ref",
-            Self::SourceIdentityMissing { .. } | Self::SourceIdentityChanged { .. } => "source",
+            Self::SourceChanged { .. } => "source",
             Self::TreeSitterChanged { .. } => "tree-sitter",
             Self::BuildScriptChanged => "script",
             Self::PrefixChanged { .. } => "prefix",
@@ -238,8 +227,7 @@ impl CacheMissReason {
             Self::HashChanged { .. } => "grammar changed",
             Self::RepoChanged { .. } => "repo changed",
             Self::RefChanged { .. } => "git ref changed",
-            Self::SourceIdentityMissing { .. } => "cache identity upgraded",
-            Self::SourceIdentityChanged { .. } => "git ref resolved commit changed",
+            Self::SourceChanged { .. } => "git ref resolved commit changed",
             Self::TreeSitterChanged { .. } => "tree-sitter changed",
             Self::BuildScriptChanged => "build script changed",
             Self::PrefixChanged { .. } => "prefix changed",
@@ -268,10 +256,7 @@ impl fmt::Display for CacheMissReason {
                 cached.requested().as_str(),
                 current.requested().as_str()
             ),
-            Self::SourceIdentityMissing { current } => {
-                write!(f, "cache identity upgraded current={current}")
-            }
-            Self::SourceIdentityChanged { cached, current } => {
+            Self::SourceChanged { cached, current } => {
                 write!(f, "source changed cached={cached} current={current}")
             }
             Self::TreeSitterChanged { cached, current } => write!(
@@ -332,21 +317,11 @@ impl Entry {
             });
         }
 
-        if !git_ref_changed {
-            match (&self.source, source) {
-                (None, Source::Moving { .. }) => {
-                    reasons.push(CacheMissReason::SourceIdentityMissing {
-                        current: source.clone(),
-                    });
-                }
-                (Some(cached_source), current_source) if cached_source != current_source => {
-                    reasons.push(CacheMissReason::SourceIdentityChanged {
-                        cached: cached_source.clone(),
-                        current: current_source.clone(),
-                    });
-                }
-                _ => {}
-            }
+        if !git_ref_changed && self.source != *source {
+            reasons.push(CacheMissReason::SourceChanged {
+                cached: self.source.clone(),
+                current: source.clone(),
+            });
         }
 
         if cached.tree_sitter != spec.tree_sitter {
@@ -531,19 +506,20 @@ mod tests {
         }
     }
 
-    fn stable_source(spec: &BuildSpec) -> Source {
-        spec.git_ref.stable_source()
+    fn stable_source(_spec: &BuildSpec) -> Source {
+        Source::stable()
     }
 
     fn moving_source(spec: &BuildSpec, sha: &str) -> Source {
-        spec.git_ref.moving_source(git::Sha::new(sha).unwrap())
+        assert!(spec.git_ref.is_moving());
+        Source::moving(git::Sha::new(sha).unwrap())
     }
 
     fn cache_with_entry(hash: &str, spec: &BuildSpec) -> Db {
-        cache_with_entry_and_source(hash, spec, Some(stable_source(spec)))
+        cache_with_entry_and_source(hash, spec, stable_source(spec))
     }
 
-    fn cache_with_entry_and_source(hash: &str, spec: &BuildSpec, source: Option<Source>) -> Db {
+    fn cache_with_entry_and_source(hash: &str, spec: &BuildSpec, source: Source) -> Db {
         let mut cache = Db::default();
         cache.set(
             "test-parser".to_string(),
@@ -643,38 +619,15 @@ mod tests {
     }
 
     #[test]
-    fn test_rebuild_decision_old_stable_entry_without_source_still_hits() {
-        let spec = test_spec();
-        let cache = cache_with_entry_and_source("abc123", &spec, None);
-
-        assert_eq!(
-            cache.rebuild_decision("test-parser", "abc123", &spec, &stable_source(&spec)),
-            CacheDecision::Hit
-        );
-    }
-
-    #[test]
-    fn test_rebuild_decision_old_moving_entry_without_source_misses_once() {
-        let spec = moving_spec();
-        let source = moving_source(&spec, SHA1);
-        let cache = cache_with_entry_and_source("abc123", &spec, None);
-
-        assert_miss(
-            cache.rebuild_decision("test-parser", "abc123", &spec, &source),
-            &[CacheMissReason::SourceIdentityMissing { current: source }],
-        );
-    }
-
-    #[test]
     fn test_rebuild_decision_moving_source_commit_changed() {
         let spec = moving_spec();
         let cached_source = moving_source(&spec, SHA1);
         let current_source = moving_source(&spec, SHA2);
-        let cache = cache_with_entry_and_source("abc123", &spec, Some(cached_source.clone()));
+        let cache = cache_with_entry_and_source("abc123", &spec, cached_source.clone());
 
         assert_miss(
             cache.rebuild_decision("test-parser", "abc123", &spec, &current_source),
-            &[CacheMissReason::SourceIdentityChanged {
+            &[CacheMissReason::SourceChanged {
                 cached: cached_source,
                 current: current_source,
             }],
@@ -685,7 +638,7 @@ mod tests {
     fn test_rebuild_decision_moving_source_commit_unchanged_hits() {
         let spec = moving_spec();
         let source = moving_source(&spec, SHA1);
-        let cache = cache_with_entry_and_source("abc123", &spec, Some(source.clone()));
+        let cache = cache_with_entry_and_source("abc123", &spec, source.clone());
 
         assert_eq!(
             cache.rebuild_decision("test-parser", "abc123", &spec, &source),

@@ -36,7 +36,8 @@ Stable parser refs are cached by the requested ref only:
 - `v` plus dotted versions such as `v0.21.0`;
 - explicit tag refs under `refs/tags/...`.
 
-Moving parser refs are cached by both the requested ref and the resolved commit:
+Moving parser refs are cached by both the requested ref and the checked-out
+commit:
 
 - `HEAD`;
 - branches such as `master`, `main`, or `dev`;
@@ -76,18 +77,14 @@ parser cache treats them as the same tree-sitter CLI identity.
 Changing the tree-sitter CLI release tag, platform, or repository invalidates
 the affected parser cache entries.
 
-## Cache Migration
+## Cache Format
 
-Older cache files do not contain parser source cache identities.
+The parser source identity is intentionally small. Stable refs store only that
+they are stable because the requested ref is already part of the build spec.
+Moving refs additionally store the checked-out commit.
 
-Stable parser refs can keep using old cache entries because their cache identity
-is still the requested ref. Moving parser refs miss once after the cache format
-upgrade because TSDL needs to store the resolved commit for future comparisons.
-After that rebuild, the cache entry contains the resolved commit and normal
-moving-ref cache behavior applies.
-
-Old entries may also miss once when their tree-sitter CLI version was stored as
-raw input and the current run resolves it to a canonical release tag.
+Older cache files from previous major versions are not migrated; rebuild after
+upgrading when needed.
 
 ## Manual Controls
 

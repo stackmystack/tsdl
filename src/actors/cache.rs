@@ -17,7 +17,7 @@ use crate::{
 #[allow(dead_code)]
 enum ResponseKind<'a> {
     CacheGet { name: &'a str },
-    NeedsClone { language: &'a str },
+    HasCompatibleEntries { language: &'a str },
     NeedsRebuild { name: &'a str, hash: &'a str },
     SaveComplete,
 }
@@ -37,8 +37,8 @@ pub enum CacheMessage {
     Update { entry: Entry, name: Arc<str> },
     /// Save cache to disk
     Save { tx: oneshot::Sender<TsdlResult<()>> },
-    /// Check if clone is needed for a language
-    NeedsClone {
+    /// Check if cache contains entries compatible with a language spec.
+    HasCompatibleEntries {
         language: Arc<str>,
         spec: Arc<BuildSpec>,
         tx: oneshot::Sender<bool>,
@@ -83,8 +83,12 @@ impl CacheAddr {
         .await
     }
 
-    pub async fn needs_clone<S: Into<Arc<str>>>(&self, language: S, spec: Arc<BuildSpec>) -> bool {
-        self.request(|tx| CacheMessage::NeedsClone {
+    pub async fn has_compatible_entries<S: Into<Arc<str>>>(
+        &self,
+        language: S,
+        spec: Arc<BuildSpec>,
+    ) -> bool {
+        self.request(|tx| CacheMessage::HasCompatibleEntries {
             language: language.into(),
             spec,
             tx,
@@ -199,21 +203,21 @@ impl CacheActor {
                     .send(self.db.save().await);
                 }
 
-                CacheMessage::NeedsClone { language, spec, tx } => {
+                CacheMessage::HasCompatibleEntries { language, spec, tx } => {
                     Response {
                         tx,
-                        kind: ResponseKind::NeedsClone {
+                        kind: ResponseKind::HasCompatibleEntries {
                             language: &language,
                         },
                     }
                     .send(
-                        self.force
-                            || self
+                        !self.force
+                            && self
                                 .db
                                 .parsers
                                 .iter()
                                 .find(|(key, _)| key.starts_with(&format!("{language}/")))
-                                .is_none_or(|(_, entry)| entry.spec != spec),
+                                .is_some_and(|(_, entry)| entry.spec == spec),
                     );
                 }
 
