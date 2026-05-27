@@ -10,19 +10,13 @@ use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, ReadBuf};
 use tracing::debug;
 
-use crate::{
-    args::{Target, TreeSitter},
-    build::BuildSpec,
-    consts::TSDL_CACHE_FILE,
-    error::TsdlError,
-    git, parser, TsdlResult,
-};
+use crate::{args, build, consts, error, git, parser, TsdlResult};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct CacheKey(Arc<str>);
+pub struct Key(Arc<str>);
 
-impl CacheKey {
+impl Key {
     #[must_use]
     pub fn new(language: &parser::LanguageName, grammar: &parser::GrammarName) -> Self {
         Self(Arc::from(format!("{language}/{grammar}")))
@@ -39,19 +33,19 @@ impl CacheKey {
     }
 }
 
-impl fmt::Display for CacheKey {
+impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl From<String> for CacheKey {
+impl From<String> for Key {
     fn from(value: String) -> Self {
         Self(value.into())
     }
 }
 
-impl From<&str> for CacheKey {
+impl From<&str> for Key {
     fn from(value: &str) -> Self {
         Self(Arc::from(value))
     }
@@ -86,10 +80,10 @@ impl From<&str> for GrammarHash {
     }
 }
 
-/// The build cache stored in  `[build-dir]/[TSDL_CACHE_FILE]`
+/// The build cache stored in  `[build-dir]/[consts::TSDL_CACHE_FILE]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
-    pub parsers: BTreeMap<CacheKey, Entry>,
+    pub parsers: BTreeMap<Key, Entry>,
     pub file: PathBuf,
 }
 
@@ -99,7 +93,7 @@ pub struct Entry {
     /// Hash of the grammar.js file(s)
     pub hash: GrammarHash,
     /// Complete build definition that affects parser output
-    pub spec: Arc<BuildSpec>,
+    pub spec: Arc<build::Spec>,
     /// Parser source identity used by the cache. Moving refs include the
     /// checked-out commit.
     pub source: Source,
@@ -135,20 +129,20 @@ impl fmt::Display for Source {
 
 /// A cache lookup result for a requested parser build.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CacheDecision {
+pub enum Decision {
     Hit,
-    Miss(CacheMiss),
+    Miss(Miss),
 }
 
 /// Details explaining why a cache entry cannot satisfy a requested parser build.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CacheMiss {
-    pub reasons: Vec<CacheMissReason>,
+pub struct Miss {
+    pub reasons: Vec<MissReason>,
 }
 
 /// One reason a cached parser build cannot be reused.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CacheMissReason {
+pub enum MissReason {
     MissingEntry,
     CacheIgnored,
     HashChanged {
@@ -168,8 +162,8 @@ pub enum CacheMissReason {
         current: Source,
     },
     TreeSitterChanged {
-        cached: TreeSitter,
-        current: TreeSitter,
+        cached: args::TreeSitter,
+        current: args::TreeSitter,
     },
     BuildScriptChanged,
     PrefixChanged {
@@ -177,8 +171,8 @@ pub enum CacheMissReason {
         current: String,
     },
     TargetChanged {
-        cached: Target,
-        current: Target,
+        cached: args::Target,
+        current: args::Target,
     },
     ArtifactMissing {
         path: PathBuf,
@@ -192,20 +186,20 @@ pub enum CacheMissReason {
     },
 }
 
-impl CacheDecision {
+impl Decision {
     #[must_use]
-    pub fn miss(reason: CacheMissReason) -> Self {
-        Self::Miss(CacheMiss {
+    pub fn miss(reason: MissReason) -> Self {
+        Self::Miss(Miss {
             reasons: vec![reason],
         })
     }
 
     #[must_use]
-    pub fn from_reasons(reasons: Vec<CacheMissReason>) -> Self {
+    pub fn from_reasons(reasons: Vec<MissReason>) -> Self {
         if reasons.is_empty() {
             Self::Hit
         } else {
-            Self::Miss(CacheMiss { reasons })
+            Self::Miss(Miss { reasons })
         }
     }
 
@@ -228,16 +222,16 @@ impl CacheDecision {
     }
 }
 
-impl fmt::Display for CacheDecision {
+impl fmt::Display for Decision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CacheDecision::Hit => write!(f, "cache hit"),
-            CacheDecision::Miss(miss) => write!(f, "cache miss: {miss}"),
+            Decision::Hit => write!(f, "cache hit"),
+            Decision::Miss(miss) => write!(f, "cache miss: {miss}"),
         }
     }
 }
 
-impl CacheMiss {
+impl Miss {
     #[must_use]
     pub fn short_message(&self) -> String {
         match self.reasons.as_slice() {
@@ -246,7 +240,7 @@ impl CacheMiss {
             reasons => {
                 let labels = reasons
                     .iter()
-                    .map(CacheMissReason::short_label)
+                    .map(MissReason::short_label)
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("cache changed: {labels}")
@@ -255,7 +249,7 @@ impl CacheMiss {
     }
 }
 
-impl fmt::Display for CacheMiss {
+impl fmt::Display for Miss {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (index, reason) in self.reasons.iter().enumerate() {
             if index > 0 {
@@ -267,7 +261,7 @@ impl fmt::Display for CacheMiss {
     }
 }
 
-impl CacheMissReason {
+impl MissReason {
     #[must_use]
     pub fn short_label(&self) -> &'static str {
         match self {
@@ -307,7 +301,7 @@ impl CacheMissReason {
     }
 }
 
-impl fmt::Display for CacheMissReason {
+impl fmt::Display for MissReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingEntry => write!(f, "missing cache entry"),
@@ -362,21 +356,21 @@ impl Entry {
     pub fn rebuild_decision(
         &self,
         hash: &GrammarHash,
-        spec: &BuildSpec,
+        spec: &build::Spec,
         source: &Source,
-    ) -> CacheDecision {
+    ) -> Decision {
         let mut reasons = Vec::new();
         let cached = self.spec.as_ref();
 
         if &self.hash != hash {
-            reasons.push(CacheMissReason::HashChanged {
+            reasons.push(MissReason::HashChanged {
                 cached: self.hash.clone(),
                 current: hash.clone(),
             });
         }
 
         if cached.repo != spec.repo {
-            reasons.push(CacheMissReason::RepoChanged {
+            reasons.push(MissReason::RepoChanged {
                 cached: cached.repo.to_string(),
                 current: spec.repo.to_string(),
             });
@@ -384,45 +378,45 @@ impl Entry {
 
         let git_ref_changed = cached.git_ref != spec.git_ref;
         if git_ref_changed {
-            reasons.push(CacheMissReason::RefChanged {
+            reasons.push(MissReason::RefChanged {
                 cached: cached.git_ref.clone(),
                 current: spec.git_ref.clone(),
             });
         }
 
         if !git_ref_changed && self.source != *source {
-            reasons.push(CacheMissReason::SourceChanged {
+            reasons.push(MissReason::SourceChanged {
                 cached: self.source.clone(),
                 current: source.clone(),
             });
         }
 
         if cached.tree_sitter != spec.tree_sitter {
-            reasons.push(CacheMissReason::TreeSitterChanged {
+            reasons.push(MissReason::TreeSitterChanged {
                 cached: cached.tree_sitter.clone(),
                 current: spec.tree_sitter.clone(),
             });
         }
 
         if cached.build_script != spec.build_script {
-            reasons.push(CacheMissReason::BuildScriptChanged);
+            reasons.push(MissReason::BuildScriptChanged);
         }
 
         if cached.prefix != spec.prefix {
-            reasons.push(CacheMissReason::PrefixChanged {
+            reasons.push(MissReason::PrefixChanged {
                 cached: cached.prefix.clone(),
                 current: spec.prefix.clone(),
             });
         }
 
         if cached.target != spec.target {
-            reasons.push(CacheMissReason::TargetChanged {
+            reasons.push(MissReason::TargetChanged {
                 cached: cached.target,
                 current: spec.target,
             });
         }
 
-        CacheDecision::from_reasons(reasons)
+        Decision::from_reasons(reasons)
     }
 }
 
@@ -430,7 +424,7 @@ impl Entry {
 #[derive(Debug, Clone)]
 pub struct Update {
     pub entry: Entry,
-    pub name: CacheKey,
+    pub name: Key,
 }
 
 impl Db {
@@ -441,10 +435,10 @@ impl Db {
 
     /// Delete the cache file from disk
     pub async fn delete(build_dir: &Path) -> TsdlResult<()> {
-        let file = build_dir.join(TSDL_CACHE_FILE);
+        let file = build_dir.join(consts::TSDL_CACHE_FILE);
         if tokio::fs::metadata(&file).await.is_ok() {
             tokio::fs::remove_file(&file).await.map_err(|e| {
-                TsdlError::context(format!("Deleting cache file at {}", file.display()), e)
+                error::TsdlError::context(format!("Deleting cache file at {}", file.display()), e)
             })?;
             debug!("Cache file deleted");
         }
@@ -453,13 +447,13 @@ impl Db {
 
     /// Get cache entry for a parser
     #[must_use]
-    pub fn get(&self, name: &CacheKey) -> Option<&Entry> {
+    pub fn get(&self, name: &Key) -> Option<&Entry> {
         self.parsers.get(name)
     }
 
     /// Load the cache from disk, or return the empty cache.
     pub fn load(build_dir: &Path) -> TsdlResult<Self> {
-        let file = build_dir.join(TSDL_CACHE_FILE);
+        let file = build_dir.join(consts::TSDL_CACHE_FILE);
         if !file.exists() {
             debug!(
                 "Cache file not found at {}, returning empty cache",
@@ -472,23 +466,24 @@ impl Db {
         }
 
         let contents = std::fs::read_to_string(&file).map_err(|e| {
-            TsdlError::context(format!("Reading cache file at {}", file.display()), e)
+            error::TsdlError::context(format!("Reading cache file at {}", file.display()), e)
         })?;
 
-        toml::from_str(&contents)
-            .map_err(|e| TsdlError::context(format!("Parsing cache file at {}", file.display()), e))
+        toml::from_str(&contents).map_err(|e| {
+            error::TsdlError::context(format!("Parsing cache file at {}", file.display()), e)
+        })
     }
 
     /// Explain whether a parser cache entry can satisfy the requested build.
     pub fn rebuild_decision(
         &self,
-        name: &CacheKey,
+        name: &Key,
         hash: &GrammarHash,
-        spec: &BuildSpec,
+        spec: &build::Spec,
         source: &Source,
-    ) -> CacheDecision {
+    ) -> Decision {
         let decision = match self.get(name) {
-            None => CacheDecision::miss(CacheMissReason::MissingEntry),
+            None => Decision::miss(MissReason::MissingEntry),
             Some(entry) => entry.rebuild_decision(hash, spec, source),
         };
 
@@ -500,9 +495,9 @@ impl Db {
     #[must_use]
     pub fn needs_rebuild(
         &self,
-        name: &CacheKey,
+        name: &Key,
         hash: &GrammarHash,
-        spec: &BuildSpec,
+        spec: &build::Spec,
         source: &Source,
     ) -> bool {
         self.rebuild_decision(name, hash, spec, source)
@@ -512,10 +507,10 @@ impl Db {
     /// Save the cache to disk
     pub async fn save(&self) -> TsdlResult<()> {
         let contents = toml::to_string_pretty(self)
-            .map_err(|e| TsdlError::context("Serializing cache to TOML", e))?;
+            .map_err(|e| error::TsdlError::context("Serializing cache to TOML", e))?;
 
         tokio::fs::write(&self.file, contents).await.map_err(|e| {
-            TsdlError::context(format!("Writing cache file to {}", self.file.display()), e)
+            error::TsdlError::context(format!("Writing cache file to {}", self.file.display()), e)
         })?;
 
         debug!("Cache saved to {}", self.file.display());
@@ -523,7 +518,7 @@ impl Db {
     }
 
     /// Insert or update a parser cache entry
-    pub fn set(&mut self, name: CacheKey, entry: Entry) {
+    pub fn set(&mut self, name: Key, entry: Entry) {
         self.parsers.insert(name, entry);
     }
 }
@@ -531,7 +526,7 @@ impl Db {
 /// Hash the contents of a file using SHA-1 and return the hex string.
 pub async fn hash_file(path: &Path) -> TsdlResult<GrammarHash> {
     let mut file = tokio::fs::File::open(path).await.map_err(|e| {
-        TsdlError::context(format!("Opening file for hashing: {}", path.display()), e)
+        error::TsdlError::context(format!("Opening file for hashing: {}", path.display()), e)
     })?;
 
     let mut hasher = Sha1::new();
@@ -540,7 +535,7 @@ pub async fn hash_file(path: &Path) -> TsdlResult<GrammarHash> {
     loop {
         let mut read_buf = ReadBuf::new(&mut buffer);
         file.read_buf(&mut read_buf).await.map_err(|e| {
-            TsdlError::context(format!("Reading file for hashing: {}", path.display()), e)
+            error::TsdlError::context(format!("Reading file for hashing: {}", path.display()), e)
         })?;
 
         if read_buf.filled().is_empty() {
@@ -566,46 +561,46 @@ mod tests {
     const SHA1: &str = "636801770eea172d140e64b691815ff11f6b556f";
     const SHA2: &str = "736801770eea172d140e64b691815ff11f6b556f";
 
-    fn test_spec() -> BuildSpec {
-        BuildSpec {
+    fn test_spec() -> build::Spec {
+        build::Spec {
             build_script: None,
             git_ref: parser::Ref::parse("v1.0.0").unwrap(),
             repo: "https://github.com/example/parser".parse().unwrap(),
-            tree_sitter: TreeSitter::default(),
+            tree_sitter: args::TreeSitter::default(),
             prefix: String::new(),
-            target: Target::Native,
+            target: args::Target::Native,
         }
     }
 
-    fn moving_spec() -> BuildSpec {
-        BuildSpec {
+    fn moving_spec() -> build::Spec {
+        build::Spec {
             git_ref: parser::Ref::parse("master").unwrap(),
             ..test_spec()
         }
     }
 
-    fn stable_source(_spec: &BuildSpec) -> Source {
+    fn stable_source(_spec: &build::Spec) -> Source {
         Source::stable()
     }
 
-    fn moving_source(spec: &BuildSpec, sha: &str) -> Source {
+    fn moving_source(spec: &build::Spec, sha: &str) -> Source {
         assert!(spec.git_ref.is_moving());
         Source::moving(git::Sha::new(sha).unwrap())
     }
 
-    fn key() -> CacheKey {
-        CacheKey::from("test-parser")
+    fn key() -> Key {
+        Key::from("test-parser")
     }
 
     fn grammar_hash(value: &str) -> GrammarHash {
         GrammarHash::from(value)
     }
 
-    fn cache_with_entry(hash: &str, spec: &BuildSpec) -> Db {
+    fn cache_with_entry(hash: &str, spec: &build::Spec) -> Db {
         cache_with_entry_and_source(hash, spec, stable_source(spec))
     }
 
-    fn cache_with_entry_and_source(hash: &str, spec: &BuildSpec, source: Source) -> Db {
+    fn cache_with_entry_and_source(hash: &str, spec: &build::Spec, source: Source) -> Db {
         let mut cache = Db::default();
         cache.set(
             key(),
@@ -618,10 +613,10 @@ mod tests {
         cache
     }
 
-    fn assert_miss(decision: CacheDecision, expected: &[CacheMissReason]) {
+    fn assert_miss(decision: Decision, expected: &[MissReason]) {
         match decision {
-            CacheDecision::Hit => panic!("expected cache miss"),
-            CacheDecision::Miss(miss) => assert_eq!(miss.reasons, expected),
+            Decision::Hit => panic!("expected cache miss"),
+            Decision::Miss(miss) => assert_eq!(miss.reasons, expected),
         }
     }
 
@@ -637,7 +632,7 @@ mod tests {
                 &spec,
                 &stable_source(&spec),
             ),
-            &[CacheMissReason::MissingEntry],
+            &[MissReason::MissingEntry],
         );
     }
 
@@ -653,7 +648,7 @@ mod tests {
                 &spec,
                 &stable_source(&spec),
             ),
-            &[CacheMissReason::HashChanged {
+            &[MissReason::HashChanged {
                 cached: grammar_hash("abc123"),
                 current: grammar_hash("def456"),
             }],
@@ -674,7 +669,7 @@ mod tests {
                 &requested,
                 &stable_source(&requested),
             ),
-            &[CacheMissReason::RefChanged {
+            &[MissReason::RefChanged {
                 cached: parser::Ref::parse("v1.0.0").unwrap(),
                 current: parser::Ref::parse("v2.0.0").unwrap(),
             }],
@@ -685,7 +680,7 @@ mod tests {
     fn test_rebuild_decision_target_changed() {
         let cached = test_spec();
         let mut requested = cached.clone();
-        requested.target = Target::Wasm;
+        requested.target = args::Target::Wasm;
         let cache = cache_with_entry("abc123", &cached);
 
         assert_miss(
@@ -695,9 +690,9 @@ mod tests {
                 &requested,
                 &stable_source(&requested),
             ),
-            &[CacheMissReason::TargetChanged {
-                cached: Target::Native,
-                current: Target::Wasm,
+            &[MissReason::TargetChanged {
+                cached: args::Target::Native,
+                current: args::Target::Wasm,
             }],
         );
     }
@@ -714,7 +709,7 @@ mod tests {
                 &spec,
                 &stable_source(&spec)
             ),
-            CacheDecision::Hit
+            Decision::Hit
         );
         assert!(!cache.needs_rebuild(
             &key(),
@@ -733,7 +728,7 @@ mod tests {
 
         assert_miss(
             cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &current_source),
-            &[CacheMissReason::SourceChanged {
+            &[MissReason::SourceChanged {
                 cached: cached_source,
                 current: current_source,
             }],
@@ -748,7 +743,7 @@ mod tests {
 
         assert_eq!(
             cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &source),
-            CacheDecision::Hit
+            Decision::Hit
         );
     }
 
@@ -758,7 +753,7 @@ mod tests {
         let mut requested = cached.clone();
         requested.build_script = Some("make".to_string());
         requested.prefix = "custom-".to_string();
-        requested.target = Target::All;
+        requested.target = args::Target::All;
         let cache = cache_with_entry("abc123", &cached);
 
         assert_miss(
@@ -769,18 +764,18 @@ mod tests {
                 &stable_source(&requested),
             ),
             &[
-                CacheMissReason::HashChanged {
+                MissReason::HashChanged {
                     cached: grammar_hash("abc123"),
                     current: grammar_hash("def456"),
                 },
-                CacheMissReason::BuildScriptChanged,
-                CacheMissReason::PrefixChanged {
+                MissReason::BuildScriptChanged,
+                MissReason::PrefixChanged {
                     cached: String::new(),
                     current: "custom-".to_string(),
                 },
-                CacheMissReason::TargetChanged {
-                    cached: Target::Native,
-                    current: Target::All,
+                MissReason::TargetChanged {
+                    cached: args::Target::Native,
+                    current: args::Target::All,
                 },
             ],
         );

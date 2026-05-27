@@ -145,6 +145,7 @@ impl Target {
         matches!(self, Self::All | Self::Wasm)
     }
 
+    #[must_use]
     pub fn to_lowercase(&self) -> &'static str {
         match self {
             Target::Native => "native",

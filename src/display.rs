@@ -491,7 +491,7 @@ pub(crate) fn compute_msg_cell(
 }
 
 // ---------------------------------------------------------------------------
-// DisplayState — the source of truth
+// State — the source of truth
 // ---------------------------------------------------------------------------
 
 /// Pre-computed dimmed footer lines (static; never change).
@@ -504,7 +504,7 @@ fn dim_line(text: String) -> Line<'static> {
     ))
 }
 
-pub(crate) struct DisplayState {
+pub(crate) struct State {
     pub mode: Mode,
     pub repos: HashMap<ItemId, RepoEntry>,
     pub grammars: HashMap<ItemId, GrammarEntry>,
@@ -514,7 +514,7 @@ pub(crate) struct DisplayState {
     footer_out: Line<'static>,
 }
 
-impl DisplayState {
+impl State {
     pub fn new(mode: Mode, build_dir: Arc<PathBuf>, out_dir: Arc<PathBuf>) -> Self {
         let footer_build = dim_line(format!("build: {}", build_dir.display()));
         let footer_out = dim_line(format!("out:   {}", out_dir.display()));

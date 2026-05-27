@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use derive_more::derive::Display;
 
-use crate::shutdown::ShutdownSignal;
+use crate::shutdown::Signal;
 
 /// Represents a single layer in the context chain
 #[derive(Debug)]
@@ -272,7 +272,7 @@ pub enum TsdlError {
     Io(std::io::Error),
 
     /// Build was interrupted by a Unix signal.
-    Interrupted(ShutdownSignal),
+    Interrupted(Signal),
 
     /// Simple error message
     Message(String),
