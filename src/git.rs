@@ -2,13 +2,14 @@ use std::{
     ffi::OsStr,
     fmt,
     path::{Component, Path, PathBuf},
+    result::Result as StdResult,
     sync::Arc,
 };
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use tokio::{fs, process::Command};
 
-use crate::{error::TsdlError, sh::Exec, TsdlResult};
+use crate::{sh::Exec, Error, Result, ResultExt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefError {
@@ -41,9 +42,13 @@ impl fmt::Display for RefError {
 
 impl std::error::Error for RefError {}
 
-impl From<RefError> for TsdlError {
+type RefResult<T> = StdResult<T, RefError>;
+
+impl From<RefError> for Error {
     fn from(error: RefError) -> Self {
-        TsdlError::message(error.to_string())
+        Error::Message {
+            message: error.to_string(),
+        }
     }
 }
 
@@ -52,7 +57,7 @@ pub struct Ref(Arc<str>);
 
 impl Ref {
     /// Create a validated git ref.
-    pub fn new(value: impl Into<Arc<str>>) -> Result<Self, RefError> {
+    pub fn new(value: impl Into<Arc<str>>) -> RefResult<Self> {
         let value = value.into();
         validate_git_ref(&value)?;
         Ok(Self(value))
@@ -95,7 +100,7 @@ impl AsRef<str> for Ref {
 impl TryFrom<&str> for Ref {
     type Error = RefError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> StdResult<Self, Self::Error> {
         Self::new(value)
     }
 }
@@ -103,7 +108,7 @@ impl TryFrom<&str> for Ref {
 impl TryFrom<String> for Ref {
     type Error = RefError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+    fn try_from(value: String) -> StdResult<Self, Self::Error> {
         Self::new(value)
     }
 }
@@ -111,7 +116,7 @@ impl TryFrom<String> for Ref {
 impl std::str::FromStr for Ref {
     type Err = RefError;
 
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
+    fn from_str(value: &str) -> StdResult<Self, Self::Err> {
         Self::new(value)
     }
 }
@@ -123,7 +128,7 @@ impl fmt::Display for Ref {
 }
 
 impl Serialize for Ref {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -132,7 +137,7 @@ impl Serialize for Ref {
 }
 
 impl<'de> Deserialize<'de> for Ref {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -146,7 +151,7 @@ pub struct Sha(Arc<str>);
 
 impl Sha {
     /// Create a validated full 40-character git SHA-1.
-    pub fn new(value: impl Into<Arc<str>>) -> Result<Self, RefError> {
+    pub fn new(value: impl Into<Arc<str>>) -> RefResult<Self> {
         let value = value.into();
         validate_git_sha(&value)?;
         Ok(Self(value))
@@ -177,7 +182,7 @@ impl AsRef<str> for Sha {
 impl TryFrom<&str> for Sha {
     type Error = RefError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> StdResult<Self, Self::Error> {
         Self::new(value)
     }
 }
@@ -185,7 +190,7 @@ impl TryFrom<&str> for Sha {
 impl TryFrom<String> for Sha {
     type Error = RefError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+    fn try_from(value: String) -> StdResult<Self, Self::Error> {
         Self::new(value)
     }
 }
@@ -193,7 +198,7 @@ impl TryFrom<String> for Sha {
 impl std::str::FromStr for Sha {
     type Err = RefError;
 
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
+    fn from_str(value: &str) -> StdResult<Self, Self::Err> {
         Self::new(value)
     }
 }
@@ -205,7 +210,7 @@ impl fmt::Display for Sha {
 }
 
 impl Serialize for Sha {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -214,7 +219,7 @@ impl Serialize for Sha {
 }
 
 impl<'de> Deserialize<'de> for Sha {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -249,7 +254,7 @@ impl fmt::Display for ResolvedRef {
     }
 }
 
-fn validate_git_ref(value: &str) -> Result<(), RefError> {
+fn validate_git_ref(value: &str) -> RefResult<()> {
     if value.is_empty() {
         return Err(RefError::EmptyRef);
     }
@@ -315,7 +320,7 @@ fn validate_git_ref(value: &str) -> Result<(), RefError> {
     Ok(())
 }
 
-fn validate_git_sha(value: &str) -> Result<(), RefError> {
+fn validate_git_sha(value: &str) -> RefResult<()> {
     if value.len() != 40 {
         return Err(RefError::InvalidShaLength {
             actual: value.len(),
@@ -330,7 +335,7 @@ fn validate_git_sha(value: &str) -> Result<(), RefError> {
 }
 
 // TODO: get rid of async fs completely.
-async fn clean_anyway(cwd: &Path) -> TsdlResult<()> {
+async fn clean_anyway(cwd: &Path) -> Result<()> {
     if cwd.exists() {
         if cwd.is_dir() {
             fs::remove_dir_all(cwd).await
@@ -341,7 +346,7 @@ async fn clean_anyway(cwd: &Path) -> TsdlResult<()> {
     Ok(())
 }
 
-pub async fn clone(repo: &str, cwd: &Path) -> TsdlResult<()> {
+pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
     if cwd.exists() {
         Command::new("git")
             .current_dir(cwd)
@@ -357,7 +362,7 @@ pub async fn clone(repo: &str, cwd: &Path) -> TsdlResult<()> {
     Ok(())
 }
 
-pub async fn checkout(repo: &str, git_ref: &Ref, cwd: &Path) -> TsdlResult<Checkout> {
+pub async fn checkout(repo: &str, git_ref: &Ref, cwd: &Path) -> Result<Checkout> {
     checkout_with_force(repo, git_ref, cwd, false).await
 }
 
@@ -366,7 +371,7 @@ pub async fn checkout_with_force(
     git_ref: &Ref,
     cwd: &Path,
     force: bool,
-) -> TsdlResult<Checkout> {
+) -> Result<Checkout> {
     if force || !is_same_remote(cwd, repo).await {
         clean_anyway(cwd).await?;
     }
@@ -375,16 +380,13 @@ pub async fn checkout_with_force(
     } else {
         init_fetch_and_checkout(cwd, repo, git_ref).await?;
     }
-    let commit = get_head_sha(cwd).await.map_err(|err| {
-        TsdlError::context(
-            format!("Resolving checked out commit for {}", cwd.display()),
-            err,
-        )
-    })?;
+    let commit = get_head_sha(cwd)
+        .await
+        .with_context(|| format!("Resolving checked out commit for {}", cwd.display()))?;
     Ok(Checkout { commit })
 }
 
-async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
+async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> Result<()> {
     Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(cwd)
@@ -399,7 +401,7 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
     Ok(())
 }
 
-async fn get_head_sha1(cwd: &Path) -> TsdlResult<String> {
+async fn get_head_sha1(cwd: &Path) -> Result<String> {
     String::from_utf8(
         Command::new("git")
             .current_dir(cwd)
@@ -408,15 +410,15 @@ async fn get_head_sha1(cwd: &Path) -> TsdlResult<String> {
             .await?
             .stdout,
     )
-    .map_err(|e| TsdlError::context("rev-parse HEAD is not a valid utf-8", e))
+    .context("rev-parse HEAD is not a valid utf-8")
 }
 
-async fn get_head_sha(cwd: &Path) -> TsdlResult<Sha> {
+async fn get_head_sha(cwd: &Path) -> Result<Sha> {
     let value = get_head_sha1(cwd).await?;
-    Sha::new(value.trim()).map_err(|e| TsdlError::context("Parsing HEAD commit", e))
+    Sha::new(value.trim()).context("Parsing HEAD commit")
 }
 
-async fn get_remote_url(cwd: &Path) -> TsdlResult<String> {
+async fn get_remote_url(cwd: &Path) -> Result<String> {
     String::from_utf8(
         Command::new("git")
             .current_dir(cwd)
@@ -425,10 +427,10 @@ async fn get_remote_url(cwd: &Path) -> TsdlResult<String> {
             .await?
             .stdout,
     )
-    .map_err(|e| TsdlError::context("remote get-url origin did not return a valid utf-8", e))
+    .context("remote get-url origin did not return a valid utf-8")
 }
 
-async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> TsdlResult<()> {
+async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> Result<()> {
     clean_anyway(cwd).await?;
     fs::create_dir_all(cwd).await?;
 
@@ -474,15 +476,15 @@ async fn is_valid_git_dir(cwd: &Path) -> bool {
     is_inside_work_tree && can_parse_head
 }
 
-pub async fn list_grammar_files(cwd: &Path) -> TsdlResult<Vec<PathBuf>> {
+pub async fn list_grammar_files(cwd: &Path) -> Result<Vec<PathBuf>> {
     let output = Command::new("git")
         .current_dir(cwd)
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
         .exec()
         .await?;
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| TsdlError::context("git ls-files output is not valid utf-8", e))?;
+    let stdout =
+        String::from_utf8(output.stdout).context("git ls-files output is not valid utf-8")?;
 
     let exclude = [
         ".github", "bindings", "doc", "docs", "examples", "queries", "script", "scripts", "test",
@@ -523,7 +525,7 @@ pub async fn list_grammar_files(cwd: &Path) -> TsdlResult<Vec<PathBuf>> {
     Ok(result)
 }
 
-async fn reset_head_hard(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
+async fn reset_head_hard(cwd: &Path, git_ref: &Ref) -> Result<()> {
     if git_ref.as_str() != get_head_sha1(cwd).await?.trim() {
         Command::new("git")
             .current_dir(cwd)
@@ -535,7 +537,7 @@ async fn reset_head_hard(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
     Ok(())
 }
 
-pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> TsdlResult<String> {
+pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> Result<String> {
     // Try to find a tag for this ref
     let tag = Command::new("git")
         .current_dir(cwd)
@@ -546,7 +548,7 @@ pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> TsdlResult<String> {
     if let Ok(output) = tag {
         // Found a tag, use it
         String::from_utf8(output.stdout)
-            .map_err(|e| TsdlError::context("Failed to parse git tag output as UTF-8", e))
+            .context("Failed to parse git tag output as UTF-8")
             .map(|s| s.trim().to_string())
     } else {
         // No tag found (e.g., ref is a branch), fall back to commit SHA1
@@ -556,7 +558,7 @@ pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> TsdlResult<String> {
             .exec()
             .await?;
         String::from_utf8(sha1.stdout)
-            .map_err(|e| TsdlError::context("Failed to parse git rev-parse output as UTF-8", e))
+            .context("Failed to parse git rev-parse output as UTF-8")
             .map(|s| s.trim().to_string())
     }
 }

@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::result::Result as StdResult;
 
 use async_compression::tokio::bufread::GzipDecoder;
 use tokio::{fs, io, process::Command};
@@ -13,8 +14,7 @@ use crate::args;
 use crate::git;
 use crate::sh::Exec;
 use crate::shutdown;
-use crate::SafeCanonicalize;
-use crate::{error, TsdlResult};
+use crate::{Result, ResultExt, SafeCanonicalize};
 
 #[derive(Debug, Clone)]
 pub struct PreparedCli {
@@ -22,15 +22,15 @@ pub struct PreparedCli {
     pub tree_sitter: args::TreeSitter,
 }
 
-async fn chmod_x(prog: &Path) -> TsdlResult<()> {
-    let metadata = fs::metadata(prog).await.map_err(|e| {
-        error::TsdlError::context(format!("getting metadata for {}", prog.display()), e)
-    })?;
+async fn chmod_x(prog: &Path) -> Result<()> {
+    let metadata = fs::metadata(prog)
+        .await
+        .with_context(|| format!("getting metadata for {}", prog.display()))?;
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(prog, permissions)
         .await
-        .map_err(|e| error::TsdlError::context(format!("chmod +x {}", prog.display()), e))
+        .with_context(|| format!("chmod +x {}", prog.display()))
 }
 
 async fn cli(
@@ -39,7 +39,7 @@ async fn cli(
     platform: &str,
     repo: &str,
     tag: &str,
-) -> TsdlResult<PathBuf> {
+) -> Result<PathBuf> {
     let cli = format!("tree-sitter-{platform}");
     let res = PathBuf::new()
         .join(build_dir)
@@ -67,7 +67,7 @@ async fn resolve_release_tag(
     handle: &actors::ProgressAddr,
     repo: &str,
     resolved_ref: &git::ResolvedRef,
-) -> TsdlResult<String> {
+) -> Result<String> {
     let tag = match resolved_ref {
         git::ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
         git::ResolvedRef::Ref(git_ref) => {
@@ -80,34 +80,34 @@ async fn resolve_release_tag(
     Ok(tag.into_owned())
 }
 
-async fn download(gz: &Path, url: &str) -> TsdlResult<()> {
+async fn download(gz: &Path, url: &str) -> Result<()> {
     fs::write(
         gz,
         reqwest::get(url)
             .await
-            .map_err(|e| error::TsdlError::context("fetch", e))?
+            .context("fetch")?
             .bytes()
             .await
-            .map_err(|e| error::TsdlError::context("fetching bytes", e))?,
+            .context("fetching bytes")?,
     )
     .await
-    .map_err(|e| error::TsdlError::context(format!("downloading {url} to {}", gz.display()), e))
+    .with_context(|| format!("downloading {url} to {}", gz.display()))
 }
 
-async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> TsdlResult<()> {
+async fn download_and_extract(gz: &Path, url: &str, res: &Path) -> Result<()> {
     download(gz, url).await?;
     gunzip(gz, res).await?;
     chmod_x(res).await?;
     fs::remove_file(gz)
         .await
-        .map_err(|e| error::TsdlError::context(format!("removing {}", gz.display()), e))?;
+        .with_context(|| format!("removing {}", gz.display()))?;
     Ok(())
 }
 
 fn find_tag(
     refs: &HashMap<String, String>,
     version: &str,
-) -> Result<git::ResolvedRef, crate::git::RefError> {
+) -> StdResult<git::ResolvedRef, crate::git::RefError> {
     refs.get_key_value(&format!("v{version}"))
         .or_else(|| refs.get_key_value(version))
         .map_or_else(
@@ -139,21 +139,21 @@ fn normalize_release_ref(value: &str) -> String {
     }
 }
 
-async fn gunzip(gz: &Path, to: &Path) -> TsdlResult<()> {
+async fn gunzip(gz: &Path, to: &Path) -> Result<()> {
     let file = fs::File::open(gz)
         .await
-        .map_err(|e| error::TsdlError::context(format!("opening {}", gz.display()), e))?;
+        .with_context(|| format!("opening {}", gz.display()))?;
     let mut decompressor = GzipDecoder::new(tokio::io::BufReader::new(file));
     // let path = gz.with_extension("");
 
     let mut file = tokio::fs::File::create(to)
         .await
-        .map_err(|e| error::TsdlError::context(format!("creating {}", to.display()), e))?;
+        .with_context(|| format!("creating {}", to.display()))?;
 
     io::copy(&mut decompressor, &mut file)
         .await
         .and(Ok(()))
-        .map_err(|e| error::TsdlError::context(format!("decompressing {}", gz.display()), e))
+        .with_context(|| format!("decompressing {}", gz.display()))
 }
 
 fn parse_refs(stdout: &str) -> HashMap<String, String> {
@@ -176,7 +176,7 @@ pub async fn prepare(
     build_dir: &PathBuf,
     display: actors::DisplayAddr,
     tree_sitter: &args::TreeSitter,
-) -> TsdlResult<PreparedCli> {
+) -> Result<PreparedCli> {
     shutdown::test_delay().await;
     shutdown::check()?;
     debug!("[prepare] tree-sitter-cli version={}", tree_sitter.version);
@@ -189,8 +189,7 @@ pub async fn prepare(
         )
         .await;
 
-    let repo = Url::parse(&tree_sitter.repo)
-        .map_err(|e| error::TsdlError::context("Parsing the tree-sitter URL", e))?;
+    let repo = Url::parse(&tree_sitter.repo).context("Parsing the tree-sitter URL")?;
     let git_ref = &tree_sitter.version;
 
     progress.step(format!("resolving {git_ref}"));
@@ -250,21 +249,19 @@ pub async fn prepare(
     })
 }
 
-pub(crate) fn display_tree_sitter_ref(version: &str) -> Result<git::Ref, crate::git::RefError> {
+pub(crate) fn display_tree_sitter_ref(version: &str) -> StdResult<git::Ref, crate::git::RefError> {
     git::Ref::new(normalize_release_ref(version))
 }
 
 #[allow(clippy::missing_panics_doc)]
-pub async fn tag(repo: &str, version: &str) -> TsdlResult<git::ResolvedRef> {
+pub async fn tag(repo: &str, version: &str) -> Result<git::ResolvedRef> {
     let output = Command::new("git")
         .args(["ls-remote", "--refs", "--tags", repo])
         .exec()
         .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let refs = parse_refs(&stdout);
-    find_tag(&refs, version).map_err(|e| {
-        error::TsdlError::context(format!("Parsing tree-sitter git ref {version:?}"), e)
-    })
+    find_tag(&refs, version).with_context(|| format!("Parsing tree-sitter git ref {version:?}"))
 }
 
 #[cfg(test)]

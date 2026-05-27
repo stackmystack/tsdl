@@ -5,15 +5,14 @@ use tokio::{process::Command, time};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    error,
     shutdown::{self, PgId},
-    TsdlResult,
+    Error, Result, ResultExt,
 };
 
 pub trait Exec {
-    fn display(&self) -> TsdlResult<String>;
-    fn display_full(&self) -> TsdlResult<String>;
-    fn exec(&mut self) -> impl std::future::Future<Output = TsdlResult<Output>>;
+    fn display(&self) -> Result<String>;
+    fn display_full(&self) -> Result<String>;
+    fn exec(&mut self) -> impl std::future::Future<Output = Result<Output>>;
 }
 
 pub trait Script {
@@ -21,25 +20,22 @@ pub trait Script {
 }
 
 impl Exec for Command {
-    fn display(&self) -> TsdlResult<String> {
+    fn display(&self) -> Result<String> {
         let program = self.as_std().get_program().to_string_lossy();
         let args = self.as_std().get_args();
         let mut res = String::new();
 
-        write!(res, "{program} ").map_err(|e| {
-            error::TsdlError::context("Failed to write program to display string", e)
-        })?;
+        write!(res, "{program} ").context("Failed to write program to display string")?;
 
         for arg in args {
-            write!(res, "{} ", arg.to_string_lossy()).map_err(|e| {
-                error::TsdlError::context("Failed to write argument to display string", e)
-            })?;
+            write!(res, "{} ", arg.to_string_lossy())
+                .context("Failed to write argument to display string")?;
         }
 
         Ok(res.trim_end().to_string())
     }
 
-    fn display_full(&self) -> TsdlResult<String> {
+    fn display_full(&self) -> Result<String> {
         let cwd = self.as_std().get_current_dir();
         let base = self.display()?;
 
@@ -50,7 +46,7 @@ impl Exec for Command {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn exec(&mut self) -> TsdlResult<Output> {
+    async fn exec(&mut self) -> Result<Output> {
         let cmd_full = self.display_full()?;
         let cmd_short = self.display()?;
         trace!("{cmd_full}");
@@ -68,14 +64,15 @@ impl Exec for Command {
         // sub-tree (e.g. `tree-sitter build` → `node` → `cc`).
         self.as_std_mut().process_group(0);
 
-        let child = self
-            .spawn()
-            .map_err(|e| error::TsdlError::context("Failed to execute command", e))?;
+        let child = self.spawn().context("Failed to execute command")?;
 
         let child_pid = child.id();
-        let pgid = child_pid.map(PgId::try_from).transpose().map_err(|e| {
-            error::TsdlError::message(format!("Invalid child process group id: {e}"))
-        })?;
+        let pgid = child_pid
+            .map(PgId::try_from)
+            .transpose()
+            .map_err(|e| Error::Message {
+                message: format!("Invalid child process group id: {e}"),
+            })?;
         debug!("spawned pid={child_pid:?} cmd={cmd_short}");
 
         let pgid_guard = match (pgid, shutdown::current()) {
@@ -139,14 +136,13 @@ impl Exec for Command {
                 // tiny window is rare, but this is exactly the kind of edge case
                 // process-group code tries to avoid.
                 drop(pgid_guard);
-                return Err(error::TsdlError::Interrupted(signal));
+                return Err(Error::Interrupted { signal });
             }
         };
 
         drop(pgid_guard);
 
-        let output =
-            output.map_err(|e| error::TsdlError::context("Failed to execute command", e))?;
+        let output = output.context("Failed to execute command")?;
 
         if output.status.success() {
             return Ok(output);
@@ -166,12 +162,11 @@ impl Exec for Command {
 
         error!("{msg}\nStdOut:\n{stdout}\nStdErr\n{stderr}");
 
-        Err(error::Command {
+        Err(Error::Command {
             msg,
             stderr,
             stdout,
-        }
-        .into())
+        })
     }
 }
 

@@ -56,8 +56,6 @@ use std::{
     time::Duration,
 };
 
-use crate::error::TsdlError;
-
 extern crate log;
 
 pub mod actors;
@@ -70,6 +68,7 @@ pub mod config;
 pub mod consts;
 pub mod display;
 pub mod error;
+pub use error::{Cause, Error, Result, ResultExt};
 pub mod git;
 pub mod lock;
 pub mod logging;
@@ -82,35 +81,34 @@ pub mod tree_sitter;
 pub mod walk;
 
 pub trait SafeCanonicalize {
-    fn canon(&self) -> TsdlResult<PathBuf>;
+    fn canon(&self) -> Result<PathBuf>;
 }
 
 impl SafeCanonicalize for Path {
-    fn canon(&self) -> TsdlResult<PathBuf> {
+    fn canon(&self) -> Result<PathBuf> {
         if self.is_absolute() {
             Ok(self.to_path_buf())
         } else {
-            let current_dir = env::current_dir()
-                .map_err(|e| TsdlError::context("Failed to get current directory", e))?;
+            let current_dir = env::current_dir().context("Failed to get current directory")?;
             Ok(current_dir.join(self))
         }
     }
 }
 
 impl SafeCanonicalize for PathBuf {
-    fn canon(&self) -> TsdlResult<PathBuf> {
+    fn canon(&self) -> Result<PathBuf> {
         self.as_path().canon()
     }
 }
 
 /// Convert a path to an absolute, lexically-normalized path without requiring
 /// the final path to exist.
-pub fn absolute_normalize(path: &Path) -> TsdlResult<PathBuf> {
+pub fn absolute_normalize(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         env::current_dir()
-            .map_err(|e| TsdlError::context("Failed to get current directory", e))?
+            .context("Failed to get current directory")?
             .join(path)
     };
 
@@ -181,11 +179,8 @@ pub fn relative_to_cwd(dir: &Path) -> PathBuf {
     }
 }
 
-/// Result type for tsdl operations
-pub type TsdlResult<T> = Result<T, error::TsdlError>;
-
 /// Prompt user for confirmation with default behavior
-pub fn prompt_user(question: &str, default_yes: bool) -> TsdlResult<bool> {
+pub fn prompt_user(question: &str, default_yes: bool) -> Result<bool> {
     let options = if default_yes { "[Y/n]" } else { "[y/N]" };
 
     eprint!("{question} {options}: ");
@@ -195,7 +190,7 @@ pub fn prompt_user(question: &str, default_yes: bool) -> TsdlResult<bool> {
 
     io::stdin()
         .read_line(&mut input)
-        .map_err(|e| TsdlError::context("Reading user input", e))?;
+        .context("Reading user input")?;
 
     let input = input.trim().to_lowercase();
 

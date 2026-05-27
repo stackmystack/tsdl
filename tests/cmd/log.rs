@@ -2,7 +2,7 @@ use rstest::*;
 
 use assert_fs::prelude::*;
 use predicates::{self as p};
-use tsdl::consts::TSDL_BUILD_DIR;
+use tsdl::consts::BUILD_DIR;
 
 use crate::cmd::Sandbox;
 
@@ -18,7 +18,7 @@ fn build_no_args_should_log_to_default_path() {
     assert!(!sandbox.is_empty());
     sandbox
         .tmp
-        .child(TSDL_BUILD_DIR)
+        .child(BUILD_DIR)
         .child("log")
         .assert(p::path::exists())
         .assert(p::path::is_file());
@@ -65,7 +65,7 @@ fn build_rejects_log_paths_that_conflict_with_fresh_cleanup(
 #[rstest]
 fn fresh_preserves_root_level_custom_log_and_removes_build_entries() {
     let mut sandbox = Sandbox::new();
-    let stale = sandbox.tmp.child(TSDL_BUILD_DIR).child("stale.txt");
+    let stale = sandbox.tmp.child(BUILD_DIR).child("stale.txt");
     stale.write_str("stale").unwrap();
 
     sandbox
@@ -75,7 +75,7 @@ fn fresh_preserves_root_level_custom_log_and_removes_build_entries() {
 
     sandbox
         .tmp
-        .child(TSDL_BUILD_DIR)
+        .child(BUILD_DIR)
         .child("custom.log")
         .assert(p::path::exists())
         .assert(p::path::is_file());

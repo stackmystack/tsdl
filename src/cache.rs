@@ -10,7 +10,7 @@ use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, ReadBuf};
 use tracing::debug;
 
-use crate::{args, build, consts, error, git, parser, TsdlResult};
+use crate::{args, build, consts, git, parser, Result, ResultExt};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -80,7 +80,7 @@ impl From<&str> for GrammarHash {
     }
 }
 
-/// The build cache stored in  `[build-dir]/[consts::TSDL_CACHE_FILE]`
+/// The build cache stored in  `[build-dir]/[consts::CACHE_FILE]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
     pub parsers: BTreeMap<Key, Entry>,
@@ -434,12 +434,12 @@ impl Db {
     }
 
     /// Delete the cache file from disk
-    pub async fn delete(build_dir: &Path) -> TsdlResult<()> {
-        let file = build_dir.join(consts::TSDL_CACHE_FILE);
+    pub async fn delete(build_dir: &Path) -> Result<()> {
+        let file = build_dir.join(consts::CACHE_FILE);
         if tokio::fs::metadata(&file).await.is_ok() {
-            tokio::fs::remove_file(&file).await.map_err(|e| {
-                error::TsdlError::context(format!("Deleting cache file at {}", file.display()), e)
-            })?;
+            tokio::fs::remove_file(&file)
+                .await
+                .with_context(|| format!("Deleting cache file at {}", file.display()))?;
             debug!("Cache file deleted");
         }
         Ok(())
@@ -452,8 +452,8 @@ impl Db {
     }
 
     /// Load the cache from disk, or return the empty cache.
-    pub fn load(build_dir: &Path) -> TsdlResult<Self> {
-        let file = build_dir.join(consts::TSDL_CACHE_FILE);
+    pub fn load(build_dir: &Path) -> Result<Self> {
+        let file = build_dir.join(consts::CACHE_FILE);
         if !file.exists() {
             debug!(
                 "Cache file not found at {}, returning empty cache",
@@ -465,13 +465,11 @@ impl Db {
             });
         }
 
-        let contents = std::fs::read_to_string(&file).map_err(|e| {
-            error::TsdlError::context(format!("Reading cache file at {}", file.display()), e)
-        })?;
+        let contents = std::fs::read_to_string(&file)
+            .with_context(|| format!("Reading cache file at {}", file.display()))?;
 
-        toml::from_str(&contents).map_err(|e| {
-            error::TsdlError::context(format!("Parsing cache file at {}", file.display()), e)
-        })
+        toml::from_str(&contents)
+            .with_context(|| format!("Parsing cache file at {}", file.display()))
     }
 
     /// Explain whether a parser cache entry can satisfy the requested build.
@@ -505,13 +503,12 @@ impl Db {
     }
 
     /// Save the cache to disk
-    pub async fn save(&self) -> TsdlResult<()> {
-        let contents = toml::to_string_pretty(self)
-            .map_err(|e| error::TsdlError::context("Serializing cache to TOML", e))?;
+    pub async fn save(&self) -> Result<()> {
+        let contents = toml::to_string_pretty(self).context("Serializing cache to TOML")?;
 
-        tokio::fs::write(&self.file, contents).await.map_err(|e| {
-            error::TsdlError::context(format!("Writing cache file to {}", self.file.display()), e)
-        })?;
+        tokio::fs::write(&self.file, contents)
+            .await
+            .with_context(|| format!("Writing cache file to {}", self.file.display()))?;
 
         debug!("Cache saved to {}", self.file.display());
         Ok(())
@@ -524,19 +521,19 @@ impl Db {
 }
 
 /// Hash the contents of a file using SHA-1 and return the hex string.
-pub async fn hash_file(path: &Path) -> TsdlResult<GrammarHash> {
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
-        error::TsdlError::context(format!("Opening file for hashing: {}", path.display()), e)
-    })?;
+pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("Opening file for hashing: {}", path.display()))?;
 
     let mut hasher = Sha1::new();
     let mut buffer = vec![0u8; 8192];
 
     loop {
         let mut read_buf = ReadBuf::new(&mut buffer);
-        file.read_buf(&mut read_buf).await.map_err(|e| {
-            error::TsdlError::context(format!("Reading file for hashing: {}", path.display()), e)
-        })?;
+        file.read_buf(&mut read_buf)
+            .await
+            .with_context(|| format!("Reading file for hashing: {}", path.display()))?;
 
         if read_buf.filled().is_empty() {
             break;

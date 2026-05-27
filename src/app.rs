@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
-use crate::{args, config, display, logging, TsdlResult};
+use crate::{args, config, display, logging, Result};
 
 /// Resolved application state, ready to run.
 pub struct App {
@@ -13,17 +13,17 @@ pub struct App {
     pub log_path: PathBuf,
     pub progress_mode: display::Mode,
     pub verbose: Verbosity<InfoLevel>,
-    pub _logging: Option<logging::Guard>,
+    pub logging_guard: Option<logging::Guard>,
 }
 
-pub fn setup() -> TsdlResult<App> {
+pub fn setup() -> Result<App> {
     let (args, matches) = config::parse_with_matches();
     let build_matches = crate::args::build_matches(&matches);
 
     let (command, provenance) = config::current_with_provenance(&args.config, build_matches)?;
 
-    let (log_path, _logging) = logging::init(
-        args.log.clone(),
+    let (log_path, logging_guard) = logging::init(
+        args.log.as_ref(),
         args.log_color,
         args.verbose,
         &command.build_dir,
@@ -39,6 +39,6 @@ pub fn setup() -> TsdlResult<App> {
         log_path,
         progress_mode,
         verbose: args.verbose,
-        _logging: Some(_logging),
+        logging_guard: Some(logging_guard),
     })
 }

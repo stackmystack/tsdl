@@ -2,6 +2,7 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
+    result::Result as StdResult,
 };
 
 use clap::{
@@ -10,7 +11,7 @@ use clap::{
 use serde::Serialize;
 use tracing::debug;
 
-use crate::{args, columns, error, TsdlResult};
+use crate::{args, columns, Result, ResultExt};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -57,7 +58,7 @@ pub struct BuildProvenance {
     pub unlock_timeout: Source,
 }
 
-pub fn current(config: &Path, matches: Option<&ArgMatches>) -> TsdlResult<args::BuildCommand> {
+pub fn current(config: &Path, matches: Option<&ArgMatches>) -> Result<args::BuildCommand> {
     let (cmd, _provenance) = current_with_provenance(config, matches)?;
     Ok(cmd)
 }
@@ -65,7 +66,7 @@ pub fn current(config: &Path, matches: Option<&ArgMatches>) -> TsdlResult<args::
 pub fn current_with_provenance(
     config: &Path,
     matches: Option<&ArgMatches>,
-) -> TsdlResult<(args::BuildCommand, BuildProvenance)> {
+) -> Result<(args::BuildCommand, BuildProvenance)> {
     let defaults = args::BuildCommand::default();
     let file_overrides = read_file_overrides(config)?;
     let file_provenance = file_provenance_from(&file_overrides);
@@ -80,7 +81,7 @@ pub fn current_with_provenance(
     };
 
     let command = merge(defaults, file_overrides, cli_overrides);
-    let provenance = merge_provenance(file_provenance, cli_provenance);
+    let provenance = merge_provenance(&file_provenance, &cli_provenance);
 
     debug!(?provenance, ?command, "Resolved build configuration");
 
@@ -135,22 +136,19 @@ fn apply_opt<T>(field: &mut T, value: Option<T>) {
     }
 }
 
-fn read_file_overrides(config: &Path) -> TsdlResult<args::OptionalBuildCommand> {
+fn read_file_overrides(config: &Path) -> Result<args::OptionalBuildCommand> {
     if !config.exists() {
         return Ok(args::OptionalBuildCommand::default());
     }
 
-    let contents = fs::read_to_string(config).map_err(|e| {
-        error::TsdlError::context(format!("Reading config file {}", config.display()), e)
-    })?;
+    let contents = fs::read_to_string(config)
+        .with_context(|| format!("Reading config file {}", config.display()))?;
 
     if contents.trim().is_empty() {
         return Ok(args::OptionalBuildCommand::default());
     }
 
-    toml::from_str(&contents).map_err(|e| {
-        error::TsdlError::context(format!("Parsing config file {}", config.display()), e)
-    })
+    toml::from_str(&contents).with_context(|| format!("Parsing config file {}", config.display()))
 }
 
 fn file_provenance_from(overrides: &args::OptionalBuildCommand) -> BuildProvenance {
@@ -198,7 +196,7 @@ fn file_provenance_from(overrides: &args::OptionalBuildCommand) -> BuildProvenan
     p
 }
 
-fn merge_provenance(file: BuildProvenance, cli: BuildProvenance) -> BuildProvenance {
+fn merge_provenance(file: &BuildProvenance, cli: &BuildProvenance) -> BuildProvenance {
     BuildProvenance {
         build_dir: merge_source(file.build_dir, cli.build_dir),
         force: merge_source(file.force, cli.force),
@@ -228,6 +226,7 @@ fn merge_source(file: Source, cli: Source) -> Source {
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
     let jobs_default = defaults.jobs.to_string();
     let ut_default = defaults.unlock_timeout.to_string();
@@ -236,7 +235,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
         Arg::new("build-dir")
             .long("build-dir")
             .short('b')
-            .env("TSDL_BUILD_DIR")
+            .env("BUILD_DIR")
             .value_parser(value_parser!(PathBuf))
             .help(format!(
                 "Build Directory [default: {}]",
@@ -244,7 +243,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
             )),
         Arg::new("force")
             .long("force")
-            .env("TSDL_FORCE")
+            .env("FORCE")
             .num_args(0..=1)
             .require_equals(true)
             .default_missing_value("true")
@@ -257,7 +256,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
         Arg::new("fresh")
             .long("fresh")
             .short('f')
-            .env("TSDL_FRESH")
+            .env("FRESH")
             .num_args(0..=1)
             .require_equals(true)
             .default_missing_value("true")
@@ -280,7 +279,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
         Arg::new("out-dir")
             .long("out-dir")
             .short('o')
-            .env("TSDL_OUT_DIR")
+            .env("PARSER_OUT_DIR")
             .value_parser(value_parser!(PathBuf))
             .help(format!(
                 "Output Directory [default: {}]",
@@ -289,7 +288,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
         Arg::new("prefix")
             .long("prefix")
             .short('p')
-            .env("TSDL_PREFIX")
+            .env("PREFIX")
             .value_parser(value_parser!(String))
             .help(format!(
                 "Prefix parser names [default: {}]",
@@ -297,7 +296,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
             )),
         Arg::new("show-config")
             .long("show-config")
-            .env("TSDL_SHOW_CONFIG")
+            .env("SHOW_CONFIG")
             .num_args(0..=1)
             .require_equals(true)
             .default_missing_value("true")
@@ -323,7 +322,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
         Arg::new("tree-sitter-version")
             .long("tree-sitter-version")
             .short('V')
-            .env("TSDL_TREE_SITTER_VERSION")
+            .env("TSDL_VERSION")
             .value_parser(value_parser!(String))
             .help(format!(
                 "Tree-sitter version [default: {}]",
@@ -331,7 +330,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
             )),
         Arg::new("tree-sitter-platform")
             .long("tree-sitter-platform")
-            .env("TSDL_TREE_SITTER_PLATFORM")
+            .env("TSDL_PLATFORM")
             .value_parser(value_parser!(String))
             .help(format!(
                 "Tree-sitter platform to build [default: {}]",
@@ -340,7 +339,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
         Arg::new("tree-sitter-repo")
             .long("tree-sitter-repo")
             .short('R')
-            .env("TSDL_TREE_SITTER_REPO")
+            .env("TSDL_REPO")
             .value_parser(value_parser!(String))
             .help(format!(
                 "Tree-sitter repo [default: {}]",
@@ -348,7 +347,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
             )),
         Arg::new("unlock-timeout")
             .long("unlock-timeout")
-            .env("TSDL_UNLOCK_TIMEOUT")
+            .env("UNLOCK_TIMEOUT")
             .value_parser(value_parser!(u64).range(1..))
             .help(format!(
                 "Seconds to wait after terminating a lock owner [default: {ut_default}]"
@@ -525,27 +524,25 @@ pub fn print_indent(s: &str, indent: &str) {
     s.lines().for_each(|line| println!("{indent}{line}"));
 }
 
-pub fn run(config_path: &Path, command: &args::ConfigCommand) -> TsdlResult<()> {
+pub fn run(config_path: &Path, command: &args::ConfigCommand) -> Result<()> {
     match command {
         args::ConfigCommand::Current => {
             let cmd: args::BuildCommand = current(config_path, None)?;
             println!(
                 "{}",
-                toml::to_string(&cmd).map_err(|e| {
-                    error::TsdlError::context("Generating default TOML config", e)
-                })?
+                toml::to_string(&cmd).context("Generating default TOML config")?
             );
         }
         args::ConfigCommand::Default => println!(
             "{}",
             toml::to_string(&args::BuildCommand::default())
-                .map_err(|e| { error::TsdlError::context("Generating default TOML config", e) })?
+                .context("Generating default TOML config")?
         ),
     }
     Ok(())
 }
 
-pub fn show(command: &args::BuildCommand) -> TsdlResult<()> {
+pub fn show(command: &args::BuildCommand) -> Result<()> {
     if let Some(langs) = &command.languages {
         println!("Building the following languages:");
         println!();
@@ -557,10 +554,7 @@ pub fn show(command: &args::BuildCommand) -> TsdlResult<()> {
     }
     println!("Running with the following configuration:");
     println!();
-    print_indent(
-        &toml::to_string(&command).map_err(|e| error::TsdlError::context("Showing config", e))?,
-        "  ",
-    );
+    print_indent(&toml::to_string(&command).context("Showing config")?, "  ");
     println!();
     Ok(())
 }
@@ -582,7 +576,7 @@ pub fn parse_with_matches() -> (args::Args, ArgMatches) {
     (args, matches)
 }
 
-pub fn try_parse_from_with_matches<I, T>(itr: I) -> Result<(args::Args, ArgMatches), clap::Error>
+pub fn try_parse_from_with_matches<I, T>(itr: I) -> StdResult<(args::Args, ArgMatches), clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,

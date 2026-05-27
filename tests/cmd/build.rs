@@ -6,10 +6,7 @@ use indoc::{formatdoc, indoc};
 use predicates::{self as p};
 use rstest::*;
 
-use tsdl::consts::{
-    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
-    TSDL_PREFIX,
-};
+use tsdl::consts::{BUILD_DIR, CONFIG_FILE, PARSER_OUT_DIR, PLATFORM, PREFIX, VERSION};
 
 #[cfg(enable_wasm_cases)]
 use tsdl::parser::WASM_EXTENSION;
@@ -24,13 +21,12 @@ fn no_args_should_download_tree_sitter_cli() {
         .cmd
         .assert()
         .success()
-        .stdout(p::str::contains(format!(
-            "tree-sitter-cli  @ v{TREE_SITTER_VERSION}"
-        )));
+        .stdout(p::str::contains(format!("tree-sitter-cli  @ v{VERSION}")));
     assert!(!sandbox.is_empty());
-    let tree_sitter_cli = sandbox.tmp.child(TSDL_BUILD_DIR).child(format!(
-        "tree-sitter-{TREE_SITTER_PLATFORM}-v{TREE_SITTER_VERSION}"
-    ));
+    let tree_sitter_cli = sandbox
+        .tmp
+        .child(BUILD_DIR)
+        .child(format!("tree-sitter-{PLATFORM}-v{VERSION}"));
 
     tree_sitter_cli
         .assert(p::path::exists())
@@ -64,8 +60,8 @@ fn no_args_should_build_tree_sitter_with_specific_version(
     let mut tree_sitter_cli = Command::new(
         sandbox
             .tmp
-            .child(TSDL_BUILD_DIR)
-            .child(format!("tree-sitter-{TREE_SITTER_PLATFORM}-v{cli_version}"))
+            .child(BUILD_DIR)
+            .child(format!("tree-sitter-{PLATFORM}-v{cli_version}"))
             .to_path_buf(),
     );
     tree_sitter_cli.arg("--version");
@@ -88,7 +84,7 @@ fn unknown_parser_should_fail(#[case] languages: Vec<&str>) {
     for lang in languages {
         sandbox
             .tmp
-            .child(TSDL_OUT_DIR)
+            .child(PARSER_OUT_DIR)
             .child(format!("{lang}.{DLL_EXTENSION}"))
             .assert(p::path::missing());
     }
@@ -116,7 +112,7 @@ fn test_real_parser_error_formatting() {
         sandbox
             .tmp
             .path()
-            .join(TSDL_BUILD_DIR)
+            .join(BUILD_DIR)
             .join("tree-sitter-jsonxxx"),
     )
     .unwrap();
@@ -174,8 +170,8 @@ fn no_config_should_build_valid_parser_from_head(#[case] languages: Vec<&str>) {
     for lang in &languages {
         let dylib = sandbox
             .tmp
-            .child(TSDL_OUT_DIR)
-            .child(format!("{TSDL_PREFIX}{lang}.{DLL_EXTENSION}"));
+            .child(PARSER_OUT_DIR)
+            .child(format!("{PREFIX}{lang}.{DLL_EXTENSION}"));
         dylib.assert(p::path::exists()).assert(p::path::is_file());
     }
 }
@@ -199,11 +195,7 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &
       "#
     };
     let mut sandbox = Sandbox::new();
-    sandbox
-        .tmp
-        .child(TSDL_CONFIG_FILE)
-        .write_str(config)
-        .unwrap();
+    sandbox.tmp.child(CONFIG_FILE).write_str(config).unwrap();
     sandbox
         .cmd
         .args(["build", language])
@@ -216,8 +208,8 @@ fn build_explicit_pinned_and_unpinned(#[case] language: &str, #[case] version: &
         )));
     let dylib = sandbox
         .tmp
-        .child(TSDL_OUT_DIR)
-        .child(format!("{TSDL_PREFIX}{language}.{DLL_EXTENSION}"));
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}{language}.{DLL_EXTENSION}"));
     dylib.assert(p::path::exists()).assert(p::path::is_file());
 }
 
@@ -241,11 +233,7 @@ fn build_implicit_pinned_and_unpinned() {
       "#
     };
     let mut sandbox = Sandbox::new();
-    sandbox
-        .tmp
-        .child(TSDL_CONFIG_FILE)
-        .write_str(config)
-        .unwrap();
+    sandbox.tmp.child(CONFIG_FILE).write_str(config).unwrap();
     let mut out = sandbox.cmd.arg("build").assert().success();
     for (language, _version) in parsers {
         out = out
@@ -255,8 +243,8 @@ fn build_implicit_pinned_and_unpinned() {
     for (language, _version) in parsers {
         let dylib = sandbox
             .tmp
-            .child(TSDL_OUT_DIR)
-            .child(format!("{TSDL_PREFIX}{language}.{DLL_EXTENSION}"));
+            .child(PARSER_OUT_DIR)
+            .child(format!("{PREFIX}{language}.{DLL_EXTENSION}"));
         dylib.assert(p::path::exists()).assert(p::path::is_file());
     }
 }
@@ -279,8 +267,8 @@ fn multi_parsers_no_cmd() {
     for language in languages {
         let dylib = sandbox
             .tmp
-            .child(TSDL_OUT_DIR)
-            .child(format!("{TSDL_PREFIX}{language}.{DLL_EXTENSION}"));
+            .child(PARSER_OUT_DIR)
+            .child(format!("{PREFIX}{language}.{DLL_EXTENSION}"));
         dylib.assert(p::path::exists()).assert(p::path::is_file());
     }
 }
@@ -297,11 +285,7 @@ fn multi_parsers_cmd() {
         typescript = {{ ref = "{version}", cmd = "make" }}
       "#
     };
-    sandbox
-        .tmp
-        .child(TSDL_CONFIG_FILE)
-        .write_str(&config)
-        .unwrap();
+    sandbox.tmp.child(CONFIG_FILE).write_str(&config).unwrap();
     let assert = sandbox.cmd.args(["build", typescript]).assert().success();
     // Check for version in cloning step
     // TODO: dig for changes in this test and revert.
@@ -309,8 +293,8 @@ fn multi_parsers_cmd() {
     for language in languages {
         let dylib = sandbox
             .tmp
-            .child(TSDL_OUT_DIR)
-            .child(format!("{TSDL_PREFIX}{language}.{DLL_EXTENSION}"));
+            .child(PARSER_OUT_DIR)
+            .child(format!("{PREFIX}{language}.{DLL_EXTENSION}"));
         dylib.assert(p::path::exists()).assert(p::path::is_file());
     }
 }
@@ -333,18 +317,14 @@ fn build_target(#[case] target: Option<&str>, #[case] exts: &[&str]) {
         config = format!("target = \"{target}\"\n{config}");
     }
     let mut sandbox = Sandbox::new();
-    sandbox
-        .tmp
-        .child(TSDL_CONFIG_FILE)
-        .write_str(&config)
-        .unwrap();
+    sandbox.tmp.child(CONFIG_FILE).write_str(&config).unwrap();
     sandbox.cmd.args(["build"]).assert().success();
     for (lang, _) in languages {
         for ext in exts {
             let dylib = sandbox
                 .tmp
-                .child(TSDL_OUT_DIR)
-                .child(format!("{TSDL_PREFIX}{lang}.{ext}"));
+                .child(PARSER_OUT_DIR)
+                .child(format!("{PREFIX}{lang}.{ext}"));
             dylib.assert(p::path::exists()).assert(p::path::is_file());
         }
     }
@@ -377,7 +357,7 @@ fn build_plain_progress_numbered_correctly() {
     // Verify the output artifact was created
     let dylib = sandbox
         .tmp
-        .child(TSDL_OUT_DIR)
-        .child(format!("{TSDL_PREFIX}json.{DLL_EXTENSION}"));
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
     dylib.assert(p::path::exists()).assert(p::path::is_file());
 }

@@ -8,8 +8,8 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{
-    TREE_SITTER_PLATFORM, TREE_SITTER_REPO, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE,
-    TSDL_FORCE, TSDL_FRESH, TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG, TSDL_UNLOCK_TIMEOUT,
+    BUILD_DIR, CONFIG_FILE, FORCE, FRESH, PARSER_OUT_DIR, PLATFORM, PREFIX, REPO, SHOW_CONFIG,
+    UNLOCK_TIMEOUT, VERSION,
 };
 
 const TSDL_VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/tsdl.version"));
@@ -28,7 +28,7 @@ pub struct Args {
     pub command: Command,
 
     /// Path to the config file (TOML).
-    #[arg(short, long, env = "TSDL_CONFIG", default_value = TSDL_CONFIG_FILE, global = true)]
+    #[arg(short, long, env = "TSDL_CONFIG", default_value = CONFIG_FILE, global = true)]
     pub config: PathBuf,
 
     /// Path to the logging file. If unspecified, it will go to `build-dir/log`.
@@ -49,7 +49,7 @@ pub struct Args {
     pub verbose: Verbosity<InfoLevel>,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug, Deserialize, Serialize)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum LogColor {
     Auto,
     No,
@@ -237,9 +237,9 @@ pub struct TreeSitter {
 impl Default for TreeSitter {
     fn default() -> Self {
         Self {
-            version: TREE_SITTER_VERSION.to_string(),
-            platform: TREE_SITTER_PLATFORM.to_string(),
-            repo: TREE_SITTER_REPO.to_string(),
+            version: VERSION.to_string(),
+            platform: PLATFORM.to_string(),
+            repo: REPO.to_string(),
         }
     }
 }
@@ -271,18 +271,18 @@ pub struct BuildCommand {
 impl Default for BuildCommand {
     fn default() -> Self {
         Self {
-            build_dir: PathBuf::from(TSDL_BUILD_DIR),
-            force: TSDL_FORCE,
-            fresh: TSDL_FRESH,
+            build_dir: PathBuf::from(BUILD_DIR),
+            force: FORCE,
+            fresh: FRESH,
             languages: None,
             jobs: default_jobs(),
-            out_dir: PathBuf::from(TSDL_OUT_DIR),
+            out_dir: PathBuf::from(PARSER_OUT_DIR),
             parsers: None,
-            prefix: String::from(TSDL_PREFIX),
-            show_config: TSDL_SHOW_CONFIG,
+            prefix: String::from(PREFIX),
+            show_config: SHOW_CONFIG,
             target: Target::default(),
             tree_sitter: TreeSitter::default(),
-            unlock_timeout: TSDL_UNLOCK_TIMEOUT,
+            unlock_timeout: UNLOCK_TIMEOUT,
         }
     }
 }
@@ -293,15 +293,15 @@ pub fn default_jobs() -> NonZeroUsize {
 }
 
 fn default_tree_sitter_version() -> String {
-    TREE_SITTER_VERSION.to_string()
+    VERSION.to_string()
 }
 
 fn default_tree_sitter_platform() -> String {
-    TREE_SITTER_PLATFORM.to_string()
+    PLATFORM.to_string()
 }
 
 fn default_tree_sitter_repo() -> String {
-    TREE_SITTER_REPO.to_string()
+    REPO.to_string()
 }
 
 #[derive(clap::Subcommand, Clone, Debug, Default)]

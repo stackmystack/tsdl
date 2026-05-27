@@ -1095,7 +1095,7 @@ impl DisplayActor {
                 display::ItemState::InProgress(Some(display::SuccessOutcome::Cached))
                 | display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,
                 display::ItemState::New | display::ItemState::InProgress(None) => {
-                    saw_unknown = true
+                    saw_unknown = true;
                 }
                 display::ItemState::Cancelled | display::ItemState::Failed => {}
             }

@@ -5,10 +5,7 @@ use assert_fs::prelude::*;
 use predicates::{self as p, prelude::*};
 use rstest::*;
 
-use tsdl::consts::{
-    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
-    TSDL_PREFIX,
-};
+use tsdl::consts::{BUILD_DIR, CONFIG_FILE, PARSER_OUT_DIR, PLATFORM, PREFIX, VERSION};
 
 use crate::cmd::Sandbox;
 
@@ -17,7 +14,7 @@ fn cache_hit_skips_build() {
     let mut sandbox = Sandbox::new();
     sandbox
         .tmp
-        .child(TSDL_CONFIG_FILE)
+        .child(CONFIG_FILE)
         .write_str("[parsers]\njson = \"0.21.0\"\n")
         .unwrap();
 
@@ -26,12 +23,12 @@ fn cache_hit_skips_build() {
 
     let binary = sandbox
         .tmp
-        .child(TSDL_OUT_DIR)
-        .child(format!("{TSDL_PREFIX}json.{DLL_EXTENSION}"));
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
     binary.assert(p::path::exists()).assert(p::path::is_file());
 
     // Cache file should exist
-    let cache_file = sandbox.tmp.child(TSDL_BUILD_DIR).child("cache.toml");
+    let cache_file = sandbox.tmp.child(BUILD_DIR).child("cache.toml");
     cache_file.assert(p::path::exists());
 
     let first_inode = binary.metadata().unwrap().ino();
@@ -63,7 +60,7 @@ fn cache_miss_on_grammar_modification() {
     // Modify grammar file
     let grammar = sandbox
         .tmp
-        .child(TSDL_BUILD_DIR)
+        .child(BUILD_DIR)
         .child("tree-sitter-json")
         .child("grammar.js");
     let mut content = std::fs::read_to_string(grammar.path()).unwrap();
@@ -87,7 +84,7 @@ fn fresh_flag_clears_build_dir() {
     // First build
     sandbox.cmd.arg("build").arg("json").assert().success();
 
-    let build_dir = sandbox.tmp.child(TSDL_BUILD_DIR);
+    let build_dir = sandbox.tmp.child(BUILD_DIR);
     build_dir.assert(p::path::exists());
 
     let cache_file = build_dir.child("cache.toml");
@@ -95,8 +92,8 @@ fn fresh_flag_clears_build_dir() {
 
     let first_binary = sandbox
         .tmp
-        .child(TSDL_OUT_DIR)
-        .child(format!("{TSDL_PREFIX}json.{DLL_EXTENSION}"));
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
     let first_inode = first_binary.metadata().unwrap().ino();
 
     // Second build with --fresh (need --force to overwrite existing binary)
@@ -126,8 +123,8 @@ fn force_flag_bypasses_cache() {
 
     let binary = sandbox
         .tmp
-        .child(TSDL_OUT_DIR)
-        .child(format!("{TSDL_PREFIX}json.{DLL_EXTENSION}"));
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
     let first_inode = binary.metadata().unwrap().ino();
 
     // Second build with --force
@@ -155,15 +152,13 @@ fn force_flag_reinstalls_hardlink() {
 
     let binary = sandbox
         .tmp
-        .child(TSDL_OUT_DIR)
-        .child(format!("{TSDL_PREFIX}json.{DLL_EXTENSION}"));
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
     let build_binary = sandbox
         .tmp
-        .child(TSDL_BUILD_DIR)
+        .child(BUILD_DIR)
         .child("tree-sitter-json")
-        .child(format!(
-            "tsdl-{TREE_SITTER_PLATFORM}-v{TREE_SITTER_VERSION}"
-        ))
+        .child(format!("tsdl-{PLATFORM}-v{VERSION}"))
         .child(format!("libtree-sitter-json.{DLL_EXTENSION}"));
 
     let first_inode_out = binary.metadata().unwrap().ino();
@@ -209,7 +204,7 @@ fn multi_parser_independent_cache(#[case] languages: Vec<&str>) {
     sandbox.cmd.arg("build").args(&languages).assert().success();
 
     // Verify cache contains both entries
-    let cache_file = sandbox.tmp.child(TSDL_BUILD_DIR).child("cache.toml");
+    let cache_file = sandbox.tmp.child(BUILD_DIR).child("cache.toml");
     let cache_content = std::fs::read_to_string(cache_file.path()).unwrap();
     for lang in &languages {
         assert!(
@@ -244,7 +239,7 @@ fn cache_file_structure() {
         .success();
 
     // Read and validate cache file
-    let cache_file = sandbox.tmp.child(TSDL_BUILD_DIR).child("cache.toml");
+    let cache_file = sandbox.tmp.child(BUILD_DIR).child("cache.toml");
     cache_file.assert(p::path::exists());
 
     let cache_content = std::fs::read_to_string(cache_file.path()).unwrap();
