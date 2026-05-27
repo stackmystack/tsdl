@@ -749,6 +749,24 @@ impl LanguageBuild {
             grammars.push((grammar_name, grammar_dir.to_path_buf(), hash));
         }
 
+        if grammars.is_empty() {
+            return Err(Error::Step {
+                name: self.name.as_arc(),
+                kind: error::ParserOp::Discover {
+                    dir: self.output.build_dir.to_path_buf(),
+                },
+                source: Error::Message {
+                    message: format!(
+                        "No grammar.js files found for parser {} (repo: {}, ref: {})",
+                        self.name,
+                        self.spec.repo,
+                        self.spec.git_ref.requested().as_str()
+                    ),
+                }
+                .into(),
+            });
+        }
+
         Ok(grammars)
     }
 
@@ -915,7 +933,7 @@ fn extract_grammar_name(dir: &Path) -> Result<GrammarName> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use std::{os::unix::fs::symlink, process::Command as StdCommand};
 
     use crate::{
         actors::{DisplayActor, DisplayAddr},
@@ -955,6 +973,42 @@ mod tests {
         assert_eq!(
             toml::to_string(&Wrapper { git_ref: source }).unwrap(),
             "git_ref = \"v0.21.0\"\n"
+        );
+    }
+
+    fn test_language_build(build_dir: PathBuf, out_dir: PathBuf) -> LanguageBuild {
+        LanguageBuild::new(
+            build::Context {
+                overwrite_output: false,
+            },
+            Arc::new(build::Spec {
+                build_script: None,
+                git_ref: Ref::parse("v1.0.0").unwrap(),
+                prefix: String::new(),
+                repo: "https://example.com/tree-sitter-empty".parse().unwrap(),
+                target: Target::Native,
+                tree_sitter: TreeSitter::default(),
+            }),
+            LanguageName::from("empty"),
+            build::OutputConfig {
+                build_dir: build_dir.into(),
+                out_dir: out_dir.into(),
+            },
+        )
+    }
+
+    fn init_git_repo(path: &Path) {
+        std::fs::create_dir_all(path).unwrap();
+        let output = StdCommand::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
@@ -1012,6 +1066,30 @@ mod tests {
         let a = std::fs::metadata(a).unwrap();
         let b = std::fs::metadata(b).unwrap();
         same_file_identity(&a, &b)
+    }
+
+    #[tokio::test]
+    async fn discover_grammars_errors_when_no_grammar_js_files_are_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_dir = temp_dir.path().join("tree-sitter-empty");
+        let out_dir = temp_dir.path().join("out");
+        init_git_repo(&build_dir);
+        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+        let language = test_language_build(build_dir.clone(), out_dir);
+        let err = language.discover_grammars().await.unwrap_err();
+
+        match err {
+            Error::Step { name, kind, source } => {
+                assert_eq!(name.as_ref(), "empty");
+                assert!(matches!(kind, error::ParserOp::Discover { dir } if dir == build_dir));
+                let message = source.as_error().to_string();
+                assert!(message.contains("No grammar.js files found"));
+                assert!(message.contains("https://example.com/tree-sitter-empty"));
+                assert!(message.contains("v1.0.0"));
+            }
+            other => panic!("expected discovery step error, got {other:?}"),
+        }
     }
 
     #[test]

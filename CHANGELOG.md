@@ -36,6 +36,7 @@ informative and more coherent.
   same file, have identical contents, or `--force` is used; replacements are now
   installed through visible temporary hardlinks.
 - `--jobs` is a strictly positive number now.
+- `tsdl` now fails on repos with no `grammar.js`.
 
 ## [2.0.0] - 2026-02-20
 
