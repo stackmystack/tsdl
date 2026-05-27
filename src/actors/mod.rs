@@ -304,14 +304,14 @@ async fn resolve_source(
         progress.set_outcome_built().await;
         progress.step("cloning");
         match language.checkout().await {
-            Ok(commit) => {
+            Ok(checkout) => {
                 info!(
                     "Resolved parser {} git ref {} to commit {}",
                     language.name,
                     language.spec.git_ref.requested().as_str(),
-                    commit.as_str()
+                    checkout.commit.as_str()
                 );
-                Ok(language.spec.git_ref.moving_source(commit))
+                Ok(Source::moving(checkout.commit))
             }
             Err(e) => {
                 if shutdown::current().is_some_and(|s| s.is_cancelled()) {
@@ -323,11 +323,12 @@ async fn resolve_source(
             }
         }
     } else {
-        let needs_clone = cache
-            .needs_clone(language.name.clone(), language.spec.clone())
+        let has_compatible_entries = cache
+            .has_compatible_entries(language.name.clone(), language.spec.clone())
             .await;
+        let checkout_needed = !has_compatible_entries || !language.is_checkout_usable().await;
 
-        if needs_clone {
+        if checkout_needed {
             progress.set_outcome_built().await;
             progress.step("cloning");
             if let Err(e) = language.checkout().await {
@@ -342,6 +343,6 @@ async fn resolve_source(
             progress.set_outcome_cached().await;
         }
 
-        Ok(language.spec.git_ref.stable_source())
+        Ok(Source::stable())
     }
 }

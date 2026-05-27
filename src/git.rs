@@ -64,20 +64,6 @@ impl Ref {
         Self(Arc::from("HEAD"))
     }
 
-    /// Create a validated git ref from user input, normalizing dotted numeric
-    /// versions such as `0.21.0` to the conventional git tag `v0.21.0`.
-    pub fn from_version_or_ref(value: &str) -> Result<Self, RefError> {
-        if Sha::is_full_sha(value) || value.starts_with('v') {
-            return Self::new(value);
-        }
-
-        if is_dotted_numeric_version(value) {
-            Self::new(format!("v{value}"))
-        } else {
-            Self::new(value)
-        }
-    }
-
     /// Get the exact git ref string.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -249,6 +235,11 @@ pub enum ResolvedRef {
     Ref(Ref),
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Checkout {
+    pub commit: Sha,
+}
+
 impl fmt::Display for ResolvedRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -338,13 +329,6 @@ fn validate_git_sha(value: &str) -> Result<(), RefError> {
     Ok(())
 }
 
-fn is_dotted_numeric_version(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .split('.')
-            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
-}
-
 // TODO: get rid of async fs completely.
 async fn clean_anyway(cwd: &Path) -> TsdlResult<()> {
     if cwd.exists() {
@@ -373,16 +357,16 @@ pub async fn clone(repo: &str, cwd: &Path) -> TsdlResult<()> {
     Ok(())
 }
 
-pub async fn clone_fast(repo: &str, git_ref: &Ref, cwd: &Path) -> TsdlResult<Sha> {
-    clone_fast_with_force(repo, git_ref, cwd, false).await
+pub async fn checkout(repo: &str, git_ref: &Ref, cwd: &Path) -> TsdlResult<Checkout> {
+    checkout_with_force(repo, git_ref, cwd, false).await
 }
 
-pub async fn clone_fast_with_force(
+pub async fn checkout_with_force(
     repo: &str,
     git_ref: &Ref,
     cwd: &Path,
     force: bool,
-) -> TsdlResult<Sha> {
+) -> TsdlResult<Checkout> {
     if force || !is_same_remote(cwd, repo).await {
         clean_anyway(cwd).await?;
     }
@@ -391,12 +375,13 @@ pub async fn clone_fast_with_force(
     } else {
         init_fetch_and_checkout(cwd, repo, git_ref).await?;
     }
-    get_head_sha(cwd).await.map_err(|err| {
+    let commit = get_head_sha(cwd).await.map_err(|err| {
         TsdlError::context(
             format!("Resolving checked out commit for {}", cwd.display()),
             err,
         )
-    })
+    })?;
+    Ok(Checkout { commit })
 }
 
 async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
@@ -466,6 +451,10 @@ async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> TsdlR
 
 async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
     remote == get_remote_url(cwd).await.unwrap_or_default().trim()
+}
+
+pub async fn is_checkout_usable(repo: &str, cwd: &Path) -> bool {
+    is_valid_git_dir(cwd).await && is_same_remote(cwd, repo).await
 }
 
 async fn is_valid_git_dir(cwd: &Path) -> bool {
@@ -615,27 +604,9 @@ mod tests {
     }
 
     #[test]
-    fn git_ref_normalizes_dotted_numeric_versions() {
-        assert_eq!(
-            Ref::from_version_or_ref("0.21.0").unwrap().as_str(),
-            "v0.21.0"
-        );
-        assert_eq!(
-            Ref::from_version_or_ref("v0.21.0").unwrap().as_str(),
-            "v0.21.0"
-        );
-    }
-
-    #[test]
     fn git_ref_preserves_branches_and_full_shas() {
-        assert_eq!(
-            Ref::from_version_or_ref("master").unwrap().as_str(),
-            "master"
-        );
-        assert_eq!(
-            Ref::from_version_or_ref(FULL_SHA).unwrap().as_str(),
-            FULL_SHA
-        );
+        assert_eq!(Ref::new("master").unwrap().as_str(), "master");
+        assert_eq!(Ref::new(FULL_SHA).unwrap().as_str(), FULL_SHA);
     }
 
     #[test]

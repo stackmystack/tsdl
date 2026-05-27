@@ -22,9 +22,8 @@ informative and more coherent.
 ### Changed
 
 - **cache**: Parser builds that track moving refs such as `HEAD` or branches now
-  notice when those refs move and rebuild the affected parsers. Existing cache
-  entries for moving refs are rebuilt once so TSDL can record the checked-out
-  commit for future runs.
+  notice when those refs move and rebuild the affected parsers. The parser cache
+  format changed for this major release and older cache files are not migrated.
 
 ### Bug Fixes
 

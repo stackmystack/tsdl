@@ -111,7 +111,7 @@ fn find_tag(
     refs.get_key_value(&format!("v{version}"))
         .or_else(|| refs.get_key_value(version))
         .map_or_else(
-            || Ref::from_version_or_ref(version).map(ResolvedRef::Ref),
+            || Ref::new(normalize_release_ref(version)).map(ResolvedRef::Ref),
             |(k, v)| {
                 trace!("Found! {k} -> {v}");
                 Ok(ResolvedRef::Tag {
@@ -120,6 +120,23 @@ fn find_tag(
                 })
             },
         )
+}
+
+fn is_dotted_numeric_version(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split('.')
+            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+}
+
+fn normalize_release_ref(value: &str) -> String {
+    if Sha::is_full_sha(value) || value.starts_with('v') {
+        value.to_string()
+    } else if is_dotted_numeric_version(value) {
+        format!("v{value}")
+    } else {
+        value.to_string()
+    }
 }
 
 async fn gunzip(gz: &Path, to: &Path) -> TsdlResult<()> {
@@ -234,7 +251,7 @@ pub async fn prepare(
 }
 
 pub(crate) fn display_tree_sitter_ref(version: &str) -> Result<Ref, crate::git::RefError> {
-    Ref::from_version_or_ref(version)
+    Ref::new(normalize_release_ref(version))
 }
 
 #[allow(clippy::missing_panics_doc)]
