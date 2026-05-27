@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::{
     actors::{Addr, Response},
-    build, cache, parser, TsdlResult,
+    build, cache, parser, Result,
 };
 
 #[derive(Debug)]
@@ -38,13 +38,13 @@ pub enum CacheMessage {
         artifacts: Vec<PathBuf>,
         tx: oneshot::Sender<cache::Decision>,
     },
-    /// cache::Update a cache entry
+    /// `cache::Update` a cache entry
     Update {
         entry: cache::Entry,
         name: cache::Key,
     },
     /// Save cache to disk
-    Save { tx: oneshot::Sender<TsdlResult<()>> },
+    Save { tx: oneshot::Sender<Result<()>> },
     /// Check if cache contains entries compatible with a language spec.
     HasCompatibleEntries {
         language: parser::LanguageName,
@@ -115,7 +115,7 @@ impl CacheAddr {
         .await
     }
 
-    pub async fn save(&self) -> TsdlResult<()> {
+    pub async fn save(&self) -> Result<()> {
         self.request(|tx| CacheMessage::Save { tx }).await
     }
 

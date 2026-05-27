@@ -2,8 +2,7 @@ use std::{process::ExitCode, time::Instant};
 
 use console::style;
 use tracing::{error, info};
-
-use tsdl::{TsdlResult, app, args, error::TsdlError};
+use tsdl::{app, args, error::Error, Result};
 
 fn main() -> ExitCode {
     set_panic_hook();
@@ -17,7 +16,7 @@ fn main() -> ExitCode {
 
     info!("Starting");
     match run(app) {
-        Err(TsdlError::Interrupted(signal)) => ExitCode::from(signal.shell_exit_code()),
+        Err(Error::Interrupted { signal }) => ExitCode::from(signal.shell_exit_code()),
         Err(e) => {
             eprintln!("{e}");
             ExitCode::FAILURE
@@ -26,13 +25,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(app: app::App) -> TsdlResult<()> {
+fn run(app: app::App) -> Result<()> {
     match app.subcommand {
         tsdl::args::Command::Build => {
             let (result, duration) = time(|| tsdl::build::run(&app));
             match &result {
                 Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
-                Err(TsdlError::Interrupted(signal)) => println!(
+                Err(Error::Interrupted { signal }) => println!(
                     "{}",
                     style(format!("Interrupted by {signal} after {duration}")).yellow()
                 ),

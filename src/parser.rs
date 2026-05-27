@@ -6,6 +6,7 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process,
+    result::Result as StdResult,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -21,7 +22,7 @@ use crate::{
     sh::{Exec, Script},
     shutdown,
     walk::collect_grammar_paths,
-    TsdlResult,
+    Error, Result, ResultExt,
 };
 
 pub const WASM_EXTENSION: &str = "wasm";
@@ -142,7 +143,7 @@ impl Ref {
 
     /// Create a parser source ref from user input, preserving parser-version
     /// normalization while classifying refs for cache semantics.
-    pub fn parse(value: &str) -> Result<Self, git::RefError> {
+    pub fn parse(value: &str) -> StdResult<Self, git::RefError> {
         let normalized = normalize_source_ref(value);
         let git_ref = git::Ref::new(normalized)?;
         if is_stable_source_ref(value, &git_ref) {
@@ -171,7 +172,7 @@ impl Ref {
 }
 
 impl Serialize for Ref {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -180,7 +181,7 @@ impl Serialize for Ref {
 }
 
 impl<'de> Deserialize<'de> for Ref {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -244,7 +245,7 @@ pub struct GrammarBuild {
 impl GrammarBuild {
     /// Build this grammar, returning a cache update if it was built.
     /// Uses the language's progress handle for progress reporting.
-    pub async fn build(&self) -> TsdlResult<Option<cache::Update>> {
+    pub async fn build(&self) -> Result<Option<cache::Update>> {
         shutdown::test_delay().await;
         shutdown::check()?;
         debug!(
@@ -276,10 +277,9 @@ impl GrammarBuild {
 
         // Use the grammar directory path provided
         if !self.dir.exists() {
-            let err = error::TsdlError::message(format!(
-                "Grammar directory not found: {}",
-                self.dir.display()
-            ));
+            let err = Error::Message {
+                message: format!("Grammar directory not found: {}", self.dir.display()),
+            };
             self.progress.err("missing grammar directory").await;
             return Err(err);
         }
@@ -321,7 +321,7 @@ impl GrammarBuild {
         cmd
     }
 
-    async fn build_grammar(&self) -> TsdlResult<()> {
+    async fn build_grammar(&self) -> Result<()> {
         shutdown::test_delay().await;
         shutdown::check()?;
 
@@ -344,7 +344,7 @@ impl GrammarBuild {
         Ok(())
     }
 
-    async fn build_target(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
+    async fn build_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
         shutdown::test_delay().await;
         shutdown::check()?;
         let ext = kind.extension();
@@ -360,7 +360,7 @@ impl GrammarBuild {
         self.build_builtin_target(kind).await
     }
 
-    async fn build_builtin_target(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
+    async fn build_builtin_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
         let artifact = self.artifact_path(kind)?;
         ensure_parent_dir(&artifact).await?;
 
@@ -374,7 +374,7 @@ impl GrammarBuild {
         Ok(artifact)
     }
 
-    async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> TsdlResult<PathBuf> {
+    async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> Result<PathBuf> {
         let mut cmd = Command::from_str(script);
         cmd.current_dir(self.dir.as_ref())
             .exec()
@@ -388,17 +388,17 @@ impl GrammarBuild {
         Ok(artifact)
     }
 
-    fn build_step_error(&self, err: error::TsdlError) -> error::TsdlError {
-        error::TsdlError::Step(error::Step::new(
-            self.language.as_arc(),
-            error::ParserOp::Build {
+    fn build_step_error(&self, err: Error) -> Error {
+        Error::Step {
+            name: self.language.as_arc(),
+            kind: error::ParserOp::Build {
                 dir: self.dir.to_path_buf(),
             },
-            err,
-        ))
+            source: err.into(),
+        }
     }
 
-    async fn build_targets(&self) -> TsdlResult<()> {
+    async fn build_targets(&self) -> Result<()> {
         if self.spec.target.native() {
             self.build_target(ArtifactKind::Native).await?;
         }
@@ -410,50 +410,39 @@ impl GrammarBuild {
         Ok(())
     }
 
-    async fn create_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
-        fs::hard_link(src, dst).await.map_err(|e| {
-            error::TsdlError::context(
-                format!(
-                    "Could not hardlink {} to {}. build-dir and out-dir must be on the same filesystem",
-                    src.display(),
-                    dst.display()
-                ),
-                e,
+    async fn create_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
+        fs::hard_link(src, dst).await.with_context(|| {
+            format!(
+                "Could not hardlink {} to {}. build-dir and out-dir must be on the same filesystem",
+                src.display(),
+                dst.display()
             )
         })
     }
 
-    async fn brute_force_discover(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
+    async fn brute_force_discover(&self, kind: ArtifactKind) -> Result<PathBuf> {
         let ext = kind.extension();
         let expected_name = self.parser_name_and_ext(kind);
-        let mut files = fs::read_dir(self.dir.as_ref()).await.map_err(|e| {
-            error::TsdlError::context(
-                format!("Failed to read directory {}", self.dir.display()),
-                e,
-            )
-        })?;
+        let mut files = fs::read_dir(self.dir.as_ref())
+            .await
+            .with_context(|| format!("Failed to read directory {}", self.dir.display()))?;
 
         let mut exact_match = None;
         let mut candidates = Vec::new();
 
         loop {
-            let Some(entry) = files.next_entry().await.map_err(|e| {
-                error::TsdlError::context(
-                    format!("Failed to read directory entry in {}", self.dir.display()),
-                    e,
-                )
+            let Some(entry) = files.next_entry().await.with_context(|| {
+                format!("Failed to read directory entry in {}", self.dir.display())
             })?
             else {
                 break;
             };
 
             let path = entry.path();
-            let file_type = entry.file_type().await.map_err(|e| {
-                error::TsdlError::context(
-                    format!("Failed to read file type for {}", path.display()),
-                    e,
-                )
-            })?;
+            let file_type = entry
+                .file_type()
+                .await
+                .with_context(|| format!("Failed to read file type for {}", path.display()))?;
 
             if !file_type.is_file() {
                 continue;
@@ -480,25 +469,23 @@ impl GrammarBuild {
         }
     }
 
-    async fn generate(&self) -> TsdlResult<()> {
+    async fn generate(&self) -> Result<()> {
         Command::new(self.ts_cli.as_os_str())
             .current_dir(self.dir.as_path())
             .arg("generate")
             .exec()
             .await
             .map(|_| ())
-            .map_err(|err| {
-                error::TsdlError::Step(error::Step::new(
-                    self.language.as_arc(),
-                    error::ParserOp::Generate {
-                        dir: self.dir.to_path_buf(),
-                    },
-                    err,
-                ))
+            .map_err(|err| Error::Step {
+                name: self.language.as_arc(),
+                kind: error::ParserOp::Generate {
+                    dir: self.dir.to_path_buf(),
+                },
+                source: err.into(),
             })
     }
 
-    async fn install(&self) -> TsdlResult<()> {
+    async fn install(&self) -> Result<()> {
         // Find and install parser binary for each extension
         if self.spec.target.native() {
             self.install_binary(ArtifactKind::Native).await?;
@@ -511,12 +498,12 @@ impl GrammarBuild {
         Ok(())
     }
 
-    async fn install_binary(&self, kind: ArtifactKind) -> TsdlResult<()> {
+    async fn install_binary(&self, kind: ArtifactKind) -> Result<()> {
         let src = self.artifact_path(kind)?;
         let dst = self.output.out_dir.join(self.parser_name_and_ext(kind));
         let src_metadata = fs::metadata(&src)
             .await
-            .map_err(|e| error::TsdlError::context(format!("Reading {}", src.display()), e))?;
+            .with_context(|| format!("Reading {}", src.display()))?;
 
         let dst_link_metadata = match fs::symlink_metadata(&dst).await {
             Ok(metadata) => metadata,
@@ -525,10 +512,10 @@ impl GrammarBuild {
                 return Ok(());
             }
             Err(err) => {
-                return Err(error::TsdlError::context(
-                    format!("Reading {}", dst.display()),
-                    err,
-                ));
+                return Err(Error::Context {
+                    message: format!("Reading {}", dst.display()),
+                    source: err.into(),
+                });
             }
         };
 
@@ -542,22 +529,26 @@ impl GrammarBuild {
         src_metadata: &Metadata,
         dst: &Path,
         dst_link_metadata: &Metadata,
-    ) -> TsdlResult<()> {
+    ) -> Result<()> {
         let dst_file_type = dst_link_metadata.file_type();
 
         if dst_file_type.is_dir() {
-            return Err(error::TsdlError::message(format!(
-                "Output path is a directory and cannot be replaced: {}",
-                dst.display()
-            )));
+            return Err(Error::Message {
+                message: format!(
+                    "Output path is a directory and cannot be replaced: {}",
+                    dst.display()
+                ),
+            });
         }
 
         if dst_file_type.is_symlink() {
             if !self.context.overwrite_output {
-                return Err(error::TsdlError::message(format!(
-                    "Output path is a symlink and will not be replaced without --force: {}",
-                    dst.display()
-                )));
+                return Err(Error::Message {
+                    message: format!(
+                        "Output path is a symlink and will not be replaced without --force: {}",
+                        dst.display()
+                    ),
+                });
             }
 
             self.replace_with_hardlink(src, dst).await?;
@@ -566,15 +557,17 @@ impl GrammarBuild {
         }
 
         if !dst_file_type.is_file() {
-            return Err(error::TsdlError::message(format!(
-                "Output path is not a regular file and cannot be replaced: {}",
-                dst.display()
-            )));
+            return Err(Error::Message {
+                message: format!(
+                    "Output path is not a regular file and cannot be replaced: {}",
+                    dst.display()
+                ),
+            });
         }
 
         let dst_metadata = fs::metadata(dst)
             .await
-            .map_err(|e| error::TsdlError::context(format!("Reading {}", dst.display()), e))?;
+            .with_context(|| format!("Reading {}", dst.display()))?;
 
         if same_file_identity(src_metadata, &dst_metadata) {
             return Ok(());
@@ -584,10 +577,12 @@ impl GrammarBuild {
             same_regular_file_contents(src, src_metadata, dst, &dst_metadata).await?;
 
         if !same_contents && !self.context.overwrite_output {
-            return Err(error::TsdlError::message(format!(
-                "Output already exists and differs from the built parser: {}. Use --force to replace it.",
-                dst.display()
-            )));
+            return Err(Error::Message {
+                        message: format!(
+                            "Output already exists and differs from the built parser: {}. Use --force to replace it.",
+                            dst.display()
+                        ),
+                    });
         }
 
         self.replace_with_hardlink(src, dst).await?;
@@ -595,17 +590,19 @@ impl GrammarBuild {
         Ok(())
     }
 
-    async fn stage_artifact(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
+    async fn stage_artifact(&self, src: &Path, dst: &Path) -> Result<()> {
         ensure_parent_dir(dst).await?;
         let src_metadata = fs::metadata(src)
             .await
-            .map_err(|e| error::TsdlError::context(format!("Reading {}", src.display()), e))?;
+            .with_context(|| format!("Reading {}", src.display()))?;
 
         if !src_metadata.is_file() {
-            return Err(error::TsdlError::message(format!(
-                "Discovered parser artifact is not a regular file: {}",
-                src.display()
-            )));
+            return Err(Error::Message {
+                message: format!(
+                    "Discovered parser artifact is not a regular file: {}",
+                    src.display()
+                ),
+            });
         }
 
         match fs::metadata(dst).await {
@@ -613,10 +610,10 @@ impl GrammarBuild {
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => {
-                return Err(error::TsdlError::context(
-                    format!("Reading {}", dst.display()),
-                    err,
-                ));
+                return Err(Error::Context {
+                    message: format!("Reading {}", dst.display()),
+                    source: err.into(),
+                });
             }
         }
 
@@ -628,7 +625,7 @@ impl GrammarBuild {
         ts_cli: &Path,
         spec: &build::Spec,
         grammar_name: &GrammarName,
-    ) -> TsdlResult<Vec<PathBuf>> {
+    ) -> Result<Vec<PathBuf>> {
         let mut artifacts = Vec::new();
 
         if spec.target.native() {
@@ -654,7 +651,7 @@ impl GrammarBuild {
         Ok(artifacts)
     }
 
-    fn artifact_path(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
+    fn artifact_path(&self, kind: ArtifactKind) -> Result<PathBuf> {
         artifact_path_for(
             &self.output.build_dir,
             &self.ts_cli,
@@ -664,40 +661,46 @@ impl GrammarBuild {
         )
     }
 
-    async fn replace_with_hardlink(&self, src: &Path, dst: &Path) -> TsdlResult<()> {
+    async fn replace_with_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
         let tmp = temp_install_path(dst)?;
         self.create_hardlink(src, &tmp).await?;
 
         if let Err(err) = fs::rename(&tmp, dst).await {
             let _ = fs::remove_file(&tmp).await;
-            return Err(error::TsdlError::context(
-                format!("Installing {} to {}", src.display(), dst.display()),
-                err,
-            ));
+            return Err(Error::Context {
+                message: format!("Installing {} to {}", src.display(), dst.display()),
+                source: err.into(),
+            });
         }
 
         Ok(())
     }
-    fn missing_parser_error(&self, ext: &str) -> error::TsdlError {
-        error::TsdlError::Step(error::Step::new(
-            self.language.as_arc(),
-            error::ParserOp::Copy {
+    fn missing_parser_error(&self, ext: &str) -> Error {
+        Error::Step {
+            name: self.language.as_arc(),
+            kind: error::ParserOp::Copy {
                 src: self.output.out_dir.to_path_buf(),
                 dst: self.output.build_dir.to_path_buf(),
             },
-            error::TsdlError::message(format!("Couldn't find any {ext} file")),
-        ))
+            source: Error::Message {
+                message: format!("Couldn't find any {ext} file"),
+            }
+            .into(),
+        }
     }
 
-    fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> error::TsdlError {
-        error::TsdlError::Step(error::Step::new(
-            self.language.as_arc(),
-            error::ParserOp::Copy {
+    fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> Error {
+        Error::Step {
+            name: self.language.as_arc(),
+            kind: error::ParserOp::Copy {
                 src: self.output.out_dir.to_path_buf(),
                 dst: self.output.build_dir.to_path_buf(),
             },
-            error::TsdlError::message(format!("Found multiple {ext} files: {candidates:?}")),
-        ))
+            source: Error::Message {
+                message: format!("Found multiple {ext} files: {candidates:?}"),
+            }
+            .into(),
+        }
     }
 
     fn parser_name_and_ext(&self, kind: ArtifactKind) -> String {
@@ -731,16 +734,16 @@ impl LanguageBuild {
 
     pub async fn discover_grammars(
         &self,
-    ) -> TsdlResult<Vec<(GrammarName, PathBuf, cache::GrammarHash)>> {
+    ) -> Result<Vec<(GrammarName, PathBuf, cache::GrammarHash)>> {
         let file_results = collect_grammar_paths(self.output.build_dir.clone()).await?;
         let mut grammars = Vec::new();
 
         for (grammar_path, hash) in file_results {
-            let grammar_dir = grammar_path.parent().ok_or_else(|| {
-                error::TsdlError::Message(format!(
+            let grammar_dir = grammar_path.parent().ok_or_else(|| Error::Message {
+                message: format!(
                     "Could not get parent directory for {}",
                     grammar_path.display()
-                ))
+                ),
             })?;
             let grammar_name = extract_grammar_name(grammar_dir)?;
             grammars.push((grammar_name, grammar_dir.to_path_buf(), hash));
@@ -757,21 +760,19 @@ impl LanguageBuild {
         self
     }
 
-    pub async fn checkout(&self) -> TsdlResult<git::Checkout> {
+    pub async fn checkout(&self) -> Result<git::Checkout> {
         git::checkout(
             self.spec.repo.as_str(),
             self.spec.git_ref.requested(),
             &self.output.build_dir,
         )
         .await
-        .map_err(|err| {
-            error::TsdlError::Step(error::Step::new(
-                self.name.as_arc(),
-                error::ParserOp::Clone {
-                    dir: self.output.build_dir.to_path_buf(),
-                },
-                err,
-            ))
+        .map_err(|err| Error::Step {
+            name: self.name.as_arc(),
+            kind: error::ParserOp::Clone {
+                dir: self.output.build_dir.to_path_buf(),
+            },
+            source: err.into(),
         })
     }
 
@@ -790,21 +791,21 @@ fn artifact_path_for(
     spec: &build::Spec,
     grammar_name: &GrammarName,
     kind: ArtifactKind,
-) -> TsdlResult<PathBuf> {
+) -> Result<PathBuf> {
     Ok(build_dir
         .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
         .join(parser_name_and_ext(&spec.prefix, grammar_name, kind)))
 }
 
-fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> TsdlResult<String> {
+fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
     let file_name = ts_cli
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            error::TsdlError::message(format!(
+        .ok_or_else(|| Error::Message {
+            message: format!(
                 "Could not derive artifact id from tree-sitter CLI path {}",
                 ts_cli.display()
-            ))
+            ),
         })?;
     let id = file_name.strip_prefix("tree-sitter-").unwrap_or(file_name);
     Ok(format!("tsdl-{}", sanitize_path_component(id)))
@@ -829,31 +830,30 @@ fn sanitize_path_component(value: &str) -> String {
     }
 }
 
-async fn ensure_parent_dir(path: &Path) -> TsdlResult<()> {
-    let parent = path.parent().ok_or_else(|| {
-        error::TsdlError::message(format!(
+async fn ensure_parent_dir(path: &Path) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| Error::Message {
+        message: format!(
             "Could not determine parent directory for {}",
             path.display()
-        ))
+        ),
     })?;
 
     fs::create_dir_all(parent)
         .await
-        .map_err(|e| error::TsdlError::context(format!("Creating {}", parent.display()), e))
+        .with_context(|| format!("Creating {}", parent.display()))
 }
 
-async fn verify_artifact(path: &Path) -> TsdlResult<()> {
-    let metadata = fs::metadata(path).await.map_err(|e| {
-        error::TsdlError::context(format!("Reading built artifact {}", path.display()), e)
-    })?;
+async fn verify_artifact(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .await
+        .with_context(|| format!("Reading built artifact {}", path.display()))?;
 
     if metadata.is_file() {
         Ok(())
     } else {
-        Err(error::TsdlError::message(format!(
-            "Built artifact is not a regular file: {}",
-            path.display()
-        )))
+        Err(Error::Message {
+            message: format!("Built artifact is not a regular file: {}", path.display()),
+        })
     }
 }
 
@@ -866,7 +866,7 @@ async fn same_regular_file_contents(
     src_metadata: &Metadata,
     dst: &Path,
     dst_metadata: &Metadata,
-) -> TsdlResult<bool> {
+) -> Result<bool> {
     if src_metadata.len() != dst_metadata.len() {
         return Ok(false);
     }
@@ -876,19 +876,19 @@ async fn same_regular_file_contents(
     Ok(src_hash == dst_hash)
 }
 
-fn temp_install_path(dst: &Path) -> TsdlResult<PathBuf> {
-    let file_name = dst.file_name().ok_or_else(|| {
-        error::TsdlError::message(format!(
+fn temp_install_path(dst: &Path) -> Result<PathBuf> {
+    let file_name = dst.file_name().ok_or_else(|| Error::Message {
+        message: format!(
             "Could not create temporary install path for {}",
             dst.display()
-        ))
+        ),
     })?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            error::TsdlError::message(format!(
+        .map_err(|e| Error::Message {
+            message: format!(
                 "System clock is before UNIX epoch while creating temporary install path: {e}"
-            ))
+            ),
         })?
         .as_nanos();
     let mut tmp_name = file_name.to_os_string();
@@ -897,16 +897,16 @@ fn temp_install_path(dst: &Path) -> TsdlResult<PathBuf> {
     Ok(dst.with_file_name(tmp_name))
 }
 
-fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
+fn extract_dir_name(dir: &Path) -> Result<String> {
     dir.file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| {
-            error::TsdlError::Message(format!("Could not get dir name for {}", dir.display()))
+        .ok_or_else(|| Error::Message {
+            message: format!("Could not get dir name for {}", dir.display()),
         })
 }
 
 /// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
-fn extract_grammar_name(dir: &Path) -> TsdlResult<GrammarName> {
+fn extract_grammar_name(dir: &Path) -> Result<GrammarName> {
     let dir_name = extract_dir_name(dir)?;
     let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
     Ok(GrammarName::from(name))

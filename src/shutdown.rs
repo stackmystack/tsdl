@@ -3,13 +3,14 @@ use std::{
     fmt,
     future::Future,
     num::NonZeroU32,
+    result::Result as StdResult,
     sync::{Arc, Mutex},
 };
 
 use tokio::sync::watch;
 use tracing::{debug, info};
 
-use crate::{error::TsdlError, TsdlResult};
+use crate::{Error, Result, ResultExt};
 
 tokio::task_local! {
     static CURRENT_SHUTDOWN: Handle;
@@ -106,7 +107,7 @@ impl fmt::Display for PgId {
 impl TryFrom<u32> for PgId {
     type Error = PgIdError;
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
+    fn try_from(value: u32) -> StdResult<Self, Self::Error> {
         let value = NonZeroU32::new(value).ok_or(PgIdError::Zero)?;
         <libc::pid_t>::try_from(value.get()).map_err(|_| PgIdError::OutOfRange(value.get()))?;
         Ok(Self(value))
@@ -242,9 +243,9 @@ impl Handle {
         }
     }
 
-    pub fn check(&self) -> TsdlResult<()> {
+    pub fn check(&self) -> Result<()> {
         if let Some(signal) = self.reason() {
-            Err(TsdlError::Interrupted(signal))
+            Err(Error::Interrupted { signal })
         } else {
             Ok(())
         }
@@ -286,19 +287,19 @@ impl Handle {
     }
 
     #[cfg(unix)]
-    pub fn spawn_signal_listener(&self) -> TsdlResult<tokio::task::JoinHandle<()>> {
+    pub fn spawn_signal_listener(&self) -> Result<tokio::task::JoinHandle<()>> {
         use std::process;
 
         use tokio::signal::unix::{signal, SignalKind};
 
         let mut sighup = signal(SignalKind::from_raw(Signal::HUP.number))
-            .map_err(|e| TsdlError::context("Installing SIGHUP handler", e))?;
+            .context("Installing SIGHUP handler")?;
         let mut sigint = signal(SignalKind::from_raw(Signal::INT.number))
-            .map_err(|e| TsdlError::context("Installing SIGINT handler", e))?;
+            .context("Installing SIGINT handler")?;
         let mut sigquit = signal(SignalKind::from_raw(Signal::QUIT.number))
-            .map_err(|e| TsdlError::context("Installing SIGQUIT handler", e))?;
+            .context("Installing SIGQUIT handler")?;
         let mut sigterm = signal(SignalKind::from_raw(Signal::TERM.number))
-            .map_err(|e| TsdlError::context("Installing SIGTERM handler", e))?;
+            .context("Installing SIGTERM handler")?;
         let shutdown = self.clone();
 
         Ok(tokio::spawn(async move {
@@ -367,7 +368,7 @@ pub fn current_or_default() -> Handle {
     current().unwrap_or_default()
 }
 
-pub fn check() -> TsdlResult<()> {
+pub fn check() -> Result<()> {
     current().map_or(Ok(()), |shutdown| shutdown.check())
 }
 

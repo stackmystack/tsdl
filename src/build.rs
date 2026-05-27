@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
+    result::Result as StdResult,
     sync::Arc,
     time::Duration,
 };
@@ -10,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use url::Url;
 
+use crate::consts::FROM;
 use crate::{
-    actors, app, args, cache, consts, error, format_duration, lock, parser, prompt_user, shutdown,
-    SafeCanonicalize, TsdlResult,
+    actors, app, args, cache, format_duration, lock, parser, prompt_user, shutdown, Error, Result,
+    ResultExt, SafeCanonicalize,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +38,7 @@ pub struct Context {
     pub overwrite_output: bool,
 }
 
-pub fn run(app: &app::App) -> TsdlResult<()> {
+pub fn run(app: &app::App) -> Result<()> {
     if app.command.show_config {
         crate::config::show(&app.command)?;
     }
@@ -49,7 +51,7 @@ pub fn run(app: &app::App) -> TsdlResult<()> {
     Ok(())
 }
 
-fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> TsdlResult<lock::Guard> {
+fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Guard> {
     // Loop because the lock owner may exit naturally between the prompt and
     // SIGTERM, or another process may replace it.  Each iteration re-checks
     // the lock status and presents the current owner to the user.
@@ -59,7 +61,9 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> TsdlResult<lock:
 
             lock::Status::Cyclic => {
                 info!("lock::Lock already held by this process (cyclic).");
-                return Err(error::TsdlError::message("1+ lock acquisition"));
+                return Err(Error::Message {
+                    message: "1+ lock acquisition".into(),
+                });
             }
 
             lock::Status::LockedBy(owner) => match handle_locked_by(lock, &owner, unlock_timeout) {
@@ -77,9 +81,9 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> TsdlResult<lock:
                 } else {
                     info!("Build directory is locked, but tsdl could not identify the owner: {reason}");
                 }
-                return Err(error::TsdlError::message(format!(
-                    "Could not identify build lock owner: {reason}"
-                )));
+                return Err(Error::Message {
+                    message: format!("Could not identify build lock owner: {reason}"),
+                });
             }
         }
     }
@@ -89,7 +93,7 @@ fn handle_locked_by(
     lock: &lock::Lock,
     owner: &lock::Owner,
     unlock_timeout: Duration,
-) -> Result<lock::Guard, lock::TakeoverError> {
+) -> StdResult<lock::Guard, lock::TakeoverError> {
     info!("Build directory is locked by another process:");
     info!("{owner}");
     eprintln!(
@@ -101,7 +105,10 @@ fn handle_locked_by(
     );
 
     if !prompt_user("Terminate this process and continue?", false)? {
-        return Err(error::TsdlError::message("lock::Lock acquisition cancelled by user").into());
+        return Err(Error::Message {
+            message: "lock::Lock acquisition cancelled by user".into(),
+        }
+        .into());
     }
 
     lock.terminate_owner(owner)?;
@@ -112,7 +119,7 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
-fn clear(app: &app::App, guard: &lock::Guard) -> TsdlResult<()> {
+fn clear(app: &app::App, guard: &lock::Guard) -> Result<()> {
     if app.command.fresh && app.command.build_dir.exists() {
         guard.clear_directory(std::slice::from_ref(&app.log_path))?;
     }
@@ -122,39 +129,35 @@ fn clear(app: &app::App, guard: &lock::Guard) -> TsdlResult<()> {
     Ok(())
 }
 
-fn collect_languages(
-    app: &app::App,
-) -> Result<Vec<parser::LanguageBuild>, error::LanguageCollection> {
+fn collect_languages(app: &app::App) -> Result<Vec<parser::LanguageBuild>> {
     let results = unique_languages(app);
     let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     if err.is_empty() {
         Ok(ok.into_iter().map(Result::unwrap).collect())
     } else {
-        Err(error::LanguageCollection {
+        Err(Error::LanguageCollection {
             related: err.into_iter().map(Result::unwrap_err).collect(),
         })
     }
 }
 
-fn default_repo(language: &str) -> TsdlResult<Url> {
-    let url = format!("{}{language}", consts::TSDL_FROM);
-    Url::parse(&url)
-        .map_err(|e| error::TsdlError::context(format!("Creating url {url} for {language}"), e))
+fn default_repo(language: &str) -> Result<Url> {
+    let url = format!("{FROM}{language}");
+    Url::parse(&url).with_context(|| format!("Creating url {url} for {language}"))
 }
 
 fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, args::ParserConfig>>,
-) -> TsdlResult<(Option<String>, parser::Ref, Url)> {
+) -> Result<(Option<String>, parser::Ref, Url)> {
     let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
     match config {
         Some(args::ParserConfig::Ref(git_ref)) => Ok((
             None,
-            parser::Ref::parse(git_ref).map_err(|e| {
-                error::TsdlError::context(format!("Parsing git ref {git_ref:?} for {language}"), e)
-            })?,
+            parser::Ref::parse(git_ref)
+                .with_context(|| format!("Parsing git ref {git_ref:?} for {language}"))?,
             default_repo(language)?,
         )),
 
@@ -164,20 +167,15 @@ fn get_language_coords(
             from,
         }) => {
             let repo = match from {
-                Some(url_str) => Url::parse(url_str).map_err(|e| {
-                    error::TsdlError::context(format!("Parsing {url_str} for {language}"), e)
-                })?,
+                Some(url_str) => Url::parse(url_str)
+                    .with_context(|| format!("Parsing {url_str} for {language}"))?,
                 None => default_repo(language)?,
             };
 
             Ok((
                 build_script.clone(),
-                parser::Ref::parse(git_ref).map_err(|e| {
-                    error::TsdlError::context(
-                        format!("Parsing git ref {git_ref:?} for {language}"),
-                        e,
-                    )
-                })?,
+                parser::Ref::parse(git_ref)
+                    .with_context(|| format!("Parsing git ref {git_ref:?} for {language}"))?,
                 repo,
             ))
         }
@@ -186,7 +184,7 @@ fn get_language_coords(
     }
 }
 
-fn ignite(app: &app::App) -> TsdlResult<()> {
+fn ignite(app: &app::App) -> Result<()> {
     fs::create_dir_all(&app.command.out_dir)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -227,7 +225,7 @@ fn ignite(app: &app::App) -> TsdlResult<()> {
     result
 }
 
-fn unique_languages(app: &app::App) -> Vec<Result<parser::LanguageBuild, error::Language>> {
+fn unique_languages(app: &app::App) -> Vec<Result<parser::LanguageBuild>> {
     let requested_languages = &app.command.languages;
     let defined_parsers = app.command.parsers.as_ref();
 
@@ -272,7 +270,10 @@ fn unique_languages(app: &app::App) -> Vec<Result<parser::LanguageBuild, error::
                         .into(),
                 },
             )),
-            Err(err) => Err(error::Language::new(language, err)),
+            Err(err) => Err(Error::Language {
+                name: language,
+                source: err.into(),
+            }),
         };
         results.push(result);
     }
@@ -304,7 +305,7 @@ mod tests {
             progress_mode: Mode::Plain,
             provenance: BuildProvenance::default(),
             verbose: clap_verbosity_flag::Verbosity::default(),
-            _logging: None,
+            logging_guard: None,
         }
     }
 

@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use tracing::{debug, info};
 
-use crate::{args, error, parser, shutdown, tree_sitter, TsdlResult};
+use crate::{args, parser, shutdown, tree_sitter, Error, Result};
 
 pub trait Addr {
     type Message;
@@ -67,15 +67,15 @@ pub async fn run(
     jobs: NonZeroUsize,
     languages: Vec<parser::LanguageBuild>,
     tree_sitter: &args::TreeSitter,
-) -> TsdlResult<()> {
+) -> Result<()> {
     let tree_sitter_ref = match tree_sitter::display_tree_sitter_ref(&tree_sitter.version) {
         Ok(git_ref) => git_ref,
         Err(err) => {
             display.shutdown(false).await;
-            return Err(error::TsdlError::context(
-                format!("Parsing tree-sitter git ref {:?}", tree_sitter.version),
-                err,
-            ));
+            return Err(Error::Context {
+                message: format!("Parsing tree-sitter git ref {:?}", tree_sitter.version),
+                source: err.into(),
+            });
         }
     };
 
@@ -110,7 +110,7 @@ pub async fn run(
     // interruption so the top-level process exits with the signal status.
     if let Some(signal) = interrupted {
         info!("pipeline shutdown signalled by {signal}, suppressing build errors");
-        return Err(error::TsdlError::Interrupted(signal));
+        return Err(Error::Interrupted { signal });
     }
 
     result
@@ -123,7 +123,7 @@ async fn run_inner(
     jobs: NonZeroUsize,
     languages: Vec<parser::LanguageBuild>,
     tree_sitter: &args::TreeSitter,
-) -> TsdlResult<()> {
+) -> Result<()> {
     let prepared = tree_sitter::prepare(build_dir, display.clone(), tree_sitter).await?;
     let ts_cli = Arc::new(prepared.path);
     let languages = languages
@@ -131,7 +131,7 @@ async fn run_inner(
         .map(|language| language.with_tree_sitter(prepared.tree_sitter.clone()))
         .collect::<Vec<_>>();
 
-    let mut errors : Vec<error::TsdlError> =
+    let mut errors: Vec<Error> =
       // 1. crate::cache::Source: Create a stream from the input list
       stream::iter(languages)
           // 2. Stage: Discovery
@@ -193,7 +193,7 @@ async fn run_inner(
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(error::TsdlError::Build(errors))
+        Err(Error::Build { errors })
     }
 }
 
@@ -204,7 +204,7 @@ async fn discover_grammars(
     display: DisplayAddr,
     language: parser::LanguageBuild,
     ts_cli: Arc<PathBuf>,
-) -> TsdlResult<Vec<crate::parser::GrammarBuild>> {
+) -> Result<Vec<crate::parser::GrammarBuild>> {
     shutdown::test_delay().await;
     shutdown::check()?;
     debug!("[discover] lang={}", language.name);
@@ -287,7 +287,7 @@ async fn resolve_source(
     cache: &CacheAddr,
     language: &parser::LanguageBuild,
     progress: &ProgressAddr,
-) -> TsdlResult<crate::cache::Source> {
+) -> Result<crate::cache::Source> {
     if language.spec.git_ref.is_moving() {
         info!(
             "Resolving moving parser git ref for {}: {}",

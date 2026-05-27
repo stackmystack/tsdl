@@ -5,7 +5,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process, thread,
+    process,
+    result::Result as StdResult,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -13,7 +15,7 @@ use fs2::FileExt;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 use tracing::info;
 
-use crate::{absolute_normalize, consts, error, format_duration, TsdlResult};
+use crate::{absolute_normalize, consts, format_duration, Error, Result, ResultExt};
 
 /// Information about the process currently holding the build lock.
 #[derive(Debug, Clone)]
@@ -127,7 +129,7 @@ pub enum TakeoverError {
         last_observation: Box<Observation>,
     },
     /// An underlying tsdl error occurred while taking over the lock.
-    Source(error::TsdlError),
+    Source(Error),
 }
 
 impl TakeoverError {
@@ -189,15 +191,17 @@ impl fmt::Display for TakeoverError {
 
 impl std::error::Error for TakeoverError {}
 
-impl From<error::TsdlError> for TakeoverError {
-    fn from(err: error::TsdlError) -> Self {
+impl From<Error> for TakeoverError {
+    fn from(err: Error) -> Self {
         Self::Source(err)
     }
 }
 
-impl From<TakeoverError> for error::TsdlError {
+impl From<TakeoverError> for Error {
     fn from(err: TakeoverError) -> Self {
-        Self::message(err.to_string())
+        Error::Message {
+            message: err.to_string(),
+        }
     }
 }
 
@@ -225,12 +229,12 @@ impl Guard {
     /// The build directory itself is preserved; only its children are removed.
     /// This is used by `--fresh` to clean the build directory without
     /// invalidating OS locks or unlinking files held open by the current process.
-    pub fn clear_directory(&self, protected_files: &[PathBuf]) -> TsdlResult<()> {
-        let build_dir = self.lock_path.parent().ok_or_else(|| {
-            error::TsdlError::message(format!(
+    pub fn clear_directory(&self, protected_files: &[PathBuf]) -> Result<()> {
+        let build_dir = self.lock_path.parent().ok_or_else(|| Error::Message {
+            message: format!(
                 "Lock path has no parent directory: {}",
                 self.lock_path.display()
-            ))
+            ),
         })?;
         let build_dir_abs = absolute_normalize(build_dir)?;
         let mut protected_names = HashSet::<OsString>::new();
@@ -238,7 +242,7 @@ impl Guard {
         let lock_name = self
             .lock_path
             .file_name()
-            .map_or_else(|| OsString::from(consts::TSDL_LOCK_FILE), OsString::from);
+            .map_or_else(|| OsString::from(consts::LOCK_FILE), OsString::from);
         protected_names.insert(lock_name);
 
         for protected in protected_files {
@@ -250,18 +254,11 @@ impl Guard {
             }
         }
 
-        for entry in fs::read_dir(build_dir).map_err(|e| {
-            error::TsdlError::context(
-                format!("Reading build directory {}", build_dir.display()),
-                e,
-            )
-        })? {
-            let entry = entry.map_err(|e| {
-                error::TsdlError::context(
-                    format!("Reading directory entry in {}", build_dir.display()),
-                    e,
-                )
-            })?;
+        for entry in fs::read_dir(build_dir)
+            .with_context(|| format!("Reading build directory {}", build_dir.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("Reading directory entry in {}", build_dir.display()))?;
 
             let name = entry.file_name();
 
@@ -270,18 +267,16 @@ impl Guard {
             }
 
             let path = entry.path();
-            let file_type = entry.file_type().map_err(|e| {
-                error::TsdlError::context(format!("Statting {}", path.display()), e)
-            })?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("Statting {}", path.display()))?;
 
             if file_type.is_dir() {
-                fs::remove_dir_all(&path).map_err(|e| {
-                    error::TsdlError::context(format!("Removing directory {}", path.display()), e)
-                })?;
+                fs::remove_dir_all(&path)
+                    .with_context(|| format!("Removing directory {}", path.display()))?;
             } else {
-                fs::remove_file(&path).map_err(|e| {
-                    error::TsdlError::context(format!("Removing file {}", path.display()), e)
-                })?;
+                fs::remove_file(&path)
+                    .with_context(|| format!("Removing file {}", path.display()))?;
             }
         }
 
@@ -300,27 +295,27 @@ impl Lock {
     #[must_use]
     pub fn new(build_dir: &Path) -> Self {
         Self {
-            lock_path: build_dir.join(consts::TSDL_LOCK_FILE),
+            lock_path: build_dir.join(consts::LOCK_FILE),
             current_pid: Pid::from(process::id() as usize),
         }
     }
 
     /// Check lock status and acquire the OS lock if available.
-    pub fn try_acquire(&self) -> TsdlResult<Status> {
+    pub fn try_acquire(&self) -> Result<Status> {
         let file = self.open_lock_file()?;
 
         match file.try_lock_exclusive() {
             Ok(()) => self.activate(file).map(Status::Acquired),
             Err(err) if is_lock_contention(&err) => Ok(self.lock_status()),
-            Err(err) => Err(error::TsdlError::context(
-                format!("Acquiring build lock {}", self.lock_path.display()),
-                err,
-            )),
+            Err(err) => Err(Error::Context {
+                message: format!("Acquiring build lock {}", self.lock_path.display()),
+                source: err.into(),
+            }),
         }
     }
 
     /// Send SIGTERM to the process that held the lock when `owner` was captured.
-    pub fn terminate_owner(&self, owner: &Owner) -> Result<(), TakeoverError> {
+    pub fn terminate_owner(&self, owner: &Owner) -> StdResult<(), TakeoverError> {
         info!(
             "Sending SIGTERM to lock owner PID {} ({})",
             owner.pid, owner.name
@@ -366,7 +361,7 @@ impl Lock {
         &self,
         owner: &Owner,
         timeout: Duration,
-    ) -> Result<Guard, TakeoverError> {
+    ) -> StdResult<Guard, TakeoverError> {
         info!(
             "Waiting up to {} for lock release from PID {}",
             crate::format_duration(timeout),
@@ -420,7 +415,7 @@ impl Lock {
             delay = delay.saturating_mul(2).min(Duration::from_millis(500));
         }
     }
-    fn activate(&self, mut file: File) -> TsdlResult<Guard> {
+    fn activate(&self, mut file: File) -> Result<Guard> {
         self.write_metadata(&mut file)?;
         info!("Acquired lock on build directory");
         Ok(Guard {
@@ -429,14 +424,10 @@ impl Lock {
         })
     }
 
-    fn open_lock_file(&self) -> TsdlResult<File> {
+    fn open_lock_file(&self) -> Result<File> {
         if let Some(parent) = self.lock_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                error::TsdlError::context(
-                    format!("Creating build directory {}", parent.display()),
-                    e,
-                )
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Creating build directory {}", parent.display()))?;
         }
 
         OpenOptions::new()
@@ -445,12 +436,7 @@ impl Lock {
             .create(true)
             .truncate(false)
             .open(&self.lock_path)
-            .map_err(|e| {
-                error::TsdlError::context(
-                    format!("Opening lock file {}", self.lock_path.display()),
-                    e,
-                )
-            })
+            .with_context(|| format!("Opening lock file {}", self.lock_path.display()))
     }
 
     /// Helper for checking process status and determining lock conflicts.
@@ -495,17 +481,16 @@ impl Lock {
         })
     }
 
-    fn read_pid(&self) -> TsdlResult<Pid> {
-        let content = fs::read_to_string(&self.lock_path).map_err(|e| {
-            error::TsdlError::context(format!("Reading lock file {}", self.lock_path.display()), e)
-        })?;
+    fn read_pid(&self) -> Result<Pid> {
+        let content = fs::read_to_string(&self.lock_path)
+            .with_context(|| format!("Reading lock file {}", self.lock_path.display()))?;
 
-        let pid: usize = content.trim().parse().map_err(|_| {
-            error::TsdlError::message(format!(
+        let pid: usize = content.trim().parse().map_err(|_| Error::Message {
+            message: format!(
                 "Invalid PID '{}' in lock file {}",
                 content.trim(),
                 self.lock_path.display()
-            ))
+            ),
         })?;
 
         Ok(Pid::from(pid))
@@ -525,29 +510,20 @@ impl Lock {
         system
     }
 
-    fn write_metadata(&self, file: &mut File) -> TsdlResult<()> {
-        file.set_len(0).map_err(|e| {
-            error::TsdlError::context(
-                format!("Truncating lock file {}", self.lock_path.display()),
-                e,
+    fn write_metadata(&self, file: &mut File) -> Result<()> {
+        file.set_len(0)
+            .with_context(|| format!("Truncating lock file {}", self.lock_path.display()))?;
+        file.seek(SeekFrom::Start(0))
+            .with_context(|| format!("Seeking lock file {}", self.lock_path.display()))?;
+        write!(file, "{}", self.current_pid.as_u32()).with_context(|| {
+            format!(
+                "Writing lock file {} with PID {}",
+                self.lock_path.display(),
+                self.current_pid
             )
         })?;
-        file.seek(SeekFrom::Start(0)).map_err(|e| {
-            error::TsdlError::context(format!("Seeking lock file {}", self.lock_path.display()), e)
-        })?;
-        write!(file, "{}", self.current_pid.as_u32()).map_err(|e| {
-            error::TsdlError::context(
-                format!(
-                    "Writing lock file {} with PID {}",
-                    self.lock_path.display(),
-                    self.current_pid
-                ),
-                e,
-            )
-        })?;
-        file.sync_all().map_err(|e| {
-            error::TsdlError::context(format!("Syncing lock file {}", self.lock_path.display()), e)
-        })
+        file.sync_all()
+            .with_context(|| format!("Syncing lock file {}", self.lock_path.display()))
     }
 }
 
@@ -586,7 +562,7 @@ mod tests {
     #[test]
     fn stale_lock_metadata_does_not_prevent_acquiring_free_os_lock() {
         let temp = tempfile::tempdir().unwrap();
-        let lock_file = temp.path().join(consts::TSDL_LOCK_FILE);
+        let lock_file = temp.path().join(consts::LOCK_FILE);
         fs::write(&lock_file, unused_pid().to_string()).unwrap();
 
         let lock = Lock::new(temp.path());

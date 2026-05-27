@@ -2,7 +2,7 @@ use assert_fs::prelude::*;
 use indoc::formatdoc;
 use predicates::{self as p};
 
-use tsdl::{args::BuildCommand, consts::TSDL_BUILD_DIR};
+use tsdl::{args::BuildCommand, consts::BUILD_DIR};
 
 use crate::cmd::Sandbox;
 
@@ -32,7 +32,7 @@ fn default_is_default_toml() {
     assert!(!sandbox.is_empty());
     sandbox
         .tmp
-        .child(TSDL_BUILD_DIR)
+        .child(BUILD_DIR)
         .child("log")
         .assert(p::path::exists())
         .assert(p::path::is_file());
@@ -50,7 +50,7 @@ fn current_uses_default() {
     assert!(!sandbox.is_empty());
     sandbox
         .tmp
-        .child(TSDL_BUILD_DIR)
+        .child(BUILD_DIR)
         .child("log")
         .assert(p::path::exists())
         .assert(p::path::is_file());

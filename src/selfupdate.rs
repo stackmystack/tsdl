@@ -3,9 +3,7 @@ use std::{fs, path::PathBuf};
 use self_update::self_replace;
 use semver::Version;
 
-use crate::{
-    TsdlResult, args::VersionBump, consts::TREE_SITTER_PLATFORM, error::TsdlError, prompt_user
-};
+use crate::{args::VersionBump, consts::PLATFORM, Error, prompt_user, Result, ResultExt };
 
 enum UpdateTarget {
     Exact(Version),
@@ -16,13 +14,13 @@ fn download_and_replace(
     asset_name: &str,
     download_url: &str,
     version: &Version,
-) -> TsdlResult<()> {
+) -> Result<()> {
     let tsdl = env!("CARGO_PKG_NAME");
     let tmp_dir = tempfile::tempdir()
-        .map_err(|e| TsdlError::context("Failed to create temporary directory", e))?;
+        .context("Failed to create temporary directory")?;
     let tmp_gz_path = tmp_dir.path().join(asset_name);
     let tmp_gz = fs::File::create_new(&tmp_gz_path)
-        .map_err(|e| TsdlError::context("Failed to create temporary file", e))?;
+        .context("Failed to create temporary file")?;
 
     eprintln!("downloading {version}");
     self_update::Download::from_url(download_url)
@@ -30,10 +28,10 @@ fn download_and_replace(
             reqwest::header::ACCEPT,
             "application/octet-stream"
                 .parse()
-                .map_err(|e| TsdlError::context("Failed to parse accept header", e))?,
+                .context("Failed to parse accept header")?,
         )
         .download_to(&tmp_gz)
-        .map_err(|e| TsdlError::context("Failed to download release asset", e))?;
+        .context("Failed to download release asset")?;
 
     eprintln!("extracting {version}");
     let tsdl_bin = PathBuf::from(tsdl);
@@ -42,45 +40,45 @@ fn download_and_replace(
             self_update::Compression::Gz,
         )))
         .extract_file(tmp_dir.path(), &tsdl_bin)
-        .map_err(|e| TsdlError::context("Failed to extract release asset", e))?;
+        .with_context(|| "Failed to extract release asset".to_string())?;
 
     let new_exe = tmp_dir.path().join(tsdl_bin);
     self_replace::self_replace(new_exe)
-        .map_err(|e| TsdlError::context("Failed to replace current executable", e))?;
+        .with_context(|| "Failed to replace current executable".to_string())?;
 
     eprintln!("{version}");
     Ok(())
 }
 
-fn parse_target(raw: &str) -> Result<UpdateTarget, String> {
+fn parse_target(raw: &str) -> Result<UpdateTarget> {
     match raw {
         "major" => Ok(UpdateTarget::Relative(VersionBump::Major)),
         "minor" => Ok(UpdateTarget::Relative(VersionBump::Minor)),
         "patch" => Ok(UpdateTarget::Relative(VersionBump::Patch)),
-        other => Version::parse(other).map(UpdateTarget::Exact).map_err(|e| {
-            format!("expected 'patch', 'minor', 'major', or a semver like '2.5.0': {e}")
-        }),
+        other => Version::parse(other).map(UpdateTarget::Exact).context(
+            "expected 'patch', 'minor', 'major', or a semver like '2.5.0'"
+        ),
     }
 }
 
-pub fn run(force: bool, target: &str) -> TsdlResult<()> {
-    let update_target = parse_target(target).map_err(TsdlError::message)?;
+pub fn run(force: bool, target: &str) -> Result<()> {
+    let update_target = parse_target(target)?;
 
     let tsdl = env!("CARGO_PKG_NAME");
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
-        .map_err(|e| TsdlError::context("Failed to parse current version", e))?;
+        .with_context(|| "Failed to parse current version".to_string())?;
 
     eprintln!("fetching releases");
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner("stackmystack")
         .repo_name(tsdl)
         .build()
-        .map_err(|e| TsdlError::context("Failed to build release list configuration", e))?
+        .with_context(|| "Failed to build release list configuration".to_string())?
         .fetch()
-        .map_err(|e| TsdlError::context("Failed to fetch releases", e))?;
+        .with_context(|| "Failed to fetch releases".to_string())?;
 
     if releases.is_empty() {
-        return Err(TsdlError::message("No releases found"));
+        return Err(Error::Message{ message: "No releases found".to_string() });
     }
 
     let (release, version) = match update_target {
@@ -89,9 +87,9 @@ pub fn run(force: bool, target: &str) -> TsdlResult<()> {
                 .iter()
                 .find(|r| Version::parse(&r.version).is_ok_and(|v| v == target_version))
             else {
-                return Err(TsdlError::message(format!(
-                    "version {target_version} not found in releases"
-                )));
+                return Err(Error::Message {
+                  message: format!("version {target_version} not found in releases")
+                });
             };
 
             if target_version == current_version {
@@ -153,16 +151,16 @@ pub fn run(force: bool, target: &str) -> TsdlResult<()> {
 
             let latest_release = compatible[0];
             let latest_version = Version::parse(&latest_release.version)
-                .map_err(|e| TsdlError::context("Failed to parse latest version", e))?;
+                .context("Failed to parse latest version")?;
             (latest_release.clone(), latest_version)
         }
     };
 
-    let asset_name = format!("{tsdl}-{TREE_SITTER_PLATFORM}.gz");
+    let asset_name = format!("{tsdl}-{PLATFORM}.gz");
     let Some(asset) = release.assets.iter().find(|a| a.name == asset_name) else {
-        return Err(TsdlError::message(
-            "Could not find a suitable release for your platform",
-        ));
+        return Err(Error::Message {
+            message: "Could not find a suitable release for your platform".to_string(),
+        });
     };
 
     download_and_replace(&asset.name, &asset.download_url, &version)

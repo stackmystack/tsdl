@@ -12,7 +12,7 @@ use std::{env, fs, path::Path};
 use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use assert_fs::TempDir;
 
-use tsdl::{args::BuildCommand, config as tsdl_config, consts::TSDL_CONFIG_FILE};
+use tsdl::{args::BuildCommand, config as tsdl_config, consts::CONFIG_FILE};
 
 pub struct Sandbox {
     pub build: BuildCommand,
@@ -33,7 +33,7 @@ impl Sandbox {
     }
 
     pub fn config(&mut self, config: &str) -> &mut Self {
-        self.config_at(config, &self.tmp.path().join(TSDL_CONFIG_FILE))
+        self.config_at(config, &self.tmp.path().join(CONFIG_FILE))
     }
 
     pub fn config_at(&mut self, config_contents: &str, dst: &Path) -> &mut Self {

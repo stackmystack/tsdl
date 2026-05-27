@@ -1,11 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{cache, git, shutdown, TsdlResult};
+use crate::{cache, git, shutdown, Result};
 
 /// Collect grammar.js paths via git ls-files and compute their hashes.
 pub async fn collect_grammar_paths(
     root: Arc<PathBuf>,
-) -> TsdlResult<Vec<(PathBuf, cache::GrammarHash)>> {
+) -> Result<Vec<(PathBuf, cache::GrammarHash)>> {
     let files = git::list_grammar_files(root.as_ref()).await?;
     let mut results = Vec::with_capacity(files.len());
 

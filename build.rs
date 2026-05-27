@@ -103,20 +103,20 @@ fn main() {
     let tsdl = meta.get("tsdl").expect("missing [metadata.tsdl]");
     generate_consts!(
         Path::new(&out_dir).join("tsdl_consts.rs"),
-        TSDL_BIN_BUILD_DIR : str  = expr(tsdl_bin_str),
-        TSDL_BUILD_DIR     : str  = json(tsdl, "build-dir"),
-        TSDL_CACHE_FILE    : str  = json(tsdl, "cache-file"),
-        TSDL_CONFIG_FILE   : str  = json(tsdl, "config-file"),
-        TSDL_FORCE         : bool = json(tsdl, "force"),
-        TSDL_FRESH         : bool = json(tsdl, "fresh"),
-        TSDL_FROM          : str  = json(tsdl, "from"),
-        TSDL_LOCK_FILE     : str  = json(tsdl, "lock-file"),
-        TSDL_LOG_FILE      : str  = json(tsdl, "log-file"),
-        TSDL_OUT_DIR       : str  = json(tsdl, "out-dir"),
-        TSDL_UNLOCK_TIMEOUT: u64  = json(tsdl, "unlock-timeout"),
-        TSDL_PREFIX        : str  = json(tsdl, "prefix"),
-        TSDL_REF           : str  = json(tsdl, "ref"),
-        TSDL_SHOW_CONFIG   : bool = json(tsdl, "show-config"),
+        BIN_BUILD_DIR : str  = expr(tsdl_bin_str),
+        BUILD_DIR     : str  = json(tsdl, "build-dir"),
+        CACHE_FILE    : str  = json(tsdl, "cache-file"),
+        CONFIG_FILE   : str  = json(tsdl, "config-file"),
+        FORCE         : bool = json(tsdl, "force"),
+        FRESH         : bool = json(tsdl, "fresh"),
+        FROM          : str  = json(tsdl, "from"),
+        LOCK_FILE     : str  = json(tsdl, "lock-file"),
+        LOG_FILE      : str  = json(tsdl, "log-file"),
+        PARSER_OUT_DIR : str  = json(tsdl, "out-dir"),
+        UNLOCK_TIMEOUT: u64  = json(tsdl, "unlock-timeout"),
+        PREFIX        : str  = json(tsdl, "prefix"),
+        REF           : str  = json(tsdl, "ref"),
+        SHOW_CONFIG   : bool = json(tsdl, "show-config"),
     );
 
     // 4. Generate Tree Sitter Consts
@@ -125,9 +125,9 @@ fn main() {
         .expect("missing [metadata.tree-sitter]");
     generate_consts!(
         Path::new(&out_dir).join("tree_sitter_consts.rs"),
-        TREE_SITTER_PLATFORM : str = expr(ts_platform),
-        TREE_SITTER_REPO     : str = json(tree_sitter, "repo"),
-        TREE_SITTER_VERSION  : str = json(tree_sitter, "version"),
+        PLATFORM : str = expr(ts_platform),
+        REPO     : str = json(tree_sitter, "repo"),
+        VERSION  : str = json(tree_sitter, "version"),
     );
 
     // 5. Generate Version/SHA

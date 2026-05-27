@@ -11,10 +11,7 @@ use std::path::PathBuf;
 use tsdl::{
     args::{self, BuildCommand, Target},
     config::{self, Source},
-    consts::{
-        TREE_SITTER_PLATFORM, TREE_SITTER_REPO, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_FRESH,
-        TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG,
-    },
+    consts::{BUILD_DIR, FRESH, PARSER_OUT_DIR, PLATFORM, PREFIX, REPO, SHOW_CONFIG, VERSION},
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -118,13 +115,13 @@ fn current_default_is_default() -> Result<()> {
         repo = "{}"
         platform = "{}"
       "#,
-      TSDL_BUILD_DIR,
-      TSDL_FRESH,
-      TSDL_OUT_DIR,
-      TSDL_SHOW_CONFIG,
-      TREE_SITTER_VERSION,
-      TREE_SITTER_REPO,
-      TREE_SITTER_PLATFORM,
+      BUILD_DIR,
+      FRESH,
+      PARSER_OUT_DIR,
+      SHOW_CONFIG,
+      VERSION,
+      REPO,
+      PLATFORM,
     };
     let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
@@ -180,15 +177,10 @@ fn cli_can_override_tree_sitter_version_to_builtin_default_value() -> Result<()>
 
     let resolved = current_with_cli(
         &generated,
-        &[
-            "tsdl",
-            "build",
-            "--tree-sitter-version",
-            TREE_SITTER_VERSION,
-        ],
+        &["tsdl", "build", "--tree-sitter-version", VERSION],
     );
 
-    assert_eq!(resolved.tree_sitter.version, TREE_SITTER_VERSION);
+    assert_eq!(resolved.tree_sitter.version, VERSION);
     Ok(())
 }
 
@@ -232,7 +224,7 @@ fn negative_boolean_flag_overrides_positive() -> Result<()> {
 #[test]
 fn env_can_override_config_to_builtin_default_value() -> Result<()> {
     let _lock = ENV_LOCK.lock().unwrap();
-    let _prefix = EnvVarGuard::set("TSDL_PREFIX", TSDL_PREFIX);
+    let _prefix = EnvVarGuard::set("PREFIX", PREFIX);
 
     let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
@@ -242,7 +234,7 @@ fn env_can_override_config_to_builtin_default_value() -> Result<()> {
     let build_matches = args::build_matches(&matches);
     let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
-    assert_eq!(cmd.prefix, TSDL_PREFIX);
+    assert_eq!(cmd.prefix, PREFIX);
     assert_eq!(prov.prefix, Source::Environment);
     Ok(())
 }
@@ -250,7 +242,7 @@ fn env_can_override_config_to_builtin_default_value() -> Result<()> {
 #[test]
 fn boolean_env_can_override_config_file() -> Result<()> {
     let _lock = ENV_LOCK.lock().unwrap();
-    let _force = EnvVarGuard::set("TSDL_FORCE", "false");
+    let _force = EnvVarGuard::set("FORCE", "false");
 
     let temp = assert_fs::TempDir::new()?;
     let generated = temp.child("generated.toml");
