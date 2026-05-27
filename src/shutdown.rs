@@ -12,7 +12,7 @@ use tracing::{debug, info};
 use crate::{error::TsdlError, TsdlResult};
 
 tokio::task_local! {
-    static CURRENT_SHUTDOWN: Shutdown;
+    static CURRENT_SHUTDOWN: Handle;
 }
 
 /// Test helper: when `TSDL_TEST_DELAY_MS` is set, inserts a sleep at every step
@@ -37,12 +37,12 @@ pub async fn test_delay() {
 
 /// A Unix signal that requested shutdown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ShutdownSignal {
+pub struct Signal {
     pub number: i32,
     pub name: &'static str,
 }
 
-impl ShutdownSignal {
+impl Signal {
     pub const HUP: Self = Self {
         number: libc::SIGHUP,
         name: "SIGHUP",
@@ -71,7 +71,7 @@ impl ShutdownSignal {
     }
 }
 
-impl fmt::Display for ShutdownSignal {
+impl fmt::Display for Signal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)
     }
@@ -137,9 +137,9 @@ impl std::error::Error for PgIdError {}
 
 /// Cooperative shutdown signal shared across build tasks.
 #[derive(Clone, Debug)]
-pub struct Shutdown {
-    tx: watch::Sender<Option<ShutdownSignal>>,
-    rx: watch::Receiver<Option<ShutdownSignal>>,
+pub struct Handle {
+    tx: watch::Sender<Option<Signal>>,
+    rx: watch::Receiver<Option<Signal>>,
     /// Active child process group IDs. Build commands are put in their own
     /// process groups so a signal can target each command's whole subprocess tree.
     active_pgids: Arc<Mutex<HashSet<PgId>>>,
@@ -155,7 +155,7 @@ pub struct Shutdown {
 /// later shutdown escalation.
 #[derive(Debug)]
 pub struct PgIdGuard {
-    shutdown: Shutdown,
+    shutdown: Handle,
     pgid: PgId,
 }
 
@@ -165,7 +165,7 @@ impl Drop for PgIdGuard {
     }
 }
 
-impl Shutdown {
+impl Handle {
     #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = watch::channel(None);
@@ -177,7 +177,7 @@ impl Shutdown {
     }
 
     /// Record shutdown and forward the received signal to all active children.
-    pub fn cancel_with_signal(&self, signal: ShutdownSignal) {
+    pub fn cancel_with_signal(&self, signal: Signal) {
         if self.reason().is_none() {
             let _ = self.tx.send(Some(signal));
         }
@@ -222,11 +222,11 @@ impl Shutdown {
     }
 
     #[must_use]
-    pub fn reason(&self) -> Option<ShutdownSignal> {
+    pub fn reason(&self) -> Option<Signal> {
         *self.rx.borrow()
     }
 
-    pub async fn cancelled(&self) -> ShutdownSignal {
+    pub async fn cancelled(&self) -> Signal {
         if let Some(signal) = self.reason() {
             return signal;
         }
@@ -234,7 +234,7 @@ impl Shutdown {
         let mut rx = self.rx.clone();
         loop {
             if rx.changed().await.is_err() {
-                return std::future::pending::<ShutdownSignal>().await;
+                return std::future::pending::<Signal>().await;
             }
             if let Some(signal) = *rx.borrow() {
                 return signal;
@@ -251,14 +251,14 @@ impl Shutdown {
     }
 
     /// Send a signal to every active child process group.
-    pub fn signal_children(&self, signal: ShutdownSignal) {
+    pub fn signal_children(&self, signal: Signal) {
         for pgid in self.active_pgids() {
             self.signal_pgid(pgid, signal);
         }
     }
 
     /// Send a signal to one child process group.
-    pub fn signal_pgid(&self, pgid: PgId, signal: ShutdownSignal) {
+    pub fn signal_pgid(&self, pgid: PgId, signal: Signal) {
         info!("SHUTDOWN sending {} to pgid={pgid}", signal.name);
         signal_process_group(pgid, signal);
     }
@@ -273,7 +273,7 @@ impl Shutdown {
     /// Send SIGKILL to one child process group.
     pub fn kill_pgid(&self, pgid: PgId) {
         info!("SHUTDOWN killing pgid={pgid}");
-        signal_process_group(pgid, ShutdownSignal::KILL);
+        signal_process_group(pgid, Signal::KILL);
     }
 
     fn active_pgids(&self) -> Vec<PgId> {
@@ -291,13 +291,13 @@ impl Shutdown {
 
         use tokio::signal::unix::{signal, SignalKind};
 
-        let mut sighup = signal(SignalKind::from_raw(ShutdownSignal::HUP.number))
+        let mut sighup = signal(SignalKind::from_raw(Signal::HUP.number))
             .map_err(|e| TsdlError::context("Installing SIGHUP handler", e))?;
-        let mut sigint = signal(SignalKind::from_raw(ShutdownSignal::INT.number))
+        let mut sigint = signal(SignalKind::from_raw(Signal::INT.number))
             .map_err(|e| TsdlError::context("Installing SIGINT handler", e))?;
-        let mut sigquit = signal(SignalKind::from_raw(ShutdownSignal::QUIT.number))
+        let mut sigquit = signal(SignalKind::from_raw(Signal::QUIT.number))
             .map_err(|e| TsdlError::context("Installing SIGQUIT handler", e))?;
-        let mut sigterm = signal(SignalKind::from_raw(ShutdownSignal::TERM.number))
+        let mut sigterm = signal(SignalKind::from_raw(Signal::TERM.number))
             .map_err(|e| TsdlError::context("Installing SIGTERM handler", e))?;
         let shutdown = self.clone();
 
@@ -306,10 +306,10 @@ impl Shutdown {
 
             loop {
                 let signal = tokio::select! {
-                    s = sighup.recv() => s.map(|()| ShutdownSignal::HUP),
-                    s = sigint.recv() => s.map(|()| ShutdownSignal::INT),
-                    s = sigquit.recv() => s.map(|()| ShutdownSignal::QUIT),
-                    s = sigterm.recv() => s.map(|()| ShutdownSignal::TERM),
+                    s = sighup.recv() => s.map(|()| Signal::HUP),
+                    s = sigint.recv() => s.map(|()| Signal::INT),
+                    s = sigquit.recv() => s.map(|()| Signal::QUIT),
+                    s = sigterm.recv() => s.map(|()| Signal::TERM),
                 };
 
                 let Some(signal) = signal else {
@@ -333,13 +333,13 @@ impl Shutdown {
     }
 }
 
-impl Default for Shutdown {
+impl Default for Handle {
     fn default() -> Self {
         Self::new()
     }
 }
 
-fn signal_process_group(pgid: PgId, signal: ShutdownSignal) {
+fn signal_process_group(pgid: PgId, signal: Signal) {
     let rc = unsafe { libc::killpg(pgid.as_pid_t(), signal.number) };
     if rc != 0 {
         debug!(
@@ -350,7 +350,7 @@ fn signal_process_group(pgid: PgId, signal: ShutdownSignal) {
     }
 }
 
-pub async fn scope<F>(shutdown: Shutdown, future: F) -> F::Output
+pub async fn scope<F>(shutdown: Handle, future: F) -> F::Output
 where
     F: Future,
 {
@@ -358,12 +358,12 @@ where
 }
 
 #[must_use]
-pub fn current() -> Option<Shutdown> {
+pub fn current() -> Option<Handle> {
     CURRENT_SHUTDOWN.try_with(Clone::clone).ok()
 }
 
 #[must_use]
-pub fn current_or_default() -> Shutdown {
+pub fn current_or_default() -> Handle {
     current().unwrap_or_default()
 }
 
@@ -371,10 +371,10 @@ pub fn check() -> TsdlResult<()> {
     current().map_or(Ok(()), |shutdown| shutdown.check())
 }
 
-pub async fn cancelled() -> ShutdownSignal {
+pub async fn cancelled() -> Signal {
     match current() {
         Some(shutdown) => shutdown.cancelled().await,
-        None => std::future::pending::<ShutdownSignal>().await,
+        None => std::future::pending::<Signal>().await,
     }
 }
 

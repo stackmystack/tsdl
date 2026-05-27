@@ -10,16 +10,11 @@ use clap::{
 use serde::Serialize;
 use tracing::debug;
 
-use crate::{
-    args::{Args, BuildCommand, ConfigCommand, OptionalBuildCommand, Target},
-    columns,
-    error::TsdlError,
-    TsdlResult,
-};
+use crate::{args, columns, error, TsdlResult};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ConfigSource {
+pub enum Source {
     #[default]
     BuiltInDefault,
     ConfigFile,
@@ -27,7 +22,7 @@ pub enum ConfigSource {
     CommandLine,
 }
 
-impl ConfigSource {
+impl Source {
     fn from_value_source(source: ValueSource) -> Option<Self> {
         match source {
             ValueSource::CommandLine => Some(Self::CommandLine),
@@ -40,29 +35,29 @@ impl ConfigSource {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TreeSitterProvenance {
-    pub version: ConfigSource,
-    pub platform: ConfigSource,
-    pub repo: ConfigSource,
+    pub version: Source,
+    pub platform: Source,
+    pub repo: Source,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BuildProvenance {
-    pub build_dir: ConfigSource,
-    pub force: ConfigSource,
-    pub fresh: ConfigSource,
-    pub languages: ConfigSource,
-    pub jobs: ConfigSource,
-    pub out_dir: ConfigSource,
-    pub parsers: ConfigSource,
-    pub prefix: ConfigSource,
-    pub show_config: ConfigSource,
-    pub target: ConfigSource,
+    pub build_dir: Source,
+    pub force: Source,
+    pub fresh: Source,
+    pub languages: Source,
+    pub jobs: Source,
+    pub out_dir: Source,
+    pub parsers: Source,
+    pub prefix: Source,
+    pub show_config: Source,
+    pub target: Source,
     pub tree_sitter: TreeSitterProvenance,
-    pub unlock_timeout: ConfigSource,
+    pub unlock_timeout: Source,
 }
 
-pub fn current(config: &Path, matches: Option<&ArgMatches>) -> TsdlResult<BuildCommand> {
+pub fn current(config: &Path, matches: Option<&ArgMatches>) -> TsdlResult<args::BuildCommand> {
     let (cmd, _provenance) = current_with_provenance(config, matches)?;
     Ok(cmd)
 }
@@ -70,15 +65,18 @@ pub fn current(config: &Path, matches: Option<&ArgMatches>) -> TsdlResult<BuildC
 pub fn current_with_provenance(
     config: &Path,
     matches: Option<&ArgMatches>,
-) -> TsdlResult<(BuildCommand, BuildProvenance)> {
-    let defaults = BuildCommand::default();
+) -> TsdlResult<(args::BuildCommand, BuildProvenance)> {
+    let defaults = args::BuildCommand::default();
     let file_overrides = read_file_overrides(config)?;
     let file_provenance = file_provenance_from(&file_overrides);
 
     let (cli_overrides, cli_provenance) = if let Some(matches) = matches {
         extract_overrides(matches, &defaults)
     } else {
-        (OptionalBuildCommand::default(), BuildProvenance::default())
+        (
+            args::OptionalBuildCommand::default(),
+            BuildProvenance::default(),
+        )
     };
 
     let command = merge(defaults, file_overrides, cli_overrides);
@@ -90,10 +88,10 @@ pub fn current_with_provenance(
 }
 
 fn merge(
-    defaults: BuildCommand,
-    file: OptionalBuildCommand,
-    cli: OptionalBuildCommand,
-) -> BuildCommand {
+    defaults: args::BuildCommand,
+    file: args::OptionalBuildCommand,
+    cli: args::OptionalBuildCommand,
+) -> args::BuildCommand {
     let mut cmd = defaults;
     apply_opt(&mut cmd.build_dir, file.build_dir);
     apply_opt(&mut cmd.build_dir, cli.build_dir);
@@ -137,63 +135,65 @@ fn apply_opt<T>(field: &mut T, value: Option<T>) {
     }
 }
 
-fn read_file_overrides(config: &Path) -> TsdlResult<OptionalBuildCommand> {
+fn read_file_overrides(config: &Path) -> TsdlResult<args::OptionalBuildCommand> {
     if !config.exists() {
-        return Ok(OptionalBuildCommand::default());
+        return Ok(args::OptionalBuildCommand::default());
     }
 
-    let contents = fs::read_to_string(config)
-        .map_err(|e| TsdlError::context(format!("Reading config file {}", config.display()), e))?;
+    let contents = fs::read_to_string(config).map_err(|e| {
+        error::TsdlError::context(format!("Reading config file {}", config.display()), e)
+    })?;
 
     if contents.trim().is_empty() {
-        return Ok(OptionalBuildCommand::default());
+        return Ok(args::OptionalBuildCommand::default());
     }
 
-    toml::from_str(&contents)
-        .map_err(|e| TsdlError::context(format!("Parsing config file {}", config.display()), e))
+    toml::from_str(&contents).map_err(|e| {
+        error::TsdlError::context(format!("Parsing config file {}", config.display()), e)
+    })
 }
 
-fn file_provenance_from(overrides: &OptionalBuildCommand) -> BuildProvenance {
+fn file_provenance_from(overrides: &args::OptionalBuildCommand) -> BuildProvenance {
     let mut p = BuildProvenance::default();
     if overrides.build_dir.is_some() {
-        p.build_dir = ConfigSource::ConfigFile;
+        p.build_dir = Source::ConfigFile;
     }
     if overrides.force.is_some() {
-        p.force = ConfigSource::ConfigFile;
+        p.force = Source::ConfigFile;
     }
     if overrides.fresh.is_some() {
-        p.fresh = ConfigSource::ConfigFile;
+        p.fresh = Source::ConfigFile;
     }
     if overrides.jobs.is_some() {
-        p.jobs = ConfigSource::ConfigFile;
+        p.jobs = Source::ConfigFile;
     }
     if overrides.out_dir.is_some() {
-        p.out_dir = ConfigSource::ConfigFile;
+        p.out_dir = Source::ConfigFile;
     }
     if overrides.parsers.is_some() {
-        p.parsers = ConfigSource::ConfigFile;
+        p.parsers = Source::ConfigFile;
     }
     if overrides.prefix.is_some() {
-        p.prefix = ConfigSource::ConfigFile;
+        p.prefix = Source::ConfigFile;
     }
     if overrides.show_config.is_some() {
-        p.show_config = ConfigSource::ConfigFile;
+        p.show_config = Source::ConfigFile;
     }
     if overrides.target.is_some() {
-        p.target = ConfigSource::ConfigFile;
+        p.target = Source::ConfigFile;
     }
     if overrides.unlock_timeout.is_some() {
-        p.unlock_timeout = ConfigSource::ConfigFile;
+        p.unlock_timeout = Source::ConfigFile;
     }
     let ts = &overrides.tree_sitter;
     if ts.version.is_some() {
-        p.tree_sitter.version = ConfigSource::ConfigFile;
+        p.tree_sitter.version = Source::ConfigFile;
     }
     if ts.platform.is_some() {
-        p.tree_sitter.platform = ConfigSource::ConfigFile;
+        p.tree_sitter.platform = Source::ConfigFile;
     }
     if ts.repo.is_some() {
-        p.tree_sitter.repo = ConfigSource::ConfigFile;
+        p.tree_sitter.repo = Source::ConfigFile;
     }
     p
 }
@@ -219,15 +219,16 @@ fn merge_provenance(file: BuildProvenance, cli: BuildProvenance) -> BuildProvena
     }
 }
 
-fn merge_source(file: ConfigSource, cli: ConfigSource) -> ConfigSource {
-    if cli != ConfigSource::default() {
-        cli
-    } else {
+fn merge_source(file: Source, cli: Source) -> Source {
+    if cli == Source::default() {
         file
+    } else {
+        cli
     }
 }
 
-pub fn build_cli(defaults: &BuildCommand) -> Vec<Arg> {
+#[must_use]
+pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
     let jobs_default = defaults.jobs.to_string();
     let ut_default = defaults.unlock_timeout.to_string();
 
@@ -355,11 +356,12 @@ pub fn build_cli(defaults: &BuildCommand) -> Vec<Arg> {
     ]
 }
 
+#[must_use]
 pub fn extract_overrides(
     matches: &ArgMatches,
-    _defaults: &BuildCommand,
-) -> (OptionalBuildCommand, BuildProvenance) {
-    let mut o = OptionalBuildCommand::default();
+    _defaults: &args::BuildCommand,
+) -> (args::OptionalBuildCommand, BuildProvenance) {
+    let mut o = args::OptionalBuildCommand::default();
     let mut p = BuildProvenance::default();
 
     extract_simple(matches, "build-dir", &mut o.build_dir, &mut p.build_dir);
@@ -424,7 +426,7 @@ fn extract_simple<T: Clone + Send + Sync + 'static>(
     matches: &ArgMatches,
     id: &str,
     field: &mut Option<T>,
-    provenance: &mut ConfigSource,
+    provenance: &mut Source,
 ) {
     if let Some(source) = source_for(matches, id) {
         if let Some(val) = matches.get_one::<T>(id) {
@@ -438,7 +440,7 @@ fn extract_simple_usize(
     matches: &ArgMatches,
     id: &str,
     field: &mut Option<std::num::NonZeroUsize>,
-    provenance: &mut ConfigSource,
+    provenance: &mut Source,
 ) {
     if let Some(source) = source_for(matches, id) {
         if let Some(&n) = matches.get_one::<usize>(id) {
@@ -454,7 +456,7 @@ fn extract_simple_u64(
     matches: &ArgMatches,
     id: &str,
     field: &mut Option<u64>,
-    provenance: &mut ConfigSource,
+    provenance: &mut Source,
 ) {
     if let Some(source) = source_for(matches, id) {
         if let Some(&val) = matches.get_one::<u64>(id) {
@@ -467,22 +469,22 @@ fn extract_simple_u64(
 fn extract_target(
     matches: &ArgMatches,
     id: &str,
-    field: &mut Option<Target>,
-    provenance: &mut ConfigSource,
+    field: &mut Option<args::Target>,
+    provenance: &mut Source,
 ) {
     if let Some(source) = source_for(matches, id) {
         if let Some(raw) = matches.get_one::<String>(id) {
             match raw.to_lowercase().as_str() {
                 "native" => {
-                    *field = Some(Target::Native);
+                    *field = Some(args::Target::Native);
                     *provenance = source;
                 }
                 "wasm" => {
-                    *field = Some(Target::Wasm);
+                    *field = Some(args::Target::Wasm);
                     *provenance = source;
                 }
                 "all" => {
-                    *field = Some(Target::All);
+                    *field = Some(args::Target::All);
                     *provenance = source;
                 }
                 _ => {}
@@ -496,14 +498,14 @@ fn extract_bool(
     positive_id: &str,
     negative_id: &str,
     field: &mut Option<bool>,
-    provenance: &mut ConfigSource,
+    provenance: &mut Source,
 ) {
     let pos_source = source_for(matches, positive_id);
     let neg_source = source_for(matches, negative_id);
 
-    if matches!(neg_source, Some(ConfigSource::CommandLine)) {
+    if matches!(neg_source, Some(Source::CommandLine)) {
         *field = Some(false);
-        *provenance = ConfigSource::CommandLine;
+        *provenance = Source::CommandLine;
         return;
     }
 
@@ -515,36 +517,35 @@ fn extract_bool(
     }
 }
 
-fn source_for(matches: &ArgMatches, id: &str) -> Option<ConfigSource> {
-    matches
-        .value_source(id)
-        .and_then(ConfigSource::from_value_source)
+fn source_for(matches: &ArgMatches, id: &str) -> Option<Source> {
+    matches.value_source(id).and_then(Source::from_value_source)
 }
 
 pub fn print_indent(s: &str, indent: &str) {
     s.lines().for_each(|line| println!("{indent}{line}"));
 }
 
-pub fn run(config_path: &Path, command: &ConfigCommand) -> TsdlResult<()> {
+pub fn run(config_path: &Path, command: &args::ConfigCommand) -> TsdlResult<()> {
     match command {
-        ConfigCommand::Current => {
-            let cmd: BuildCommand = current(config_path, None)?;
+        args::ConfigCommand::Current => {
+            let cmd: args::BuildCommand = current(config_path, None)?;
             println!(
                 "{}",
-                toml::to_string(&cmd)
-                    .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
+                toml::to_string(&cmd).map_err(|e| {
+                    error::TsdlError::context("Generating default TOML config", e)
+                })?
             );
         }
-        ConfigCommand::Default => println!(
+        args::ConfigCommand::Default => println!(
             "{}",
-            toml::to_string(&BuildCommand::default())
-                .map_err(|e| { TsdlError::context("Generating default TOML config", e) })?
+            toml::to_string(&args::BuildCommand::default())
+                .map_err(|e| { error::TsdlError::context("Generating default TOML config", e) })?
         ),
     }
     Ok(())
 }
 
-pub fn show(command: &BuildCommand) -> TsdlResult<()> {
+pub fn show(command: &args::BuildCommand) -> TsdlResult<()> {
     if let Some(langs) = &command.languages {
         println!("Building the following languages:");
         println!();
@@ -557,17 +558,18 @@ pub fn show(command: &BuildCommand) -> TsdlResult<()> {
     println!("Running with the following configuration:");
     println!();
     print_indent(
-        &toml::to_string(&command).map_err(|e| TsdlError::context("Showing config", e))?,
+        &toml::to_string(&command).map_err(|e| error::TsdlError::context("Showing config", e))?,
         "  ",
     );
     println!();
     Ok(())
 }
 
-pub fn parse_with_matches() -> (Args, ArgMatches) {
-    let defaults = BuildCommand::default();
+#[must_use]
+pub fn parse_with_matches() -> (args::Args, ArgMatches) {
+    let defaults = args::BuildCommand::default();
     let build_args = build_cli(&defaults);
-    let mut cmd = Args::command();
+    let mut cmd = args::Args::command();
     if let Some(build_sub) = cmd.find_subcommand_mut("build") {
         let mut new_sub = build_sub.clone();
         for arg in build_args {
@@ -576,18 +578,18 @@ pub fn parse_with_matches() -> (Args, ArgMatches) {
         *build_sub = new_sub;
     }
     let matches = cmd.get_matches();
-    let args = Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    let args = args::Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
     (args, matches)
 }
 
-pub fn try_parse_from_with_matches<I, T>(itr: I) -> Result<(Args, ArgMatches), clap::Error>
+pub fn try_parse_from_with_matches<I, T>(itr: I) -> Result<(args::Args, ArgMatches), clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let defaults = BuildCommand::default();
+    let defaults = args::BuildCommand::default();
     let build_args = build_cli(&defaults);
-    let mut cmd = Args::command();
+    let mut cmd = args::Args::command();
     if let Some(build_sub) = cmd.find_subcommand_mut("build") {
         let mut new_sub = build_sub.clone();
         for arg in build_args {
@@ -596,6 +598,6 @@ where
         *build_sub = new_sub;
     }
     let matches = cmd.try_get_matches_from(itr)?;
-    let args = Args::from_arg_matches(&matches)?;
+    let args = args::Args::from_arg_matches(&matches)?;
     Ok((args, matches))
 }

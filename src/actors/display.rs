@@ -12,11 +12,7 @@ use tokio::time;
 use tracing::error;
 
 use crate::actors::Addr;
-use crate::display::{
-    compute_icon_cell, compute_msg_cell, compute_name_cell, compute_ref_cell, compute_step_cell,
-    compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemId, ItemState, Mode,
-    RepoEntry, RowSpec, SuccessOutcome,
-};
+use crate::display;
 use crate::git;
 
 // ---------------------------------------------------------------------------
@@ -24,7 +20,7 @@ use crate::git;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub enum DisplayMessage {
+pub enum Message {
     /// Register a repo-level progress line. Returns a `ProgressAddr`.
     RegisterLanguage {
         git_ref: git::Ref,
@@ -47,7 +43,7 @@ pub enum DisplayMessage {
 
     /// Update a specific bar.
     Update {
-        id: ItemId,
+        id: display::ItemId,
         kind: UpdateKind,
         msg: Arc<str>,
     },
@@ -77,13 +73,13 @@ pub enum UpdateKind {
 
 #[derive(Debug, Clone)]
 pub struct DisplayAddr {
-    tx: mpsc::Sender<DisplayMessage>,
+    tx: mpsc::Sender<Message>,
     #[allow(dead_code)]
-    mode: Mode,
+    mode: display::Mode,
 }
 
 impl Addr for DisplayAddr {
-    type Message = DisplayMessage;
+    type Message = Message;
 
     fn name() -> &'static str {
         "DisplayAddr"
@@ -96,7 +92,7 @@ impl Addr for DisplayAddr {
 
 impl DisplayAddr {
     #[must_use]
-    pub fn new(tx: mpsc::Sender<DisplayMessage>, mode: Mode) -> Self {
+    pub fn new(tx: mpsc::Sender<Message>, mode: display::Mode) -> Self {
         Self { tx, mode }
     }
 
@@ -106,7 +102,7 @@ impl DisplayAddr {
         name: S,
         num_tasks: usize,
     ) -> ProgressAddr {
-        self.request(|tx| DisplayMessage::RegisterLanguage {
+        self.request(|tx| Message::RegisterLanguage {
             git_ref,
             name: name.into(),
             num_tasks,
@@ -122,7 +118,7 @@ impl DisplayAddr {
         name: S,
         num_tasks: usize,
     ) -> ProgressAddr {
-        self.request(|tx| DisplayMessage::RegisterGrammar {
+        self.request(|tx| Message::RegisterGrammar {
             git_ref,
             language: language.into(),
             name: name.into(),
@@ -133,7 +129,7 @@ impl DisplayAddr {
     }
 
     pub async fn reference<S: Into<Arc<str>>>(&self, git_ref: git::Ref, name: S) {
-        self.fire(DisplayMessage::RegisterReference {
+        self.fire(Message::RegisterReference {
             git_ref,
             name: name.into(),
         })
@@ -141,7 +137,7 @@ impl DisplayAddr {
     }
 
     pub async fn shutdown(&self, interrupted: bool) {
-        self.request(|tx| DisplayMessage::Shutdown { interrupted, tx })
+        self.request(|tx| Message::Shutdown { interrupted, tx })
             .await;
     }
 }
@@ -149,13 +145,13 @@ impl DisplayAddr {
 /// Handle for updating a specific progress bar (repo or grammar).
 #[derive(Debug, Clone)]
 pub struct ProgressAddr {
-    id: ItemId,
-    tx: mpsc::Sender<DisplayMessage>,
+    id: display::ItemId,
+    tx: mpsc::Sender<Message>,
 }
 
 impl ProgressAddr {
     pub fn msg<S: Into<Arc<str>>>(&self, msg: S) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
+        let _ = self.tx.try_send(Message::Update {
             id: self.id,
             kind: UpdateKind::Msg,
             msg: msg.into(),
@@ -163,7 +159,7 @@ impl ProgressAddr {
     }
 
     pub fn step<S: Into<Arc<str>>>(&self, msg: S) {
-        let _ = self.tx.try_send(DisplayMessage::Update {
+        let _ = self.tx.try_send(Message::Update {
             id: self.id,
             kind: UpdateKind::Step,
             msg: msg.into(),
@@ -173,7 +169,7 @@ impl ProgressAddr {
     async fn send_state_update(&self, kind: UpdateKind, msg: Arc<str>) {
         let _ = self
             .tx
-            .send(DisplayMessage::Update {
+            .send(Message::Update {
                 id: self.id,
                 kind,
                 msg,
@@ -220,16 +216,16 @@ struct PlainLine {
     message: String,
 }
 
-fn plain_repo_message(kind: UpdateKind, state: ItemState, msg: &str) -> String {
+fn plain_repo_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
     match kind {
         UpdateKind::Err => format!("failed: {msg}"),
         UpdateKind::Cached => "cached".to_string(),
         UpdateKind::Fin => match state {
-            ItemState::Done(_) => "done".to_string(),
-            ItemState::New
-            | ItemState::InProgress(_)
-            | ItemState::Cancelled
-            | ItemState::Failed => msg.to_string(),
+            display::ItemState::Done(_) => "done".to_string(),
+            display::ItemState::New
+            | display::ItemState::InProgress(_)
+            | display::ItemState::Cancelled
+            | display::ItemState::Failed => msg.to_string(),
         },
         UpdateKind::SetOutcomeBuilt
         | UpdateKind::SetOutcomeCached
@@ -239,17 +235,17 @@ fn plain_repo_message(kind: UpdateKind, state: ItemState, msg: &str) -> String {
     }
 }
 
-fn plain_grammar_message(kind: UpdateKind, state: ItemState, msg: &str) -> String {
+fn plain_grammar_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
     match kind {
         UpdateKind::Err => format!("failed: {msg}"),
         UpdateKind::Cached => "cached".to_string(),
         UpdateKind::Fin => match state {
-            ItemState::Done(SuccessOutcome::Cached) => "cached".to_string(),
-            ItemState::Done(SuccessOutcome::Built) => "built".to_string(),
-            ItemState::New
-            | ItemState::InProgress(_)
-            | ItemState::Cancelled
-            | ItemState::Failed => msg.to_string(),
+            display::ItemState::Done(display::SuccessOutcome::Cached) => "cached".to_string(),
+            display::ItemState::Done(display::SuccessOutcome::Built) => "built".to_string(),
+            display::ItemState::New
+            | display::ItemState::InProgress(_)
+            | display::ItemState::Cancelled
+            | display::ItemState::Failed => msg.to_string(),
         },
         UpdateKind::SetOutcomeBuilt
         | UpdateKind::SetOutcomeCached
@@ -353,28 +349,32 @@ fn clear_from_cursor_down() -> io::Result<()> {
 }
 
 pub struct DisplayActor {
-    state: DisplayState,
-    next_id: ItemId,
+    state: display::State,
+    next_id: display::ItemId,
     plain_name_width: usize,
     plain_progress_started: bool,
-    grid: GridCache,
-    row_specs: Vec<RowSpec>,
+    grid: display::GridCache,
+    row_specs: Vec<display::RowSpec>,
     rows_dirty: bool,
     last_term_width: Option<usize>,
-    rx: mpsc::Receiver<DisplayMessage>,
-    tx: mpsc::Sender<DisplayMessage>,
+    rx: mpsc::Receiver<Message>,
+    tx: mpsc::Sender<Message>,
 }
 
 impl DisplayActor {
     #[must_use]
-    pub fn spawn(mode: Mode, build_dir: Arc<PathBuf>, out_dir: Arc<PathBuf>) -> DisplayAddr {
+    pub fn spawn(
+        mode: display::Mode,
+        build_dir: Arc<PathBuf>,
+        out_dir: Arc<PathBuf>,
+    ) -> DisplayAddr {
         let (tx, rx) = mpsc::channel(256);
         let actor = Self {
-            state: DisplayState::new(mode, build_dir, out_dir),
-            next_id: ItemId::new(NonZeroU64::MIN),
+            state: display::State::new(mode, build_dir, out_dir),
+            next_id: display::ItemId::new(NonZeroU64::MIN),
             plain_name_width: 16,
             plain_progress_started: false,
-            grid: GridCache::new(),
+            grid: display::GridCache::new(),
             row_specs: Vec::new(),
             rows_dirty: true,
             last_term_width: None,
@@ -390,7 +390,7 @@ impl DisplayActor {
     }
 
     async fn run(mut self) {
-        if self.state.mode == Mode::Fancy {
+        if self.state.mode == display::Mode::Fancy {
             self.run_fancy().await;
         } else {
             self.run_plain().await;
@@ -433,7 +433,7 @@ impl DisplayActor {
             let mut shutdown = None;
             while let Ok(msg) = self.rx.try_recv() {
                 match msg {
-                    DisplayMessage::Shutdown { interrupted, tx } => {
+                    Message::Shutdown { interrupted, tx } => {
                         shutdown = Some((interrupted, tx));
                         break;
                     }
@@ -460,7 +460,7 @@ impl DisplayActor {
             tokio::select! {
                 msg = self.rx.recv() => {
                     match msg {
-                        Some(DisplayMessage::Shutdown { interrupted, tx }) => {
+                        Some(Message::Shutdown { interrupted, tx }) => {
                             self.finish_fancy(&mut terminal, interrupted, tx);
                             return;
                         }
@@ -516,7 +516,7 @@ impl DisplayActor {
         let term_w = term_width as usize;
 
         if self.last_term_width != Some(term_w) {
-            self.grid.invalidate_column(Column::Msg);
+            self.grid.invalidate_column(display::Column::Msg);
             self.last_term_width = Some(term_w);
         }
 
@@ -527,16 +527,16 @@ impl DisplayActor {
 
             // Invalidate columns whose width changed
             if new_layout.ref_ != self.grid.layout.ref_ {
-                self.grid.invalidate_column(Column::Ref);
+                self.grid.invalidate_column(display::Column::Ref);
             }
             if new_layout.step != self.grid.layout.step {
-                self.grid.invalidate_column(Column::Step);
+                self.grid.invalidate_column(display::Column::Step);
             }
             if new_layout.name != self.grid.layout.name {
-                self.grid.invalidate_column(Column::Name);
+                self.grid.invalidate_column(display::Column::Name);
             }
             if new_layout.fixed_width != self.grid.layout.fixed_width {
-                self.grid.invalidate_column(Column::Msg);
+                self.grid.invalidate_column(display::Column::Msg);
             }
             self.grid.layout = new_layout;
             self.rows_dirty = false;
@@ -553,28 +553,36 @@ impl DisplayActor {
 
             // TIME: stale when dirty OR clock is still running
             let time_stale = is_dirty || info.state().is_live();
-            let time = self.grid.cell(item_id, Column::Time, time_stale, || {
-                compute_time_cell(&info, &layout)
+            let time = self
+                .grid
+                .cell(item_id, display::Column::Time, time_stale, || {
+                    display::compute_time_cell(&info, &layout)
+                });
+
+            let gref = self.grid.cell(item_id, display::Column::Ref, is_dirty, || {
+                display::compute_ref_cell(&info, &layout)
             });
 
-            let gref = self.grid.cell(item_id, Column::Ref, is_dirty, || {
-                compute_ref_cell(&info, &layout)
-            });
-
-            let step = self.grid.cell(item_id, Column::Step, is_dirty, || {
-                compute_step_cell(&info, &layout)
-            });
+            let step = self
+                .grid
+                .cell(item_id, display::Column::Step, is_dirty, || {
+                    display::compute_step_cell(&info, &layout)
+                });
 
             let icon = self
                 .grid
-                .cell(item_id, Column::Icon, is_dirty, || compute_icon_cell(&info));
+                .cell(item_id, display::Column::Icon, is_dirty, || {
+                    display::compute_icon_cell(&info)
+                });
 
-            let name = self.grid.cell(item_id, Column::Name, is_dirty, || {
-                compute_name_cell(&spec.display_name, spec.indent, &info, &layout)
-            });
+            let name = self
+                .grid
+                .cell(item_id, display::Column::Name, is_dirty, || {
+                    display::compute_name_cell(&spec.display_name, spec.indent, &info, &layout)
+                });
 
-            let msg = self.grid.cell(item_id, Column::Msg, is_dirty, || {
-                compute_msg_cell(&info, &layout, term_w)
+            let msg = self.grid.cell(item_id, display::Column::Msg, is_dirty, || {
+                display::compute_msg_cell(&info, &layout, term_w)
             });
 
             lines.push(Line::from(vec![
@@ -613,7 +621,7 @@ impl DisplayActor {
 
         while let Some(msg) = self.rx.recv().await {
             match msg {
-                DisplayMessage::RegisterLanguage {
+                Message::RegisterLanguage {
                     git_ref,
                     name,
                     num_tasks,
@@ -622,7 +630,7 @@ impl DisplayActor {
                     let addr = self.register_repo(name, git_ref, num_tasks);
                     let _ = tx.send(addr);
                 }
-                DisplayMessage::RegisterGrammar {
+                Message::RegisterGrammar {
                     git_ref,
                     language,
                     name,
@@ -634,10 +642,10 @@ impl DisplayActor {
                     let addr = self.register_grammar(language, name, git_ref, num_tasks);
                     let _ = tx.send(addr);
                 }
-                DisplayMessage::RegisterReference { git_ref, name } => {
+                Message::RegisterReference { git_ref, name } => {
                     self.print_plain_ref(&name, git_ref.short());
                 }
-                DisplayMessage::Update { id, kind, msg } => {
+                Message::Update { id, kind, msg } => {
                     self.apply_update(id, kind, msg);
                     if matches!(
                         kind,
@@ -651,7 +659,7 @@ impl DisplayActor {
                         self.print_plain_progress(&line);
                     }
                 }
-                DisplayMessage::Shutdown { interrupted, tx } => {
+                Message::Shutdown { interrupted, tx } => {
                     if interrupted {
                         self.cancel_live_rows();
                     }
@@ -701,7 +709,7 @@ impl DisplayActor {
         println!("✓ {cached} cached  ✓ {built} built  ✗ {cancelled} cancelled  ✗ {failed} failed");
     }
 
-    fn plain_progress_line(&self, id: ItemId, kind: UpdateKind) -> Option<PlainLine> {
+    fn plain_progress_line(&self, id: display::ItemId, kind: UpdateKind) -> Option<PlainLine> {
         if let Some(repo) = self.state.repos.get(&id) {
             return Some(PlainLine {
                 name: repo.name.to_string(),
@@ -721,9 +729,9 @@ impl DisplayActor {
 
     // ── Message handling ──────────────────────────────────────────────
 
-    fn handle_message(&mut self, msg: DisplayMessage) {
+    fn handle_message(&mut self, msg: Message) {
         match msg {
-            DisplayMessage::RegisterLanguage {
+            Message::RegisterLanguage {
                 git_ref,
                 name,
                 num_tasks,
@@ -732,7 +740,7 @@ impl DisplayActor {
                 let addr = self.register_repo(name, git_ref, num_tasks);
                 let _ = tx.send(addr);
             }
-            DisplayMessage::RegisterGrammar {
+            Message::RegisterGrammar {
                 git_ref,
                 language,
                 name,
@@ -742,11 +750,11 @@ impl DisplayActor {
                 let addr = self.register_grammar(language, name, git_ref, num_tasks);
                 let _ = tx.send(addr);
             }
-            DisplayMessage::RegisterReference { .. } => {}
-            DisplayMessage::Update { id, kind, msg } => {
+            Message::RegisterReference { .. } => {}
+            Message::Update { id, kind, msg } => {
                 self.apply_update(id, kind, msg);
             }
-            DisplayMessage::Shutdown { interrupted, tx } => {
+            Message::Shutdown { interrupted, tx } => {
                 if interrupted {
                     self.cancel_live_rows();
                 }
@@ -766,10 +774,10 @@ impl DisplayActor {
 
         self.state.repos.insert(
             id,
-            RepoEntry {
+            display::RepoEntry {
                 name,
                 git_ref,
-                state: ItemState::New,
+                state: display::ItemState::New,
                 msg: Arc::from(""),
                 step: 0,
                 total: num_tasks,
@@ -805,12 +813,12 @@ impl DisplayActor {
 
         self.state.grammars.insert(
             id,
-            GrammarEntry {
+            display::GrammarEntry {
                 repo: language,
                 repo_id,
                 name,
                 git_ref,
-                state: ItemState::New,
+                state: display::ItemState::New,
                 msg: Arc::from(""),
                 step: 0,
                 total: num_tasks,
@@ -836,7 +844,7 @@ impl DisplayActor {
         for (id, grammar) in &mut self.state.grammars {
             if grammar.state.is_live() {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.state = ItemState::Cancelled;
+                grammar.state = display::ItemState::Cancelled;
                 grammar.step = grammar.total;
                 grammar.msg = Arc::from("cancelled");
                 if let Some(repo_id) = grammar.repo_id {
@@ -855,7 +863,7 @@ impl DisplayActor {
         for (id, repo) in &mut self.state.repos {
             if repo.state.is_live() {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.state = ItemState::Cancelled;
+                repo.state = display::ItemState::Cancelled;
                 if repo.total > 0 {
                     repo.step = repo.total;
                 }
@@ -865,14 +873,14 @@ impl DisplayActor {
         }
     }
 
-    fn apply_update(&mut self, id: ItemId, kind: UpdateKind, msg: Arc<str>) {
+    fn apply_update(&mut self, id: display::ItemId, kind: UpdateKind, msg: Arc<str>) {
         if let Some(repo) = self.state.repos.get_mut(&id) {
             Self::apply_repo_update(repo, kind, msg);
             self.grid.mark_dirty(id);
             return;
         }
 
-        let mut maybe_parent_id: Option<ItemId> = None;
+        let mut maybe_parent_id: Option<display::ItemId> = None;
         if let Some(grammar) = self.state.grammars.get_mut(&id) {
             Self::apply_grammar_update(grammar, kind, msg);
             self.grid.mark_dirty(id);
@@ -895,7 +903,7 @@ impl DisplayActor {
         }
     }
 
-    fn apply_repo_update(repo: &mut RepoEntry, kind: UpdateKind, msg: Arc<str>) {
+    fn apply_repo_update(repo: &mut display::RepoEntry, kind: UpdateKind, msg: Arc<str>) {
         if !repo.state.is_live() {
             return;
         }
@@ -910,22 +918,22 @@ impl DisplayActor {
                 repo.msg = msg;
             }
             UpdateKind::SetOutcomeCached => {
-                repo.state = mark_success(repo.state, SuccessOutcome::Cached);
+                repo.state = mark_success(repo.state, display::SuccessOutcome::Cached);
             }
             UpdateKind::Cancel => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.state = ItemState::Cancelled;
+                repo.state = display::ItemState::Cancelled;
                 if repo.total > 0 {
                     repo.step = repo.total;
                 }
                 repo.msg = msg;
             }
             UpdateKind::SetOutcomeBuilt => {
-                repo.state = mark_success(repo.state, SuccessOutcome::Built);
+                repo.state = mark_success(repo.state, display::SuccessOutcome::Built);
             }
             UpdateKind::Cached => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.state = ItemState::Done(SuccessOutcome::Cached);
+                repo.state = display::ItemState::Done(display::SuccessOutcome::Cached);
                 if repo.total > 0 {
                     repo.step = repo.total;
                 }
@@ -939,7 +947,7 @@ impl DisplayActor {
                         repo.msg = msg;
                     }
                     Err(message) => {
-                        repo.state = ItemState::Failed;
+                        repo.state = display::ItemState::Failed;
                         repo.msg = message.into();
                     }
                 }
@@ -949,13 +957,13 @@ impl DisplayActor {
             }
             UpdateKind::Err => {
                 repo.frozen_elapsed = Some(repo.started_at.elapsed());
-                repo.state = ItemState::Failed;
+                repo.state = display::ItemState::Failed;
                 repo.msg = msg;
             }
         }
     }
 
-    fn apply_grammar_update(grammar: &mut GrammarEntry, kind: UpdateKind, msg: Arc<str>) {
+    fn apply_grammar_update(grammar: &mut display::GrammarEntry, kind: UpdateKind, msg: Arc<str>) {
         if !grammar.state.is_live() {
             return;
         }
@@ -970,20 +978,20 @@ impl DisplayActor {
                 grammar.msg = msg;
             }
             UpdateKind::SetOutcomeCached => {
-                grammar.state = mark_success(grammar.state, SuccessOutcome::Cached);
+                grammar.state = mark_success(grammar.state, display::SuccessOutcome::Cached);
             }
             UpdateKind::Cancel => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.state = ItemState::Cancelled;
+                grammar.state = display::ItemState::Cancelled;
                 grammar.step = grammar.total;
                 grammar.msg = msg;
             }
             UpdateKind::SetOutcomeBuilt => {
-                grammar.state = mark_success(grammar.state, SuccessOutcome::Built);
+                grammar.state = mark_success(grammar.state, display::SuccessOutcome::Built);
             }
             UpdateKind::Cached => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.state = ItemState::Done(SuccessOutcome::Cached);
+                grammar.state = display::ItemState::Done(display::SuccessOutcome::Cached);
                 grammar.step = grammar.total;
                 grammar.msg = msg;
             }
@@ -995,7 +1003,7 @@ impl DisplayActor {
                         grammar.msg = msg;
                     }
                     Err(message) => {
-                        grammar.state = ItemState::Failed;
+                        grammar.state = display::ItemState::Failed;
                         grammar.msg = message.into();
                     }
                 }
@@ -1003,13 +1011,13 @@ impl DisplayActor {
             }
             UpdateKind::Err => {
                 grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-                grammar.state = ItemState::Failed;
+                grammar.state = display::ItemState::Failed;
                 grammar.msg = msg;
             }
         }
     }
 
-    fn sync_parent_repo(&mut self, repo_id: ItemId) {
+    fn sync_parent_repo(&mut self, repo_id: display::ItemId) {
         let has_any = self
             .state
             .grammars
@@ -1023,12 +1031,12 @@ impl DisplayActor {
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == Some(repo_id) && g.state == ItemState::Failed);
+            .any(|g| g.repo_id == Some(repo_id) && g.state == display::ItemState::Failed);
         let any_cancelled = self
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == Some(repo_id) && g.state == ItemState::Cancelled);
+            .any(|g| g.repo_id == Some(repo_id) && g.state == display::ItemState::Cancelled);
         let any_active = self
             .state
             .grammars
@@ -1040,21 +1048,23 @@ impl DisplayActor {
 
         if let Some(repo) = self.state.repos.get_mut(&repo_id) {
             if any_active {
-                repo.state = ItemState::InProgress(live_outcome);
+                repo.state = display::ItemState::InProgress(live_outcome);
                 repo.msg = Arc::from("building");
                 repo.frozen_elapsed = None;
             } else if any_failed {
-                repo.state = ItemState::Failed;
+                repo.state = display::ItemState::Failed;
                 repo.msg = Arc::from("failed");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
             } else if any_cancelled {
-                repo.state = ItemState::Cancelled;
+                repo.state = display::ItemState::Cancelled;
                 repo.msg = Arc::from("cancelled");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
             } else {
-                repo.state = ItemState::Done(done_outcome.unwrap_or(SuccessOutcome::Built));
+                repo.state = display::ItemState::Done(
+                    done_outcome.unwrap_or(display::SuccessOutcome::Built),
+                );
                 repo.msg = Arc::from("done");
                 repo.frozen_elapsed
                     .get_or_insert_with(|| repo.started_at.elapsed());
@@ -1064,7 +1074,10 @@ impl DisplayActor {
         self.grid.mark_dirty(repo_id);
     }
 
-    fn aggregate_child_live_outcome(&self, repo_id: ItemId) -> Option<SuccessOutcome> {
+    fn aggregate_child_live_outcome(
+        &self,
+        repo_id: display::ItemId,
+    ) -> Option<display::SuccessOutcome> {
         let mut saw_cached = false;
         let mut saw_unknown = false;
 
@@ -1075,25 +1088,32 @@ impl DisplayActor {
             .filter(|g| g.repo_id == Some(repo_id))
         {
             match grammar.state {
-                ItemState::InProgress(Some(SuccessOutcome::Built))
-                | ItemState::Done(SuccessOutcome::Built) => return Some(SuccessOutcome::Built),
-                ItemState::InProgress(Some(SuccessOutcome::Cached))
-                | ItemState::Done(SuccessOutcome::Cached) => saw_cached = true,
-                ItemState::New | ItemState::InProgress(None) => saw_unknown = true,
-                ItemState::Cancelled | ItemState::Failed => {}
+                display::ItemState::InProgress(Some(display::SuccessOutcome::Built))
+                | display::ItemState::Done(display::SuccessOutcome::Built) => {
+                    return Some(display::SuccessOutcome::Built)
+                }
+                display::ItemState::InProgress(Some(display::SuccessOutcome::Cached))
+                | display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,
+                display::ItemState::New | display::ItemState::InProgress(None) => {
+                    saw_unknown = true
+                }
+                display::ItemState::Cancelled | display::ItemState::Failed => {}
             }
         }
 
         if saw_unknown {
             None
         } else if saw_cached {
-            Some(SuccessOutcome::Cached)
+            Some(display::SuccessOutcome::Cached)
         } else {
             None
         }
     }
 
-    fn aggregate_child_done_outcome(&self, repo_id: ItemId) -> Option<SuccessOutcome> {
+    fn aggregate_child_done_outcome(
+        &self,
+        repo_id: display::ItemId,
+    ) -> Option<display::SuccessOutcome> {
         let mut saw_cached = false;
 
         for grammar in self
@@ -1103,51 +1123,64 @@ impl DisplayActor {
             .filter(|g| g.repo_id == Some(repo_id))
         {
             match grammar.state {
-                ItemState::Done(SuccessOutcome::Built) => return Some(SuccessOutcome::Built),
-                ItemState::Done(SuccessOutcome::Cached) => saw_cached = true,
-                ItemState::New
-                | ItemState::InProgress(_)
-                | ItemState::Cancelled
-                | ItemState::Failed => {}
+                display::ItemState::Done(display::SuccessOutcome::Built) => {
+                    return Some(display::SuccessOutcome::Built)
+                }
+                display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,
+                display::ItemState::New
+                | display::ItemState::InProgress(_)
+                | display::ItemState::Cancelled
+                | display::ItemState::Failed => {}
             }
         }
 
-        saw_cached.then_some(SuccessOutcome::Cached)
+        saw_cached.then_some(display::SuccessOutcome::Cached)
     }
 }
 
-fn start_item(state: ItemState) -> ItemState {
+fn start_item(state: display::ItemState) -> display::ItemState {
     match state {
-        ItemState::New => ItemState::InProgress(None),
-        ItemState::InProgress(outcome) => ItemState::InProgress(outcome),
-        ItemState::Done(_) | ItemState::Cancelled | ItemState::Failed => state,
+        display::ItemState::New => display::ItemState::InProgress(None),
+        display::ItemState::InProgress(outcome) => display::ItemState::InProgress(outcome),
+        display::ItemState::Done(_)
+        | display::ItemState::Cancelled
+        | display::ItemState::Failed => state,
     }
 }
 
-fn mark_success(state: ItemState, outcome: SuccessOutcome) -> ItemState {
+fn mark_success(state: display::ItemState, outcome: display::SuccessOutcome) -> display::ItemState {
     match state {
-        ItemState::New | ItemState::InProgress(_) => ItemState::InProgress(Some(outcome)),
-        ItemState::Done(_) | ItemState::Cancelled | ItemState::Failed => state,
+        display::ItemState::New | display::ItemState::InProgress(_) => {
+            display::ItemState::InProgress(Some(outcome))
+        }
+        display::ItemState::Done(_)
+        | display::ItemState::Cancelled
+        | display::ItemState::Failed => state,
     }
 }
 
-fn finish_item(state: ItemState) -> Result<ItemState, String> {
+fn finish_item(state: display::ItemState) -> Result<display::ItemState, String> {
     match state {
-        ItemState::InProgress(Some(outcome)) => Ok(ItemState::Done(outcome)),
-        ItemState::New | ItemState::InProgress(None) => invalid_finish(
+        display::ItemState::InProgress(Some(outcome)) => Ok(display::ItemState::Done(outcome)),
+        display::ItemState::New | display::ItemState::InProgress(None) => invalid_finish(
             "finish update received before cached/built path was set",
             state,
         ),
-        ItemState::Done(_) | ItemState::Cancelled | ItemState::Failed => {
+        display::ItemState::Done(_)
+        | display::ItemState::Cancelled
+        | display::ItemState::Failed => {
             invalid_finish("finish update received for terminal item state", state)
         }
     }
 }
 
-fn invalid_finish(reason: &str, state: ItemState) -> Result<ItemState, String> {
+fn invalid_finish(reason: &str, state: display::ItemState) -> Result<display::ItemState, String> {
     let message = format!("{reason}: {state:?}");
     error!("{message}");
-    debug_assert!(matches!(state, ItemState::InProgress(Some(_))), "{message}");
+    debug_assert!(
+        matches!(state, display::ItemState::InProgress(Some(_))),
+        "{message}"
+    );
     Err(message)
 }
 
@@ -1162,15 +1195,15 @@ mod tests {
     fn actor() -> DisplayActor {
         let (tx, rx) = mpsc::channel(1);
         DisplayActor {
-            state: DisplayState::new(
-                Mode::Fancy,
+            state: display::State::new(
+                display::Mode::Fancy,
                 Arc::new(PathBuf::from("build")),
                 Arc::new(PathBuf::from("out")),
             ),
-            next_id: ItemId::new(NonZeroU64::MIN),
+            next_id: display::ItemId::new(NonZeroU64::MIN),
             plain_name_width: 16,
             plain_progress_started: false,
-            grid: GridCache::new(),
+            grid: display::GridCache::new(),
             row_specs: Vec::new(),
             rows_dirty: true,
             last_term_width: None,
@@ -1297,13 +1330,13 @@ mod tests {
         actor.apply_update(grammar.id, UpdateKind::Cancel, Arc::from("cancelled"));
 
         let grammar_entry = actor.state.grammars.get(&grammar.id).unwrap();
-        assert_eq!(grammar_entry.state, ItemState::Cancelled);
+        assert_eq!(grammar_entry.state, display::ItemState::Cancelled);
         assert!(!grammar_entry.state.is_live());
         assert_eq!(grammar_entry.step, grammar_entry.total);
         assert!(grammar_entry.frozen_elapsed.is_some());
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::Cancelled);
+        assert_eq!(repo_entry.state, display::ItemState::Cancelled);
         assert!(!repo_entry.state.is_live());
         assert_eq!(repo_entry.msg.as_ref(), "cancelled");
         assert!(repo_entry.frozen_elapsed.is_some());
@@ -1329,14 +1362,14 @@ mod tests {
         actor.apply_update(active.id, UpdateKind::Step, Arc::from("building"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::InProgress(None));
+        assert_eq!(repo_entry.state, display::ItemState::InProgress(None));
         assert_eq!(repo_entry.msg.as_ref(), "building");
         assert!(repo_entry.frozen_elapsed.is_none());
 
         actor.apply_update(active.id, UpdateKind::Cancel, Arc::from("cancelled"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::Cancelled);
+        assert_eq!(repo_entry.state, display::ItemState::Cancelled);
         assert_eq!(repo_entry.msg.as_ref(), "cancelled");
         assert!(repo_entry.frozen_elapsed.is_some());
     }
@@ -1361,7 +1394,7 @@ mod tests {
         actor.apply_update(cancelled.id, UpdateKind::Cancel, Arc::from("cancelled"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::Failed);
+        assert_eq!(repo_entry.state, display::ItemState::Failed);
         assert_eq!(repo_entry.msg.as_ref(), "failed");
         assert!(repo_entry.frozen_elapsed.is_some());
 
@@ -1390,11 +1423,11 @@ mod tests {
         actor.cancel_live_rows();
 
         let grammar_entry = actor.state.grammars.get(&grammar.id).unwrap();
-        assert_eq!(grammar_entry.state, ItemState::Cancelled);
+        assert_eq!(grammar_entry.state, display::ItemState::Cancelled);
         assert_eq!(grammar_entry.step, grammar_entry.total);
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::Cancelled);
+        assert_eq!(repo_entry.state, display::ItemState::Cancelled);
         assert_eq!(repo_entry.msg.as_ref(), "cancelled");
 
         assert_eq!(actor.state.summary_counts(), (0, 0, 0, 0, 1));
@@ -1411,7 +1444,7 @@ mod tests {
         actor.apply_update(repo.id, UpdateKind::Err, Arc::from("failed"));
 
         let entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(entry.state, ItemState::Cancelled);
+        assert_eq!(entry.state, display::ItemState::Cancelled);
         assert_eq!(entry.msg.as_ref(), "cancelled");
 
         let grammar = actor.register_grammar("json".into(), "json".into(), git::Ref::head(), 4);
@@ -1421,7 +1454,7 @@ mod tests {
         actor.apply_update(grammar.id, UpdateKind::Err, Arc::from("failed"));
 
         let entry = actor.state.grammars.get(&grammar.id).unwrap();
-        assert_eq!(entry.state, ItemState::Cancelled);
+        assert_eq!(entry.state, display::ItemState::Cancelled);
         assert_eq!(entry.msg.as_ref(), "cancelled");
     }
 
@@ -1443,7 +1476,7 @@ mod tests {
         actor.apply_update(failing.id, UpdateKind::Err, Arc::from("build failed"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::InProgress(None));
+        assert_eq!(repo_entry.state, display::ItemState::InProgress(None));
         assert_eq!(repo_entry.msg.as_ref(), "building");
         assert!(repo_entry.frozen_elapsed.is_none());
 
@@ -1451,7 +1484,7 @@ mod tests {
         actor.apply_update(pending.id, UpdateKind::Fin, Arc::from("done"));
 
         let repo_entry = actor.state.repos.get(&repo.id).unwrap();
-        assert_eq!(repo_entry.state, ItemState::Failed);
+        assert_eq!(repo_entry.state, display::ItemState::Failed);
         assert_eq!(repo_entry.msg.as_ref(), "failed");
         assert!(repo_entry.frozen_elapsed.is_some());
     }

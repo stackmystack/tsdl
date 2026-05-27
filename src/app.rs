@@ -2,15 +2,12 @@ use std::path::PathBuf;
 
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
-use crate::{
-    args::{BuildCommand, Command},
-    config, display, logging, TsdlResult,
-};
+use crate::{args, config, display, logging, TsdlResult};
 
 /// Resolved application state, ready to run.
 pub struct App {
-    pub subcommand: Command,
-    pub command: BuildCommand,
+    pub subcommand: args::Command,
+    pub command: args::BuildCommand,
     pub provenance: config::BuildProvenance,
     pub config_path: PathBuf,
     pub log_path: PathBuf,

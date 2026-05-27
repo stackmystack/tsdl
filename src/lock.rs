@@ -13,13 +13,11 @@ use fs2::FileExt;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 use tracing::info;
 
-use crate::{
-    absolute_normalize, consts::TSDL_LOCK_FILE, error::TsdlError, format_duration, TsdlResult,
-};
+use crate::{absolute_normalize, consts, error, format_duration, TsdlResult};
 
 /// Information about the process currently holding the build lock.
 #[derive(Debug, Clone)]
-pub struct LockOwner {
+pub struct Owner {
     pub pid: Pid,
     pub name: String,
     pub command: Option<String>,
@@ -30,7 +28,7 @@ pub struct LockOwner {
     pub start_time: u64,
 }
 
-impl fmt::Display for LockOwner {
+impl fmt::Display for Owner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  pid:      {}", self.pid)?;
         writeln!(f, "  process:  {}", self.name)?;
@@ -64,27 +62,27 @@ impl fmt::Display for LockOwner {
 
 /// Result of checking lock status.
 #[derive(Debug)]
-pub enum LockStatus {
+pub enum Status {
     /// Lock acquired successfully.
-    Acquired(LockGuard),
+    Acquired(Guard),
     /// Acquired lock is cyclic (same process).
     Cyclic,
     /// Lock is held by a different process.
-    LockedBy(LockOwner),
+    LockedBy(Owner),
     /// Lock is held, but the owner could not be identified.
     Unknown { pid: Option<Pid>, reason: String },
 }
 
 /// Last observed state while waiting for a lock takeover to complete.
 #[derive(Debug, Clone)]
-pub enum LockObservation {
+pub enum Observation {
     /// The lock is still held by an identifiable owner.
-    LockedBy(Box<LockOwner>),
+    LockedBy(Box<Owner>),
     /// The lock is still held, but owner metadata could not be resolved.
     Unknown { pid: Option<Pid>, reason: String },
 }
 
-impl fmt::Display for LockObservation {
+impl fmt::Display for Observation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LockedBy(owner) => {
@@ -106,33 +104,33 @@ impl fmt::Display for LockObservation {
 
 /// Error returned while terminating a lock owner or waiting for its lock to release.
 #[derive(Debug)]
-pub enum LockTakeoverError {
+pub enum TakeoverError {
     /// The previously observed owner exited before it could be signalled.
-    OwnerDisappeared { previous: Box<LockOwner> },
+    OwnerDisappeared { previous: Box<Owner> },
     /// The lock owner changed while takeover was in progress.
     OwnerChanged {
-        previous: Box<LockOwner>,
-        current: Box<LockOwner>,
+        previous: Box<Owner>,
+        current: Box<Owner>,
     },
     /// Lock status became cyclic while waiting.
     Cyclic,
     /// The lock remained held by an unidentifiable owner.
     Unknown { pid: Option<Pid>, reason: String },
     /// Sending SIGTERM to the owner failed.
-    SignalFailed { owner: Box<LockOwner> },
+    SignalFailed { owner: Box<Owner> },
     /// SIGTERM is unavailable on this platform.
-    SignalUnsupported { owner: Box<LockOwner> },
+    SignalUnsupported { owner: Box<Owner> },
     /// The timeout elapsed before the lock could be acquired.
     Timeout {
-        previous: Box<LockOwner>,
+        previous: Box<Owner>,
         timeout: Duration,
-        last_observation: Box<LockObservation>,
+        last_observation: Box<Observation>,
     },
     /// An underlying tsdl error occurred while taking over the lock.
-    Source(TsdlError),
+    Source(error::TsdlError),
 }
 
-impl LockTakeoverError {
+impl TakeoverError {
     /// Whether the caller should re-check lock status and retry the outer takeover loop.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
@@ -143,7 +141,7 @@ impl LockTakeoverError {
     }
 }
 
-impl fmt::Display for LockTakeoverError {
+impl fmt::Display for TakeoverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OwnerDisappeared { previous } => write!(
@@ -189,16 +187,16 @@ impl fmt::Display for LockTakeoverError {
     }
 }
 
-impl std::error::Error for LockTakeoverError {}
+impl std::error::Error for TakeoverError {}
 
-impl From<TsdlError> for LockTakeoverError {
-    fn from(err: TsdlError) -> Self {
+impl From<error::TsdlError> for TakeoverError {
+    fn from(err: error::TsdlError) -> Self {
         Self::Source(err)
     }
 }
 
-impl From<LockTakeoverError> for TsdlError {
-    fn from(err: LockTakeoverError) -> Self {
+impl From<TakeoverError> for error::TsdlError {
+    fn from(err: TakeoverError) -> Self {
         Self::message(err.to_string())
     }
 }
@@ -209,18 +207,18 @@ impl From<LockTakeoverError> for TsdlError {
 /// intentionally left on disk because OS locks are tied to open file handles,
 /// not to path existence.
 #[derive(Debug)]
-pub struct LockGuard {
+pub struct Guard {
     file: File,
     lock_path: PathBuf,
 }
 
-impl Drop for LockGuard {
+impl Drop for Guard {
     fn drop(&mut self) {
         let _ = self.file.unlock();
     }
 }
 
-impl LockGuard {
+impl Guard {
     /// Delete every entry in the build directory except the lock file itself
     /// and explicitly protected root-level files, such as the active log file.
     ///
@@ -229,7 +227,7 @@ impl LockGuard {
     /// invalidating OS locks or unlinking files held open by the current process.
     pub fn clear_directory(&self, protected_files: &[PathBuf]) -> TsdlResult<()> {
         let build_dir = self.lock_path.parent().ok_or_else(|| {
-            TsdlError::message(format!(
+            error::TsdlError::message(format!(
                 "Lock path has no parent directory: {}",
                 self.lock_path.display()
             ))
@@ -240,7 +238,7 @@ impl LockGuard {
         let lock_name = self
             .lock_path
             .file_name()
-            .map_or_else(|| OsString::from(TSDL_LOCK_FILE), OsString::from);
+            .map_or_else(|| OsString::from(consts::TSDL_LOCK_FILE), OsString::from);
         protected_names.insert(lock_name);
 
         for protected in protected_files {
@@ -253,13 +251,13 @@ impl LockGuard {
         }
 
         for entry in fs::read_dir(build_dir).map_err(|e| {
-            TsdlError::context(
+            error::TsdlError::context(
                 format!("Reading build directory {}", build_dir.display()),
                 e,
             )
         })? {
             let entry = entry.map_err(|e| {
-                TsdlError::context(
+                error::TsdlError::context(
                     format!("Reading directory entry in {}", build_dir.display()),
                     e,
                 )
@@ -272,17 +270,17 @@ impl LockGuard {
             }
 
             let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .map_err(|e| TsdlError::context(format!("Statting {}", path.display()), e))?;
+            let file_type = entry.file_type().map_err(|e| {
+                error::TsdlError::context(format!("Statting {}", path.display()), e)
+            })?;
 
             if file_type.is_dir() {
                 fs::remove_dir_all(&path).map_err(|e| {
-                    TsdlError::context(format!("Removing directory {}", path.display()), e)
+                    error::TsdlError::context(format!("Removing directory {}", path.display()), e)
                 })?;
             } else {
                 fs::remove_file(&path).map_err(|e| {
-                    TsdlError::context(format!("Removing file {}", path.display()), e)
+                    error::TsdlError::context(format!("Removing file {}", path.display()), e)
                 })?;
             }
         }
@@ -302,19 +300,19 @@ impl Lock {
     #[must_use]
     pub fn new(build_dir: &Path) -> Self {
         Self {
-            lock_path: build_dir.join(TSDL_LOCK_FILE),
+            lock_path: build_dir.join(consts::TSDL_LOCK_FILE),
             current_pid: Pid::from(process::id() as usize),
         }
     }
 
     /// Check lock status and acquire the OS lock if available.
-    pub fn try_acquire(&self) -> TsdlResult<LockStatus> {
+    pub fn try_acquire(&self) -> TsdlResult<Status> {
         let file = self.open_lock_file()?;
 
         match file.try_lock_exclusive() {
-            Ok(()) => self.activate(file).map(LockStatus::Acquired),
+            Ok(()) => self.activate(file).map(Status::Acquired),
             Err(err) if is_lock_contention(&err) => Ok(self.lock_status()),
-            Err(err) => Err(TsdlError::context(
+            Err(err) => Err(error::TsdlError::context(
                 format!("Acquiring build lock {}", self.lock_path.display()),
                 err,
             )),
@@ -322,26 +320,24 @@ impl Lock {
     }
 
     /// Send SIGTERM to the process that held the lock when `owner` was captured.
-    pub fn terminate_owner(&self, owner: &LockOwner) -> Result<(), LockTakeoverError> {
+    pub fn terminate_owner(&self, owner: &Owner) -> Result<(), TakeoverError> {
         info!(
             "Sending SIGTERM to lock owner PID {} ({})",
             owner.pid, owner.name
         );
         let system = Self::system_for_pid(owner.pid);
-        let process =
-            system
-                .process(owner.pid)
-                .ok_or_else(|| LockTakeoverError::OwnerDisappeared {
-                    previous: Box::new(owner.clone()),
-                })?;
+        let process = system
+            .process(owner.pid)
+            .ok_or_else(|| TakeoverError::OwnerDisappeared {
+                previous: Box::new(owner.clone()),
+            })?;
 
         if process.start_time() != owner.start_time {
-            let current = Self::owner_for_pid(owner.pid).ok_or_else(|| {
-                LockTakeoverError::OwnerDisappeared {
+            let current =
+                Self::owner_for_pid(owner.pid).ok_or_else(|| TakeoverError::OwnerDisappeared {
                     previous: Box::new(owner.clone()),
-                }
-            })?;
-            return Err(LockTakeoverError::OwnerChanged {
+                })?;
+            return Err(TakeoverError::OwnerChanged {
                 previous: Box::new(owner.clone()),
                 current: Box::new(current),
             });
@@ -352,10 +348,10 @@ impl Lock {
                 info!("Sent SIGTERM to lock owner PID {}", owner.pid);
                 Ok(())
             }
-            Some(false) => Err(LockTakeoverError::SignalFailed {
+            Some(false) => Err(TakeoverError::SignalFailed {
                 owner: Box::new(owner.clone()),
             }),
-            None => Err(LockTakeoverError::SignalUnsupported {
+            None => Err(TakeoverError::SignalUnsupported {
                 owner: Box::new(owner.clone()),
             }),
         }
@@ -368,9 +364,9 @@ impl Lock {
     /// are reported explicitly instead of waiting on stale information.
     pub fn wait_for_release(
         &self,
-        owner: &LockOwner,
+        owner: &Owner,
         timeout: Duration,
-    ) -> Result<LockGuard, LockTakeoverError> {
+    ) -> Result<Guard, TakeoverError> {
         info!(
             "Waiting up to {} for lock release from PID {}",
             crate::format_duration(timeout),
@@ -379,12 +375,12 @@ impl Lock {
 
         let deadline = Instant::now() + timeout;
         let mut delay = Duration::from_millis(50);
-        let mut last_observation = LockObservation::LockedBy(Box::new(owner.clone()));
+        let mut last_observation = Observation::LockedBy(Box::new(owner.clone()));
 
         loop {
             let now = Instant::now();
             if now >= deadline {
-                return Err(LockTakeoverError::Timeout {
+                return Err(TakeoverError::Timeout {
                     previous: Box::new(owner.clone()),
                     timeout,
                     last_observation: Box::new(last_observation),
@@ -392,30 +388,30 @@ impl Lock {
             }
 
             match self.try_acquire()? {
-                LockStatus::Acquired(guard) => return Ok(guard),
+                Status::Acquired(guard) => return Ok(guard),
 
-                LockStatus::Cyclic => return Err(LockTakeoverError::Cyclic),
+                Status::Cyclic => return Err(TakeoverError::Cyclic),
 
-                LockStatus::LockedBy(current) => {
+                Status::LockedBy(current) => {
                     if same_owner(&current, owner) {
-                        last_observation = LockObservation::LockedBy(Box::new(current));
+                        last_observation = Observation::LockedBy(Box::new(current));
                     } else {
-                        return Err(LockTakeoverError::OwnerChanged {
+                        return Err(TakeoverError::OwnerChanged {
                             previous: Box::new(owner.clone()),
                             current: Box::new(current),
                         });
                     }
                 }
 
-                LockStatus::Unknown { pid, reason } => {
+                Status::Unknown { pid, reason } => {
                     // If metadata now points at a different PID that we cannot inspect,
                     // stop waiting on the previous owner. Otherwise keep polling until
                     // timeout so transient metadata reads or inherited lock handles have
                     // time to settle.
                     if pid.is_some_and(|pid| pid != owner.pid) {
-                        return Err(LockTakeoverError::Unknown { pid, reason });
+                        return Err(TakeoverError::Unknown { pid, reason });
                     }
-                    last_observation = LockObservation::Unknown { pid, reason };
+                    last_observation = Observation::Unknown { pid, reason };
                 }
             }
 
@@ -424,10 +420,10 @@ impl Lock {
             delay = delay.saturating_mul(2).min(Duration::from_millis(500));
         }
     }
-    fn activate(&self, mut file: File) -> TsdlResult<LockGuard> {
+    fn activate(&self, mut file: File) -> TsdlResult<Guard> {
         self.write_metadata(&mut file)?;
         info!("Acquired lock on build directory");
-        Ok(LockGuard {
+        Ok(Guard {
             file,
             lock_path: self.lock_path.clone(),
         })
@@ -436,7 +432,10 @@ impl Lock {
     fn open_lock_file(&self) -> TsdlResult<File> {
         if let Some(parent) = self.lock_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                TsdlError::context(format!("Creating build directory {}", parent.display()), e)
+                error::TsdlError::context(
+                    format!("Creating build directory {}", parent.display()),
+                    e,
+                )
             })?;
         }
 
@@ -447,16 +446,19 @@ impl Lock {
             .truncate(false)
             .open(&self.lock_path)
             .map_err(|e| {
-                TsdlError::context(format!("Opening lock file {}", self.lock_path.display()), e)
+                error::TsdlError::context(
+                    format!("Opening lock file {}", self.lock_path.display()),
+                    e,
+                )
             })
     }
 
     /// Helper for checking process status and determining lock conflicts.
-    fn lock_status(&self) -> LockStatus {
+    fn lock_status(&self) -> Status {
         let lock_pid = match self.read_pid() {
             Ok(pid) => pid,
             Err(err) => {
-                return LockStatus::Unknown {
+                return Status::Unknown {
                     pid: None,
                     reason: format!("lock is held, but owner metadata could not be read: {err}"),
                 };
@@ -464,12 +466,12 @@ impl Lock {
         };
 
         if lock_pid == self.current_pid {
-            return LockStatus::Cyclic;
+            return Status::Cyclic;
         }
 
         match Self::owner_for_pid(lock_pid) {
-            Some(owner) => LockStatus::LockedBy(owner),
-            None => LockStatus::Unknown {
+            Some(owner) => Status::LockedBy(owner),
+            None => Status::Unknown {
                 pid: Some(lock_pid),
                 reason: "lock is held, but the metadata PID is not running or cannot be inspected"
                     .to_string(),
@@ -477,11 +479,11 @@ impl Lock {
         }
     }
 
-    fn owner_for_pid(pid: Pid) -> Option<LockOwner> {
+    fn owner_for_pid(pid: Pid) -> Option<Owner> {
         let system = Self::system_for_pid(pid);
         let process = system.process(pid)?;
 
-        Some(LockOwner {
+        Some(Owner {
             pid: process.pid(),
             name: process.name().to_string_lossy().to_string(),
             command: command_line(process.cmd()),
@@ -495,11 +497,11 @@ impl Lock {
 
     fn read_pid(&self) -> TsdlResult<Pid> {
         let content = fs::read_to_string(&self.lock_path).map_err(|e| {
-            TsdlError::context(format!("Reading lock file {}", self.lock_path.display()), e)
+            error::TsdlError::context(format!("Reading lock file {}", self.lock_path.display()), e)
         })?;
 
         let pid: usize = content.trim().parse().map_err(|_| {
-            TsdlError::message(format!(
+            error::TsdlError::message(format!(
                 "Invalid PID '{}' in lock file {}",
                 content.trim(),
                 self.lock_path.display()
@@ -525,16 +527,16 @@ impl Lock {
 
     fn write_metadata(&self, file: &mut File) -> TsdlResult<()> {
         file.set_len(0).map_err(|e| {
-            TsdlError::context(
+            error::TsdlError::context(
                 format!("Truncating lock file {}", self.lock_path.display()),
                 e,
             )
         })?;
         file.seek(SeekFrom::Start(0)).map_err(|e| {
-            TsdlError::context(format!("Seeking lock file {}", self.lock_path.display()), e)
+            error::TsdlError::context(format!("Seeking lock file {}", self.lock_path.display()), e)
         })?;
         write!(file, "{}", self.current_pid.as_u32()).map_err(|e| {
-            TsdlError::context(
+            error::TsdlError::context(
                 format!(
                     "Writing lock file {} with PID {}",
                     self.lock_path.display(),
@@ -544,7 +546,7 @@ impl Lock {
             )
         })?;
         file.sync_all().map_err(|e| {
-            TsdlError::context(format!("Syncing lock file {}", self.lock_path.display()), e)
+            error::TsdlError::context(format!("Syncing lock file {}", self.lock_path.display()), e)
         })
     }
 }
@@ -562,7 +564,7 @@ fn command_line(cmd: &[std::ffi::OsString]) -> Option<String> {
     )
 }
 
-fn same_owner(current: &LockOwner, previous: &LockOwner) -> bool {
+fn same_owner(current: &Owner, previous: &Owner) -> bool {
     current.pid == previous.pid && current.start_time == previous.start_time
 }
 
@@ -573,7 +575,6 @@ fn is_lock_contention(err: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consts::TSDL_LOCK_FILE;
 
     fn unused_pid() -> usize {
         let system = System::new_all();
@@ -585,14 +586,14 @@ mod tests {
     #[test]
     fn stale_lock_metadata_does_not_prevent_acquiring_free_os_lock() {
         let temp = tempfile::tempdir().unwrap();
-        let lock_file = temp.path().join(TSDL_LOCK_FILE);
+        let lock_file = temp.path().join(consts::TSDL_LOCK_FILE);
         fs::write(&lock_file, unused_pid().to_string()).unwrap();
 
         let lock = Lock::new(temp.path());
         let status = lock.try_acquire().unwrap();
 
         assert!(
-            matches!(status, LockStatus::Acquired(_)),
+            matches!(status, Status::Acquired(_)),
             "stale lock metadata should not block acquiring a free OS lock"
         );
     }

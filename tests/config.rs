@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use tsdl::{
     args::{self, BuildCommand, Target},
-    config::{self, ConfigSource},
+    config::{self, Source},
     consts::{
         TREE_SITTER_PLATFORM, TREE_SITTER_REPO, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_FRESH,
         TSDL_OUT_DIR, TSDL_PREFIX, TSDL_SHOW_CONFIG,
@@ -225,7 +225,7 @@ fn negative_boolean_flag_overrides_positive() -> Result<()> {
         current_with_cli_provenance(&generated, &["tsdl", "build", "--force=true", "--no-force"]);
 
     assert!(!cmd.force);
-    assert_eq!(prov.force, ConfigSource::CommandLine);
+    assert_eq!(prov.force, Source::CommandLine);
     Ok(())
 }
 
@@ -243,7 +243,7 @@ fn env_can_override_config_to_builtin_default_value() -> Result<()> {
     let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
     assert_eq!(cmd.prefix, TSDL_PREFIX);
-    assert_eq!(prov.prefix, ConfigSource::Environment);
+    assert_eq!(prov.prefix, Source::Environment);
     Ok(())
 }
 
@@ -261,7 +261,7 @@ fn boolean_env_can_override_config_file() -> Result<()> {
     let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
     assert!(!cmd.force);
-    assert_eq!(prov.force, ConfigSource::Environment);
+    assert_eq!(prov.force, Source::Environment);
     Ok(())
 }
 
@@ -280,7 +280,7 @@ fn cli_has_precedence_over_env() -> Result<()> {
     let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
     assert_eq!(cmd.target, Target::Native);
-    assert_eq!(prov.target, ConfigSource::CommandLine);
+    assert_eq!(prov.target, Source::CommandLine);
     Ok(())
 }
 
@@ -294,6 +294,6 @@ fn cli_explicit_default_value_overrides_config_file() -> Result<()> {
         current_with_cli_provenance(&generated, &["tsdl", "build", "--build-dir", "tmp"]);
 
     assert_eq!(cmd.build_dir, PathBuf::from("tmp"));
-    assert_eq!(prov.build_dir, ConfigSource::CommandLine);
+    assert_eq!(prov.build_dir, Source::CommandLine);
     Ok(())
 }

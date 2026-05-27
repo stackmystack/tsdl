@@ -8,24 +8,21 @@ use tracing::info;
 
 use crate::{
     actors::{Addr, Response},
-    build::BuildSpec,
-    cache::{CacheDecision, CacheKey, CacheMissReason, Db, Entry, GrammarHash, Source, Update},
-    parser::LanguageName,
-    TsdlResult,
+    build, cache, parser, TsdlResult,
 };
 
 #[derive(Debug)]
 #[allow(dead_code)]
 enum ResponseKind<'a> {
     CacheGet {
-        name: &'a CacheKey,
+        name: &'a cache::Key,
     },
     HasCompatibleEntries {
-        language: &'a LanguageName,
+        language: &'a parser::LanguageName,
     },
     NeedsRebuild {
-        name: &'a CacheKey,
-        hash: &'a GrammarHash,
+        name: &'a cache::Key,
+        hash: &'a cache::GrammarHash,
     },
     SaveComplete,
 }
@@ -34,27 +31,30 @@ enum ResponseKind<'a> {
 pub enum CacheMessage {
     /// Query if a parser needs rebuild
     NeedsRebuild {
-        hash: GrammarHash,
-        name: CacheKey,
-        source: Source,
-        spec: Arc<BuildSpec>,
+        hash: cache::GrammarHash,
+        name: cache::Key,
+        source: cache::Source,
+        spec: Arc<build::Spec>,
         artifacts: Vec<PathBuf>,
-        tx: oneshot::Sender<CacheDecision>,
+        tx: oneshot::Sender<cache::Decision>,
     },
-    /// Update a cache entry
-    Update { entry: Entry, name: CacheKey },
+    /// cache::Update a cache entry
+    Update {
+        entry: cache::Entry,
+        name: cache::Key,
+    },
     /// Save cache to disk
     Save { tx: oneshot::Sender<TsdlResult<()>> },
     /// Check if cache contains entries compatible with a language spec.
     HasCompatibleEntries {
-        language: LanguageName,
-        spec: Arc<BuildSpec>,
+        language: parser::LanguageName,
+        spec: Arc<build::Spec>,
         tx: oneshot::Sender<bool>,
     },
     /// Get a cache entry
     Get {
-        name: CacheKey,
-        tx: oneshot::Sender<Option<Entry>>,
+        name: cache::Key,
+        tx: oneshot::Sender<Option<cache::Entry>>,
     },
 }
 
@@ -83,14 +83,14 @@ impl CacheAddr {
     }
 
     /// Accepts any string type (String, &str, Arc<str>) with minimal cloning
-    pub async fn get(&self, name: CacheKey) -> Option<Entry> {
+    pub async fn get(&self, name: cache::Key) -> Option<cache::Entry> {
         self.request(|tx| CacheMessage::Get { name, tx }).await
     }
 
     pub async fn has_compatible_entries(
         &self,
-        language: LanguageName,
-        spec: Arc<BuildSpec>,
+        language: parser::LanguageName,
+        spec: Arc<build::Spec>,
     ) -> bool {
         self.request(|tx| CacheMessage::HasCompatibleEntries { language, spec, tx })
             .await
@@ -98,12 +98,12 @@ impl CacheAddr {
 
     pub async fn needs_rebuild(
         &self,
-        name: CacheKey,
-        hash: GrammarHash,
-        spec: Arc<BuildSpec>,
-        source: Source,
+        name: cache::Key,
+        hash: cache::GrammarHash,
+        spec: Arc<build::Spec>,
+        source: cache::Source,
         artifacts: Vec<PathBuf>,
-    ) -> CacheDecision {
+    ) -> cache::Decision {
         self.request(|tx| CacheMessage::NeedsRebuild {
             name,
             hash,
@@ -119,7 +119,7 @@ impl CacheAddr {
         self.request(|tx| CacheMessage::Save { tx }).await
     }
 
-    pub async fn update(&self, update: Update) {
+    pub async fn update(&self, update: cache::Update) {
         self.fire(CacheMessage::Update {
             entry: update.entry,
             name: update.name,
@@ -130,29 +130,29 @@ impl CacheAddr {
 
 /// The Cache Actor: Manages cache state and processes messages
 pub struct CacheActor {
-    db: Db,
+    db: cache::Db,
     force: bool,
     rx: mpsc::Receiver<CacheMessage>,
 }
 
-async fn verify_artifacts(artifacts: Vec<PathBuf>) -> CacheDecision {
+async fn verify_artifacts(artifacts: Vec<PathBuf>) -> cache::Decision {
     let mut reasons = Vec::new();
 
     for path in artifacts {
         match fs::metadata(&path).await {
             Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => reasons.push(CacheMissReason::ArtifactNotFile { path }),
+            Ok(_) => reasons.push(cache::MissReason::ArtifactNotFile { path }),
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                reasons.push(CacheMissReason::ArtifactMissing { path });
+                reasons.push(cache::MissReason::ArtifactMissing { path });
             }
-            Err(err) => reasons.push(CacheMissReason::ArtifactInaccessible {
+            Err(err) => reasons.push(cache::MissReason::ArtifactInaccessible {
                 path,
                 error: err.to_string(),
             }),
         }
     }
 
-    CacheDecision::from_reasons(reasons)
+    cache::Decision::from_reasons(reasons)
 }
 
 impl CacheActor {
@@ -168,7 +168,7 @@ impl CacheActor {
                     tx,
                 } => {
                     let decision = if self.force {
-                        CacheDecision::miss(CacheMissReason::CacheIgnored)
+                        cache::Decision::miss(cache::MissReason::CacheIgnored)
                     } else {
                         let decision = self.db.rebuild_decision(&name, &hash, &spec, &source);
                         if decision.is_hit() {
@@ -218,7 +218,7 @@ impl CacheActor {
                                 .iter()
                                 .find(|(key, _)| {
                                     key.as_str()
-                                        .starts_with(&CacheKey::language_prefix(&language))
+                                        .starts_with(&cache::Key::language_prefix(&language))
                                 })
                                 .is_some_and(|(_, entry)| entry.spec == spec),
                     );
@@ -236,7 +236,7 @@ impl CacheActor {
     }
 
     #[must_use]
-    pub fn spawn(db: Db, force: bool) -> CacheAddr {
+    pub fn spawn(db: cache::Db, force: bool) -> CacheAddr {
         let (tx, rx) = mpsc::channel(64);
         let actor = Self { db, force, rx };
         tokio::spawn(actor.run());
@@ -255,7 +255,7 @@ mod tests {
         let artifact = temp.path().join("parser.so");
         fs::write(&artifact, b"parser").await.unwrap();
 
-        assert_eq!(verify_artifacts(vec![artifact]).await, CacheDecision::Hit);
+        assert_eq!(verify_artifacts(vec![artifact]).await, cache::Decision::Hit);
     }
 
     #[tokio::test]
@@ -267,10 +267,10 @@ mod tests {
 
         assert_eq!(
             verify_artifacts(vec![missing.clone(), directory.clone()]).await,
-            CacheDecision::Miss(crate::cache::CacheMiss {
+            cache::Decision::Miss(crate::cache::Miss {
                 reasons: vec![
-                    CacheMissReason::ArtifactMissing { path: missing },
-                    CacheMissReason::ArtifactNotFile { path: directory },
+                    cache::MissReason::ArtifactMissing { path: missing },
+                    cache::MissReason::ArtifactNotFile { path: directory },
                 ],
             })
         );
