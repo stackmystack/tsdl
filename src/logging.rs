@@ -40,7 +40,11 @@ pub fn init(
     Ok((path, Guard(guard)))
 }
 
-fn init_tracing(writer: tracing_appender::non_blocking::NonBlocking, color: bool, filter: LevelFilter) {
+fn init_tracing(
+    writer: tracing_appender::non_blocking::NonBlocking,
+    color: bool,
+    filter: LevelFilter,
+) {
     let stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_ansi(color)
@@ -74,8 +78,7 @@ fn init_tracing(writer: tracing_appender::non_blocking::NonBlocking, color: bool
 }
 
 fn resolve_log_path(log: Option<&PathBuf>, build_dir: &Path) -> TsdlResult<PathBuf> {
-    let log = log
-        .map_or_else(|| build_dir.join(TSDL_LOG_FILE), Clone::clone);
+    let log = log.map_or_else(|| build_dir.join(TSDL_LOG_FILE), Clone::clone);
 
     validate_log_path(build_dir, &log)
 }

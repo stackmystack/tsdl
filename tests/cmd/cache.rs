@@ -6,7 +6,8 @@ use predicates::{self as p, prelude::*};
 use rstest::*;
 
 use tsdl::consts::{
-    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_OUT_DIR, TSDL_PREFIX,
+    TREE_SITTER_PLATFORM, TREE_SITTER_VERSION, TSDL_BUILD_DIR, TSDL_CONFIG_FILE, TSDL_OUT_DIR,
+    TSDL_PREFIX,
 };
 
 use crate::cmd::Sandbox;
@@ -14,6 +15,11 @@ use crate::cmd::Sandbox;
 #[rstest]
 fn cache_hit_skips_build() {
     let mut sandbox = Sandbox::new();
+    sandbox
+        .tmp
+        .child(TSDL_CONFIG_FILE)
+        .write_str("[parsers]\njson = \"0.21.0\"\n")
+        .unwrap();
 
     // First build
     sandbox.cmd.arg("build").arg("json").assert().success();
@@ -259,5 +265,9 @@ fn cache_file_structure() {
     assert!(
         cache_content.contains("git_ref"),
         "Cache should have git_ref field"
+    );
+    assert!(
+        cache_content.contains("source"),
+        "Cache should have source identity field"
     );
 }

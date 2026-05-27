@@ -16,7 +16,7 @@ use crate::display::{
     compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemState, Mode, RepoEntry,
     RowSpec, SuccessOutcome,
 };
-use crate::git::GitRef;
+use crate::git;
 
 // ---------------------------------------------------------------------------
 // Message types
@@ -26,7 +26,7 @@ use crate::git::GitRef;
 pub enum DisplayMessage {
     /// Register a repo-level progress line. Returns a `ProgressAddr`.
     RegisterLanguage {
-        git_ref: GitRef,
+        git_ref: git::Ref,
         name: Arc<str>,
         num_tasks: usize,
         tx: oneshot::Sender<ProgressAddr>,
@@ -34,7 +34,7 @@ pub enum DisplayMessage {
 
     /// Register a grammar-level progress line. Returns a `ProgressAddr`.
     RegisterGrammar {
-        git_ref: GitRef,
+        git_ref: git::Ref,
         language: Arc<str>,
         name: Arc<str>,
         num_tasks: usize,
@@ -42,7 +42,7 @@ pub enum DisplayMessage {
     },
 
     /// Plain-mode reference line. Fancy mode ignores this because refs are rendered per row.
-    RegisterReference { git_ref: GitRef, name: Arc<str> },
+    RegisterReference { git_ref: git::Ref, name: Arc<str> },
 
     /// Update a specific bar.
     Update {
@@ -101,7 +101,7 @@ impl DisplayAddr {
 
     pub async fn add_language<S: Into<Arc<str>>>(
         &self,
-        git_ref: GitRef,
+        git_ref: git::Ref,
         name: S,
         num_tasks: usize,
     ) -> ProgressAddr {
@@ -116,7 +116,7 @@ impl DisplayAddr {
 
     pub async fn add_grammar<S: Into<Arc<str>>>(
         &self,
-        git_ref: GitRef,
+        git_ref: git::Ref,
         language: S,
         name: S,
         num_tasks: usize,
@@ -131,7 +131,7 @@ impl DisplayAddr {
         .await
     }
 
-    pub async fn reference<S: Into<Arc<str>>>(&self, git_ref: GitRef, name: S) {
+    pub async fn reference<S: Into<Arc<str>>>(&self, git_ref: git::Ref, name: S) {
         self.fire(DisplayMessage::RegisterReference {
             git_ref,
             name: name.into(),
@@ -526,7 +526,7 @@ impl DisplayActor {
 
             // Invalidate columns whose width changed
             if new_layout.ref_ != self.grid.layout.ref_ {
-                self.grid.invalidate_column(Column::GitRef);
+                self.grid.invalidate_column(Column::Ref);
             }
             if new_layout.step != self.grid.layout.step {
                 self.grid.invalidate_column(Column::Step);
@@ -556,7 +556,7 @@ impl DisplayActor {
                 compute_time_cell(&info, &layout)
             });
 
-            let gref = self.grid.cell(item_id, Column::GitRef, is_dirty, || {
+            let gref = self.grid.cell(item_id, Column::Ref, is_dirty, || {
                 compute_ref_cell(&info, &layout)
             });
 
@@ -754,7 +754,12 @@ impl DisplayActor {
         }
     }
 
-    fn register_repo(&mut self, name: Arc<str>, git_ref: GitRef, num_tasks: usize) -> ProgressAddr {
+    fn register_repo(
+        &mut self,
+        name: Arc<str>,
+        git_ref: git::Ref,
+        num_tasks: usize,
+    ) -> ProgressAddr {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -784,7 +789,7 @@ impl DisplayActor {
         &mut self,
         language: Arc<str>,
         name: Arc<str>,
-        git_ref: GitRef,
+        git_ref: git::Ref,
         num_tasks: usize,
     ) -> ProgressAddr {
         let id = self.next_id;
@@ -1244,18 +1249,18 @@ mod tests {
     fn summary_counts_include_repo_only_rows() {
         let mut actor = actor();
 
-        let cached = actor.register_repo("tree-sitter-cli".into(), GitRef::head(), 2);
+        let cached = actor.register_repo("tree-sitter-cli".into(), git::Ref::head(), 2);
         actor.apply_update(cached.id, UpdateKind::SetOutcomeCached, Arc::from(""));
         actor.apply_update(cached.id, UpdateKind::Fin, Arc::from("done"));
 
-        let built = actor.register_repo("standalone".into(), GitRef::head(), 1);
+        let built = actor.register_repo("standalone".into(), git::Ref::head(), 1);
         actor.apply_update(built.id, UpdateKind::SetOutcomeBuilt, Arc::from(""));
         actor.apply_update(built.id, UpdateKind::Fin, Arc::from("done"));
 
-        let active = actor.register_repo("active".into(), GitRef::head(), 1);
+        let active = actor.register_repo("active".into(), git::Ref::head(), 1);
         actor.apply_update(active.id, UpdateKind::Step, Arc::from("working"));
 
-        let failed = actor.register_repo("failed".into(), GitRef::head(), 1);
+        let failed = actor.register_repo("failed".into(), git::Ref::head(), 1);
         actor.apply_update(failed.id, UpdateKind::Err, Arc::from("failed"));
 
         assert_eq!(actor.state.summary_counts(), (1, 1, 1, 1, 0));
@@ -1265,11 +1270,11 @@ mod tests {
     fn summary_counts_do_not_double_count_parent_repos_with_grammars() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("json".into(), GitRef::head(), 2);
+        let repo = actor.register_repo("json".into(), git::Ref::head(), 2);
         actor.apply_update(repo.id, UpdateKind::SetOutcomeBuilt, Arc::from(""));
         actor.apply_update(repo.id, UpdateKind::Fin, Arc::from("done"));
 
-        let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::head(), 4);
+        let grammar = actor.register_grammar("json".into(), "json".into(), git::Ref::head(), 4);
         actor.apply_update(grammar.id, UpdateKind::SetOutcomeCached, Arc::from(""));
         actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
 
@@ -1280,8 +1285,8 @@ mod tests {
     fn cancelled_grammar_is_terminal_and_updates_parent_repo() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("json".into(), GitRef::head(), 2);
-        let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::head(), 4);
+        let repo = actor.register_repo("json".into(), git::Ref::head(), 2);
+        let grammar = actor.register_grammar("json".into(), "json".into(), git::Ref::head(), 4);
 
         actor.apply_update(grammar.id, UpdateKind::Step, Arc::from("building"));
         actor.apply_update(grammar.id, UpdateKind::Cancel, Arc::from("cancelled"));
@@ -1305,10 +1310,14 @@ mod tests {
     fn cancelled_child_does_not_cancel_parent_while_sibling_is_active() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("typescript".into(), GitRef::head(), 2);
-        let cancelled =
-            actor.register_grammar("typescript".into(), "typescript".into(), GitRef::head(), 4);
-        let active = actor.register_grammar("typescript".into(), "tsx".into(), GitRef::head(), 4);
+        let repo = actor.register_repo("typescript".into(), git::Ref::head(), 2);
+        let cancelled = actor.register_grammar(
+            "typescript".into(),
+            "typescript".into(),
+            git::Ref::head(),
+            4,
+        );
+        let active = actor.register_grammar("typescript".into(), "tsx".into(), git::Ref::head(), 4);
 
         actor.apply_update(cancelled.id, UpdateKind::Step, Arc::from("building"));
         actor.apply_update(cancelled.id, UpdateKind::Cancel, Arc::from("cancelled"));
@@ -1331,11 +1340,15 @@ mod tests {
     fn failed_child_wins_over_cancelled_child_when_parent_terminal() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("typescript".into(), GitRef::head(), 2);
-        let failing =
-            actor.register_grammar("typescript".into(), "typescript".into(), GitRef::head(), 4);
+        let repo = actor.register_repo("typescript".into(), git::Ref::head(), 2);
+        let failing = actor.register_grammar(
+            "typescript".into(),
+            "typescript".into(),
+            git::Ref::head(),
+            4,
+        );
         let cancelled =
-            actor.register_grammar("typescript".into(), "tsx".into(), GitRef::head(), 4);
+            actor.register_grammar("typescript".into(), "tsx".into(), git::Ref::head(), 4);
 
         actor.apply_update(failing.id, UpdateKind::Step, Arc::from("building"));
         actor.apply_update(failing.id, UpdateKind::Err, Arc::from("build failed"));
@@ -1354,7 +1367,7 @@ mod tests {
     #[should_panic(expected = "finish update received before cached/built path was set")]
     fn finish_without_cached_or_built_path_panics() {
         let mut actor = actor();
-        let repo = actor.register_repo("json".into(), GitRef::head(), 2);
+        let repo = actor.register_repo("json".into(), git::Ref::head(), 2);
 
         actor.apply_update(repo.id, UpdateKind::Step, Arc::from("scanning"));
         actor.apply_update(repo.id, UpdateKind::Fin, Arc::from("done"));
@@ -1364,8 +1377,9 @@ mod tests {
     fn interrupted_shutdown_cancels_live_rows() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("typescript".into(), GitRef::head(), 2);
-        let grammar = actor.register_grammar("typescript".into(), "tsx".into(), GitRef::head(), 4);
+        let repo = actor.register_repo("typescript".into(), git::Ref::head(), 2);
+        let grammar =
+            actor.register_grammar("typescript".into(), "tsx".into(), git::Ref::head(), 4);
         actor.apply_update(grammar.id, UpdateKind::Step, Arc::from("building"));
 
         actor.cancel_live_rows();
@@ -1385,7 +1399,7 @@ mod tests {
     fn terminal_direct_updates_are_absorbing() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("json".into(), GitRef::head(), 4);
+        let repo = actor.register_repo("json".into(), git::Ref::head(), 4);
         actor.apply_update(repo.id, UpdateKind::Step, Arc::from("building"));
         actor.apply_update(repo.id, UpdateKind::Cancel, Arc::from("cancelled"));
         actor.apply_update(repo.id, UpdateKind::Cached, Arc::from("done"));
@@ -1395,7 +1409,7 @@ mod tests {
         assert_eq!(entry.state, ItemState::Cancelled);
         assert_eq!(entry.msg.as_ref(), "cancelled");
 
-        let grammar = actor.register_grammar("json".into(), "json".into(), GitRef::head(), 4);
+        let grammar = actor.register_grammar("json".into(), "json".into(), git::Ref::head(), 4);
         actor.apply_update(grammar.id, UpdateKind::Step, Arc::from("building"));
         actor.apply_update(grammar.id, UpdateKind::Cancel, Arc::from("cancelled"));
         actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
@@ -1410,10 +1424,15 @@ mod tests {
     fn parent_repo_stays_active_while_any_child_is_active() {
         let mut actor = actor();
 
-        let repo = actor.register_repo("typescript".into(), GitRef::head(), 2);
-        let failing =
-            actor.register_grammar("typescript".into(), "typescript".into(), GitRef::head(), 4);
-        let pending = actor.register_grammar("typescript".into(), "tsx".into(), GitRef::head(), 4);
+        let repo = actor.register_repo("typescript".into(), git::Ref::head(), 2);
+        let failing = actor.register_grammar(
+            "typescript".into(),
+            "typescript".into(),
+            git::Ref::head(),
+            4,
+        );
+        let pending =
+            actor.register_grammar("typescript".into(), "tsx".into(), git::Ref::head(), 4);
 
         actor.apply_update(failing.id, UpdateKind::Step, Arc::from("building"));
         actor.apply_update(failing.id, UpdateKind::Err, Arc::from("build failed"));
@@ -1435,7 +1454,7 @@ mod tests {
     #[test]
     fn materialize_recomputes_message_cells_when_terminal_width_changes() {
         let mut actor = actor();
-        let progress = actor.register_repo("json".into(), GitRef::head(), 1);
+        let progress = actor.register_repo("json".into(), git::Ref::head(), 1);
         let message = "abcdefghijklmnop";
 
         actor.apply_update(progress.id, UpdateKind::Msg, Arc::from(message));
@@ -1453,7 +1472,7 @@ mod tests {
     #[test]
     fn materialize_recomputes_message_cells_when_layout_width_changes() {
         let mut actor = actor();
-        let progress = actor.register_repo("json".into(), GitRef::head(), 1);
+        let progress = actor.register_repo("json".into(), git::Ref::head(), 1);
         let message = "abcdefghijklmnop";
 
         actor.apply_update(progress.id, UpdateKind::Msg, Arc::from(message));
@@ -1462,7 +1481,7 @@ mod tests {
         let initial_row = line_text(&initial_lines[0]);
         assert!(initial_row.contains(message));
 
-        actor.register_repo("zzzzzzzzzzzzzzzzzzzz".into(), GitRef::head(), 1);
+        actor.register_repo("zzzzzzzzzzzzzzzzzzzz".into(), git::Ref::head(), 1);
 
         let updated_lines = actor.materialize(42);
         let updated_row = updated_lines

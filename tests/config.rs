@@ -221,10 +221,8 @@ fn negative_boolean_flag_overrides_positive() -> Result<()> {
     let generated = temp.child("generated.toml");
     generated.touch()?;
 
-    let (cmd, prov) = current_with_cli_provenance(
-        &generated,
-        &["tsdl", "build", "--force=true", "--no-force"],
-    );
+    let (cmd, prov) =
+        current_with_cli_provenance(&generated, &["tsdl", "build", "--force=true", "--no-force"]);
 
     assert!(!cmd.force);
     assert_eq!(prov.force, ConfigSource::CommandLine);
@@ -240,11 +238,9 @@ fn env_can_override_config_to_builtin_default_value() -> Result<()> {
     let generated = temp.child("generated.toml");
     generated.write_str("prefix = \"\"\n")?;
 
-    let (_parsed_args, matches) =
-        config::try_parse_from_with_matches(["tsdl", "build"]).unwrap();
+    let (_parsed_args, matches) = config::try_parse_from_with_matches(["tsdl", "build"]).unwrap();
     let build_matches = args::build_matches(&matches);
-    let (cmd, prov) =
-        config::current_with_provenance(generated.path(), build_matches)?;
+    let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
     assert_eq!(cmd.prefix, TSDL_PREFIX);
     assert_eq!(prov.prefix, ConfigSource::Environment);
@@ -260,11 +256,9 @@ fn boolean_env_can_override_config_file() -> Result<()> {
     let generated = temp.child("generated.toml");
     generated.write_str("force = true\n")?;
 
-    let (_parsed_args, matches) =
-        config::try_parse_from_with_matches(["tsdl", "build"]).unwrap();
+    let (_parsed_args, matches) = config::try_parse_from_with_matches(["tsdl", "build"]).unwrap();
     let build_matches = args::build_matches(&matches);
-    let (cmd, prov) =
-        config::current_with_provenance(generated.path(), build_matches)?;
+    let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
     assert!(!cmd.force);
     assert_eq!(prov.force, ConfigSource::Environment);
@@ -281,11 +275,9 @@ fn cli_has_precedence_over_env() -> Result<()> {
     generated.touch()?;
 
     let (_parsed_args, matches) =
-        config::try_parse_from_with_matches(["tsdl", "build", "--target", "native"])
-            .unwrap();
+        config::try_parse_from_with_matches(["tsdl", "build", "--target", "native"]).unwrap();
     let build_matches = args::build_matches(&matches);
-    let (cmd, prov) =
-        config::current_with_provenance(generated.path(), build_matches)?;
+    let (cmd, prov) = config::current_with_provenance(generated.path(), build_matches)?;
 
     assert_eq!(cmd.target, Target::Native);
     assert_eq!(prov.target, ConfigSource::CommandLine);
@@ -298,17 +290,10 @@ fn cli_explicit_default_value_overrides_config_file() -> Result<()> {
     let generated = temp.child("generated.toml");
     generated.write_str("build-dir = \"/custom\"\n")?;
 
-    let (cmd, prov) = current_with_cli_provenance(
-        &generated,
-        &["tsdl", "build", "--build-dir", "tmp"],
-    );
+    let (cmd, prov) =
+        current_with_cli_provenance(&generated, &["tsdl", "build", "--build-dir", "tmp"]);
 
     assert_eq!(cmd.build_dir, PathBuf::from("tmp"));
-    assert_eq!(
-        prov.build_dir,
-        ConfigSource::CommandLine
-    );
+    assert_eq!(prov.build_dir, ConfigSource::CommandLine);
     Ok(())
 }
-
-

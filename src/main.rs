@@ -43,7 +43,7 @@ fn run(app: app::App) -> TsdlResult<()> {
         args::Command::Config { command } => tsdl::config::run(&app.config_path, &command),
         args::Command::Selfupdate{ force, target} => tsdl::selfupdate::run(force, target.as_str()),
     }
- }
+}
 
 pub fn set_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {

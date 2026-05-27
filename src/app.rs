@@ -4,8 +4,7 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 
 use crate::{
     args::{BuildCommand, Command},
-    config, display, logging,
-    TsdlResult,
+    config, display, logging, TsdlResult,
 };
 
 /// Resolved application state, ready to run.
@@ -24,8 +23,7 @@ pub fn setup() -> TsdlResult<App> {
     let (args, matches) = config::parse_with_matches();
     let build_matches = crate::args::build_matches(&matches);
 
-    let (command, provenance) =
-        config::current_with_provenance(&args.config, build_matches)?;
+    let (command, provenance) = config::current_with_provenance(&args.config, build_matches)?;
 
     let (log_path, _logging) = logging::init(
         args.log.clone(),

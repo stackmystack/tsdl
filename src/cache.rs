@@ -15,8 +15,7 @@ use crate::{
     build::BuildSpec,
     consts::TSDL_CACHE_FILE,
     error::TsdlError,
-    git::GitRef,
-    TsdlResult,
+    git, parser, TsdlResult,
 };
 
 /// The build cache stored in  `[build-dir]/[TSDL_CACHE_FILE]`
@@ -33,6 +32,45 @@ pub struct Entry {
     pub hash: Arc<str>,
     /// Complete build definition that affects parser output
     pub spec: Arc<BuildSpec>,
+    /// Parser source identity used by the cache. Moving refs include the
+    /// resolved commit; older cache files do not have this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum Source {
+    Stable {
+        requested: git::Ref,
+    },
+    Moving {
+        requested: git::Ref,
+        commit: git::Sha,
+    },
+}
+
+impl Source {
+    #[must_use]
+    pub const fn is_moving(&self) -> bool {
+        matches!(self, Self::Moving { .. })
+    }
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stable { requested } => write!(f, "requested={}", requested.as_str()),
+            Self::Moving { requested, commit } => {
+                write!(
+                    f,
+                    "requested={} commit={}",
+                    requested.as_str(),
+                    commit.as_str()
+                )
+            }
+        }
+    }
 }
 
 /// A cache lookup result for a requested parser build.
@@ -61,9 +99,16 @@ pub enum CacheMissReason {
         cached: String,
         current: String,
     },
-    GitRefChanged {
-        cached: GitRef,
-        current: GitRef,
+    RefChanged {
+        cached: parser::Ref,
+        current: parser::Ref,
+    },
+    SourceIdentityMissing {
+        current: Source,
+    },
+    SourceIdentityChanged {
+        cached: Source,
+        current: Source,
     },
     TreeSitterChanged {
         cached: TreeSitter,
@@ -173,7 +218,8 @@ impl CacheMissReason {
             Self::CacheIgnored => "ignored",
             Self::HashChanged { .. } => "hash",
             Self::RepoChanged { .. } => "repo",
-            Self::GitRefChanged { .. } => "ref",
+            Self::RefChanged { .. } => "ref",
+            Self::SourceIdentityMissing { .. } | Self::SourceIdentityChanged { .. } => "source",
             Self::TreeSitterChanged { .. } => "tree-sitter",
             Self::BuildScriptChanged => "script",
             Self::PrefixChanged { .. } => "prefix",
@@ -191,7 +237,9 @@ impl CacheMissReason {
             Self::CacheIgnored => "cache ignored",
             Self::HashChanged { .. } => "grammar changed",
             Self::RepoChanged { .. } => "repo changed",
-            Self::GitRefChanged { .. } => "git ref changed",
+            Self::RefChanged { .. } => "git ref changed",
+            Self::SourceIdentityMissing { .. } => "cache identity upgraded",
+            Self::SourceIdentityChanged { .. } => "git ref resolved commit changed",
             Self::TreeSitterChanged { .. } => "tree-sitter changed",
             Self::BuildScriptChanged => "build script changed",
             Self::PrefixChanged { .. } => "prefix changed",
@@ -214,12 +262,18 @@ impl fmt::Display for CacheMissReason {
             Self::RepoChanged { cached, current } => {
                 write!(f, "repo changed cached={cached} current={current}")
             }
-            Self::GitRefChanged { cached, current } => write!(
+            Self::RefChanged { cached, current } => write!(
                 f,
                 "git ref changed cached={} current={}",
-                cached.as_str(),
-                current.as_str()
+                cached.requested().as_str(),
+                current.requested().as_str()
             ),
+            Self::SourceIdentityMissing { current } => {
+                write!(f, "cache identity upgraded current={current}")
+            }
+            Self::SourceIdentityChanged { cached, current } => {
+                write!(f, "source changed cached={cached} current={current}")
+            }
             Self::TreeSitterChanged { cached, current } => write!(
                 f,
                 "tree-sitter changed cached=version:{} repo:{} platform:{} current=version:{} repo:{} platform:{}",
@@ -252,7 +306,7 @@ impl fmt::Display for CacheMissReason {
 
 impl Entry {
     #[must_use]
-    pub fn rebuild_decision(&self, hash: &str, spec: &BuildSpec) -> CacheDecision {
+    pub fn rebuild_decision(&self, hash: &str, spec: &BuildSpec, source: &Source) -> CacheDecision {
         let mut reasons = Vec::new();
         let cached = self.spec.as_ref();
 
@@ -270,11 +324,29 @@ impl Entry {
             });
         }
 
-        if cached.git_ref != spec.git_ref {
-            reasons.push(CacheMissReason::GitRefChanged {
+        let git_ref_changed = cached.git_ref != spec.git_ref;
+        if git_ref_changed {
+            reasons.push(CacheMissReason::RefChanged {
                 cached: cached.git_ref.clone(),
                 current: spec.git_ref.clone(),
             });
+        }
+
+        if !git_ref_changed {
+            match (&self.source, source) {
+                (None, Source::Moving { .. }) => {
+                    reasons.push(CacheMissReason::SourceIdentityMissing {
+                        current: source.clone(),
+                    });
+                }
+                (Some(cached_source), current_source) if cached_source != current_source => {
+                    reasons.push(CacheMissReason::SourceIdentityChanged {
+                        cached: cached_source.clone(),
+                        current: current_source.clone(),
+                    });
+                }
+                _ => {}
+            }
         }
 
         if cached.tree_sitter != spec.tree_sitter {
@@ -360,11 +432,17 @@ impl Db {
     }
 
     /// Explain whether a parser cache entry can satisfy the requested build.
-    pub fn rebuild_decision(&self, name: &str, hash: &str, spec: &BuildSpec) -> CacheDecision {
+    pub fn rebuild_decision(
+        &self,
+        name: &str,
+        hash: &str,
+        spec: &BuildSpec,
+        source: &Source,
+    ) -> CacheDecision {
         // TODO: hash and name are plain str, I'd like strong types here.
         let decision = match self.get(name) {
             None => CacheDecision::miss(CacheMissReason::MissingEntry),
-            Some(entry) => entry.rebuild_decision(hash, spec),
+            Some(entry) => entry.rebuild_decision(hash, spec, source),
         };
 
         debug!("Cache decision for {name}: {decision}");
@@ -373,8 +451,9 @@ impl Db {
 
     /// Check if a parser needs rebuilding by comparing grammar hash and build definition.
     #[must_use]
-    pub fn needs_rebuild(&self, name: &str, hash: &str, spec: &BuildSpec) -> bool {
-        self.rebuild_decision(name, hash, spec).needs_rebuild()
+    pub fn needs_rebuild(&self, name: &str, hash: &str, spec: &BuildSpec, source: &Source) -> bool {
+        self.rebuild_decision(name, hash, spec, source)
+            .needs_rebuild()
     }
 
     /// Save the cache to disk
@@ -429,11 +508,15 @@ pub async fn hash_file(path: &Path) -> TsdlResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{git, parser};
+
+    const SHA1: &str = "636801770eea172d140e64b691815ff11f6b556f";
+    const SHA2: &str = "736801770eea172d140e64b691815ff11f6b556f";
 
     fn test_spec() -> BuildSpec {
         BuildSpec {
             build_script: None,
-            git_ref: GitRef::new("master").unwrap(),
+            git_ref: parser::Ref::parse("v1.0.0").unwrap(),
             repo: "https://github.com/example/parser".parse().unwrap(),
             tree_sitter: TreeSitter::default(),
             prefix: String::new(),
@@ -441,13 +524,33 @@ mod tests {
         }
     }
 
-    fn cache_with_entry(hash: &str, spec: BuildSpec) -> Db {
+    fn moving_spec() -> BuildSpec {
+        BuildSpec {
+            git_ref: parser::Ref::parse("master").unwrap(),
+            ..test_spec()
+        }
+    }
+
+    fn stable_source(spec: &BuildSpec) -> Source {
+        spec.git_ref.stable_source()
+    }
+
+    fn moving_source(spec: &BuildSpec, sha: &str) -> Source {
+        spec.git_ref.moving_source(git::Sha::new(sha).unwrap())
+    }
+
+    fn cache_with_entry(hash: &str, spec: &BuildSpec) -> Db {
+        cache_with_entry_and_source(hash, spec, Some(stable_source(spec)))
+    }
+
+    fn cache_with_entry_and_source(hash: &str, spec: &BuildSpec, source: Option<Source>) -> Db {
         let mut cache = Db::default();
         cache.set(
             "test-parser".to_string(),
             Entry {
                 hash: hash.into(),
-                spec: Arc::new(spec),
+                spec: Arc::new(spec.clone()),
+                source,
             },
         );
         cache
@@ -466,7 +569,7 @@ mod tests {
         let spec = test_spec();
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "abc123", &spec),
+            cache.rebuild_decision("test-parser", "abc123", &spec, &stable_source(&spec)),
             &[CacheMissReason::MissingEntry],
         );
     }
@@ -474,10 +577,10 @@ mod tests {
     #[test]
     fn test_rebuild_decision_hash_mismatch() {
         let spec = test_spec();
-        let cache = cache_with_entry("abc123", spec.clone());
+        let cache = cache_with_entry("abc123", &spec);
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "def456", &spec),
+            cache.rebuild_decision("test-parser", "def456", &spec, &stable_source(&spec)),
             &[CacheMissReason::HashChanged {
                 cached: "abc123".into(),
                 current: "def456".into(),
@@ -489,14 +592,19 @@ mod tests {
     fn test_rebuild_decision_git_ref_mismatch() {
         let cached = test_spec();
         let mut requested = cached.clone();
-        requested.git_ref = GitRef::new("v1.0.0").unwrap();
-        let cache = cache_with_entry("abc123", cached);
+        requested.git_ref = parser::Ref::parse("v2.0.0").unwrap();
+        let cache = cache_with_entry("abc123", &cached);
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "abc123", &requested),
-            &[CacheMissReason::GitRefChanged {
-                cached: GitRef::new("master").unwrap(),
-                current: GitRef::new("v1.0.0").unwrap(),
+            cache.rebuild_decision(
+                "test-parser",
+                "abc123",
+                &requested,
+                &stable_source(&requested),
+            ),
+            &[CacheMissReason::RefChanged {
+                cached: parser::Ref::parse("v1.0.0").unwrap(),
+                current: parser::Ref::parse("v2.0.0").unwrap(),
             }],
         );
     }
@@ -506,10 +614,15 @@ mod tests {
         let cached = test_spec();
         let mut requested = cached.clone();
         requested.target = Target::Wasm;
-        let cache = cache_with_entry("abc123", cached);
+        let cache = cache_with_entry("abc123", &cached);
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "abc123", &requested),
+            cache.rebuild_decision(
+                "test-parser",
+                "abc123",
+                &requested,
+                &stable_source(&requested),
+            ),
             &[CacheMissReason::TargetChanged {
                 cached: Target::Native,
                 current: Target::Wasm,
@@ -520,13 +633,64 @@ mod tests {
     #[test]
     fn test_rebuild_decision_cache_hit_exact() {
         let spec = test_spec();
-        let cache = cache_with_entry("abc123", spec.clone());
+        let cache = cache_with_entry("abc123", &spec);
 
         assert_eq!(
-            cache.rebuild_decision("test-parser", "abc123", &spec),
+            cache.rebuild_decision("test-parser", "abc123", &spec, &stable_source(&spec)),
             CacheDecision::Hit
         );
-        assert!(!cache.needs_rebuild("test-parser", "abc123", &spec));
+        assert!(!cache.needs_rebuild("test-parser", "abc123", &spec, &stable_source(&spec)));
+    }
+
+    #[test]
+    fn test_rebuild_decision_old_stable_entry_without_source_still_hits() {
+        let spec = test_spec();
+        let cache = cache_with_entry_and_source("abc123", &spec, None);
+
+        assert_eq!(
+            cache.rebuild_decision("test-parser", "abc123", &spec, &stable_source(&spec)),
+            CacheDecision::Hit
+        );
+    }
+
+    #[test]
+    fn test_rebuild_decision_old_moving_entry_without_source_misses_once() {
+        let spec = moving_spec();
+        let source = moving_source(&spec, SHA1);
+        let cache = cache_with_entry_and_source("abc123", &spec, None);
+
+        assert_miss(
+            cache.rebuild_decision("test-parser", "abc123", &spec, &source),
+            &[CacheMissReason::SourceIdentityMissing { current: source }],
+        );
+    }
+
+    #[test]
+    fn test_rebuild_decision_moving_source_commit_changed() {
+        let spec = moving_spec();
+        let cached_source = moving_source(&spec, SHA1);
+        let current_source = moving_source(&spec, SHA2);
+        let cache = cache_with_entry_and_source("abc123", &spec, Some(cached_source.clone()));
+
+        assert_miss(
+            cache.rebuild_decision("test-parser", "abc123", &spec, &current_source),
+            &[CacheMissReason::SourceIdentityChanged {
+                cached: cached_source,
+                current: current_source,
+            }],
+        );
+    }
+
+    #[test]
+    fn test_rebuild_decision_moving_source_commit_unchanged_hits() {
+        let spec = moving_spec();
+        let source = moving_source(&spec, SHA1);
+        let cache = cache_with_entry_and_source("abc123", &spec, Some(source.clone()));
+
+        assert_eq!(
+            cache.rebuild_decision("test-parser", "abc123", &spec, &source),
+            CacheDecision::Hit
+        );
     }
 
     #[test]
@@ -536,10 +700,15 @@ mod tests {
         requested.build_script = Some("make".to_string());
         requested.prefix = "custom-".to_string();
         requested.target = Target::All;
-        let cache = cache_with_entry("abc123", cached);
+        let cache = cache_with_entry("abc123", &cached);
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "def456", &requested),
+            cache.rebuild_decision(
+                "test-parser",
+                "def456",
+                &requested,
+                &stable_source(&requested),
+            ),
             &[
                 CacheMissReason::HashChanged {
                     cached: "abc123".into(),

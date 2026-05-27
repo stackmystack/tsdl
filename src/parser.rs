@@ -1,5 +1,6 @@
 use std::{
     env::consts::DLL_EXTENSION,
+    fmt,
     fs::Metadata,
     io,
     os::unix::fs::MetadataExt,
@@ -12,12 +13,15 @@ use std::{
 use tokio::{fs, process::Command};
 use tracing::{debug, warn};
 
+use crate::args::TreeSitter;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::{
     actors::ProgressAddr,
     build::{BuildContext, BuildSpec, OutputConfig},
     cache::{self, CacheDecision, Entry, Update},
     error::{self, TsdlError},
-    git::clone_fast,
+    git::{self, clone_fast, Sha},
     sh::{Exec, Script},
     shutdown,
     walk::collect_grammar_paths,
@@ -25,6 +29,108 @@ use crate::{
 };
 
 pub const WASM_EXTENSION: &str = "wasm";
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum Ref {
+    Stable(git::Ref),
+    Moving(git::Ref),
+}
+
+impl Ref {
+    /// The default source ref used for unpinned parser builds.
+    #[must_use]
+    pub fn head() -> Self {
+        Self::Moving(git::Ref::head())
+    }
+
+    /// Create a parser source ref from user input, preserving parser-version
+    /// normalization while classifying refs for cache semantics.
+    pub fn parse(value: &str) -> Result<Self, git::RefError> {
+        let git_ref = git::Ref::from_version_or_ref(value)?;
+        if is_stable_source_ref(value, &git_ref) {
+            Ok(Self::Stable(git_ref))
+        } else {
+            Ok(Self::Moving(git_ref))
+        }
+    }
+
+    #[must_use]
+    pub const fn is_moving(&self) -> bool {
+        matches!(self, Self::Moving(_))
+    }
+
+    #[must_use]
+    pub const fn is_stable(&self) -> bool {
+        matches!(self, Self::Stable(_))
+    }
+
+    #[must_use]
+    pub fn requested(&self) -> &git::Ref {
+        match self {
+            Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
+        }
+    }
+
+    #[must_use]
+    pub fn stable_source(&self) -> cache::Source {
+        cache::Source::Stable {
+            requested: self.requested().clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn moving_source(&self, commit: Sha) -> cache::Source {
+        cache::Source::Moving {
+            requested: self.requested().clone(),
+            commit,
+        }
+    }
+}
+
+impl Serialize for Ref {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.requested().as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Ref {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(de::Error::custom)
+    }
+}
+
+impl fmt::Display for Ref {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.requested())
+    }
+}
+
+fn is_dotted_numeric_version(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split('.')
+            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+}
+
+fn is_v_dotted_numeric_version(value: &str) -> bool {
+    value
+        .strip_prefix('v')
+        .is_some_and(is_dotted_numeric_version)
+}
+
+fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
+    git_ref.is_exact_sha()
+        || is_dotted_numeric_version(input)
+        || is_v_dotted_numeric_version(input)
+        || git_ref.as_str().starts_with("refs/tags/")
+}
 
 /// A grammar ready to be built, combining definition and cache state
 #[derive(Clone, Debug)]
@@ -37,6 +143,7 @@ pub struct GrammarBuild {
     pub name: Arc<str>,
     pub output: OutputConfig,
     pub progress: ProgressAddr, // Use language's handle
+    pub source: cache::Source,
     pub spec: Arc<BuildSpec>,
     pub ts_cli: Arc<PathBuf>,
 }
@@ -100,6 +207,7 @@ impl GrammarBuild {
             entry: Entry {
                 hash: self.hash.clone(),
                 spec: self.spec.clone(),
+                source: Some(self.source.clone()),
             },
         };
 
@@ -544,10 +652,18 @@ impl LanguageBuild {
         Ok(grammars)
     }
 
-    pub async fn clone(&self) -> TsdlResult<()> {
+    #[must_use]
+    pub fn with_tree_sitter(mut self, tree_sitter: TreeSitter) -> Self {
+        let mut spec = self.spec.as_ref().clone();
+        spec.tree_sitter = tree_sitter;
+        self.spec = Arc::new(spec);
+        self
+    }
+
+    pub async fn checkout(&self) -> TsdlResult<Sha> {
         clone_fast(
             self.spec.repo.as_str(),
-            &self.spec.git_ref,
+            self.spec.git_ref.requested(),
             &self.output.build_dir,
         )
         .await
@@ -702,9 +818,42 @@ mod tests {
         actors::{DisplayActor, DisplayAddr},
         args::{Target, TreeSitter},
         display::Mode,
-        git::GitRef,
+        git,
     };
     use tempfile::TempDir;
+
+    const FULL_SHA: &str = "636801770eea172d140e64b691815ff11f6b556f";
+
+    #[test]
+    fn ref_classifies_stable_refs() {
+        assert!(Ref::parse("0.21.0").unwrap().is_stable());
+        assert!(Ref::parse("v0.21.0").unwrap().is_stable());
+        assert!(Ref::parse("refs/tags/release").unwrap().is_stable());
+        assert!(Ref::parse(FULL_SHA).unwrap().is_stable());
+    }
+
+    #[test]
+    fn ref_classifies_moving_refs() {
+        assert!(Ref::head().is_moving());
+        assert!(Ref::parse("master").unwrap().is_moving());
+        assert!(Ref::parse("refs/heads/main").unwrap().is_moving());
+        assert!(Ref::parse("vnext").unwrap().is_moving());
+    }
+
+    #[test]
+    fn ref_serializes_as_requested_ref() {
+        #[derive(serde::Serialize)]
+        struct Wrapper {
+            git_ref: Ref,
+        }
+
+        let source = Ref::parse("0.21.0").unwrap();
+
+        assert_eq!(
+            toml::to_string(&Wrapper { git_ref: source }).unwrap(),
+            "git_ref = \"v0.21.0\"\n"
+        );
+    }
 
     /// Extract directory name from a path
     fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
@@ -752,7 +901,10 @@ mod tests {
             Arc::new(grammar_dir.clone()),
             Arc::new(out_dir.clone()),
         );
-        let progress = display.add_grammar(GitRef::head(), "rust", "rust", 1).await;
+        let progress = display
+            .add_grammar(git::Ref::head(), "rust", "rust", 1)
+            .await;
+        let source_ref = Ref::parse("v1.0.0").unwrap();
         let build = GrammarBuild {
             context: BuildContext { overwrite_output },
             cache_decision: CacheDecision::miss(cache::CacheMissReason::MissingEntry),
@@ -765,9 +917,10 @@ mod tests {
                 out_dir: out_dir.into(),
             },
             progress,
+            source: source_ref.stable_source(),
             spec: Arc::new(BuildSpec {
                 build_script: None,
-                git_ref: GitRef::head(),
+                git_ref: source_ref,
                 prefix: String::new(),
                 repo: "https://example.com/tree-sitter-rust".parse().unwrap(),
                 target: Target::Native,
