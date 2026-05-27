@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::{
     args::TreeSitter,
-    cache::Source,
+    cache::{CacheKey, Source},
     error::TsdlError,
     parser::{GrammarBuild, LanguageBuild},
     shutdown, tree_sitter, TsdlResult,
@@ -90,7 +90,7 @@ pub async fn run(
         display
             .reference(
                 language.spec.git_ref.requested().clone(),
-                language.name.clone(),
+                language.name.as_arc(),
             )
             .await;
     }
@@ -218,7 +218,7 @@ async fn discover_grammars(
     let progress = display
         .add_language(
             language.spec.git_ref.requested().clone(),
-            language.name.clone(),
+            language.name.as_arc(),
             2,
         )
         .await;
@@ -245,13 +245,12 @@ async fn discover_grammars(
         shutdown::test_delay().await;
         shutdown::check()?;
 
-        let key = format!("{}/{}", language.name, name);
-        let name_arc: std::sync::Arc<str> = name.into();
+        let key = CacheKey::new(&language.name, &name);
         let artifacts = GrammarBuild::required_artifacts_for(
             &language.output.build_dir,
             &ts_cli,
             &language.spec,
-            &name_arc,
+            &name,
         )?;
         let cache_decision = cache
             .needs_rebuild(
@@ -266,8 +265,8 @@ async fn discover_grammars(
         let progress = display
             .add_grammar(
                 language.spec.git_ref.requested().clone(),
-                language.name.clone(),
-                name_arc.clone(),
+                language.name.as_arc(),
+                name.as_arc(),
                 4,
             )
             .await;
@@ -276,9 +275,9 @@ async fn discover_grammars(
             context: language.context.clone(),
             cache_decision,
             dir: dir.into(),
-            hash: hash.into(),
+            hash,
             language: language.name.clone(),
-            name: name_arc,
+            name,
             output: language.output.clone(),
             progress,
             source: source.clone(),

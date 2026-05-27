@@ -19,7 +19,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use crate::{
     actors::ProgressAddr,
     build::{BuildContext, BuildSpec, OutputConfig},
-    cache::{self, CacheDecision, Entry, Update},
+    cache::{self, CacheDecision, CacheKey, Entry, GrammarHash, Update},
     error::{self, TsdlError},
     git,
     sh::{Exec, Script},
@@ -29,6 +29,107 @@ use crate::{
 };
 
 pub const WASM_EXTENSION: &str = "wasm";
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LanguageName(Arc<str>);
+
+impl LanguageName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn as_arc(&self) -> Arc<str> {
+        self.0.clone()
+    }
+}
+
+impl fmt::Display for LanguageName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for LanguageName {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&str> for LanguageName {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<Arc<str>> for LanguageName {
+    fn from(value: Arc<str>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GrammarName(Arc<str>);
+
+impl GrammarName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn as_arc(&self) -> Arc<str> {
+        self.0.clone()
+    }
+}
+
+impl fmt::Display for GrammarName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for GrammarName {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&str> for GrammarName {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<Arc<str>> for GrammarName {
+    fn from(value: Arc<str>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum ArtifactKind {
+    Native,
+    Wasm,
+}
+
+impl ArtifactKind {
+    #[must_use]
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Native => DLL_EXTENSION,
+            Self::Wasm => WASM_EXTENSION,
+        }
+    }
+
+    #[must_use]
+    const fn is_wasm(self) -> bool {
+        matches!(self, Self::Wasm)
+    }
+}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum Ref {
@@ -134,9 +235,9 @@ pub struct GrammarBuild {
     pub context: BuildContext,
     pub cache_decision: CacheDecision,
     pub dir: Arc<PathBuf>,
-    pub hash: Arc<str>,
-    pub language: Arc<str>, // Required for error reporting and cache keys; set from parent LanguageBuild
-    pub name: Arc<str>,
+    pub hash: GrammarHash,
+    pub language: LanguageName, // Required for error reporting and cache keys; set from parent LanguageBuild
+    pub name: GrammarName,
     pub output: OutputConfig,
     pub progress: ProgressAddr, // Use language's handle
     pub source: cache::Source,
@@ -156,7 +257,7 @@ impl GrammarBuild {
         );
 
         self.progress.step("checking cache");
-        let key = format!("{}/{}", self.language, self.name);
+        let key = CacheKey::new(&self.language, &self.name);
 
         // Cache decisions are computed centrally by the cache actor, including
         // verification that all required managed artifacts exist.
@@ -199,7 +300,7 @@ impl GrammarBuild {
 
         // Return cache update for this grammar
         let update = Update {
-            name: key.into(),
+            name: key,
             entry: Entry {
                 hash: self.hash.clone(),
                 spec: self.spec.clone(),
@@ -212,11 +313,11 @@ impl GrammarBuild {
         Ok(Some(update))
     }
 
-    fn builtin_build_command(&self, ext: &str, output_path: &Path) -> Command {
+    fn builtin_build_command(&self, kind: ArtifactKind, output_path: &Path) -> Command {
         let mut cmd = Command::new(self.ts_cli.as_os_str());
         cmd.arg("build");
 
-        if ext == WASM_EXTENSION {
+        if kind.is_wasm() {
             cmd.arg("--wasm");
         }
 
@@ -247,26 +348,27 @@ impl GrammarBuild {
         Ok(())
     }
 
-    async fn build_target(&self, ext: &str) -> TsdlResult<PathBuf> {
+    async fn build_target(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
         shutdown::test_delay().await;
         shutdown::check()?;
+        let ext = kind.extension();
         debug!(
             "[grammar:build_target] lang={} grammar={} ext={ext}",
             self.language, self.name
         );
 
         if let Some(script) = &self.spec.build_script {
-            return self.build_custom_target(ext, script).await;
+            return self.build_custom_target(kind, script).await;
         }
 
-        self.build_builtin_target(ext).await
+        self.build_builtin_target(kind).await
     }
 
-    async fn build_builtin_target(&self, ext: &str) -> TsdlResult<PathBuf> {
-        let artifact = self.artifact_path(ext)?;
+    async fn build_builtin_target(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
+        let artifact = self.artifact_path(kind)?;
         ensure_parent_dir(&artifact).await?;
 
-        let mut cmd = self.builtin_build_command(ext, &artifact);
+        let mut cmd = self.builtin_build_command(kind, &artifact);
         cmd.current_dir(self.dir.as_ref())
             .exec()
             .await
@@ -276,15 +378,15 @@ impl GrammarBuild {
         Ok(artifact)
     }
 
-    async fn build_custom_target(&self, ext: &str, script: &str) -> TsdlResult<PathBuf> {
+    async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> TsdlResult<PathBuf> {
         let mut cmd = Command::from_str(script);
         cmd.current_dir(self.dir.as_ref())
             .exec()
             .await
             .map_err(|err| self.build_step_error(err))?;
 
-        let discovered = self.brute_force_discover(ext).await?;
-        let artifact = self.artifact_path(ext)?;
+        let discovered = self.brute_force_discover(kind).await?;
+        let artifact = self.artifact_path(kind)?;
         self.stage_artifact(&discovered, &artifact).await?;
         verify_artifact(&artifact).await?;
         Ok(artifact)
@@ -292,7 +394,7 @@ impl GrammarBuild {
 
     fn build_step_error(&self, err: TsdlError) -> TsdlError {
         error::TsdlError::Step(error::Step::new(
-            self.language.clone(),
+            self.language.as_arc(),
             error::ParserOp::Build {
                 dir: self.dir.to_path_buf(),
             },
@@ -302,11 +404,11 @@ impl GrammarBuild {
 
     async fn build_targets(&self) -> TsdlResult<()> {
         if self.spec.target.native() {
-            self.build_target(DLL_EXTENSION).await?;
+            self.build_target(ArtifactKind::Native).await?;
         }
 
         if self.spec.target.wasm() {
-            self.build_target(WASM_EXTENSION).await?;
+            self.build_target(ArtifactKind::Wasm).await?;
         }
 
         Ok(())
@@ -325,8 +427,9 @@ impl GrammarBuild {
         })
     }
 
-    async fn brute_force_discover(&self, ext: &str) -> TsdlResult<PathBuf> {
-        let expected_name = self.parser_name_and_ext(ext);
+    async fn brute_force_discover(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
+        let ext = kind.extension();
+        let expected_name = self.parser_name_and_ext(kind);
         let mut files = fs::read_dir(self.dir.as_ref()).await.map_err(|e| {
             TsdlError::context(
                 format!("Failed to read directory {}", self.dir.display()),
@@ -390,7 +493,7 @@ impl GrammarBuild {
             .map(|_| ())
             .map_err(|err| {
                 error::TsdlError::Step(error::Step::new(
-                    self.language.clone(),
+                    self.language.as_arc(),
                     error::ParserOp::Generate {
                         dir: self.dir.to_path_buf(),
                     },
@@ -402,19 +505,19 @@ impl GrammarBuild {
     async fn install(&self) -> TsdlResult<()> {
         // Find and install parser binary for each extension
         if self.spec.target.native() {
-            self.install_binary(DLL_EXTENSION).await?;
+            self.install_binary(ArtifactKind::Native).await?;
         }
 
         if self.spec.target.wasm() {
-            self.install_binary(WASM_EXTENSION).await?;
+            self.install_binary(ArtifactKind::Wasm).await?;
         }
 
         Ok(())
     }
 
-    async fn install_binary(&self, ext: &str) -> TsdlResult<()> {
-        let src = self.artifact_path(ext)?;
-        let dst = self.output.out_dir.join(self.parser_name_and_ext(ext));
+    async fn install_binary(&self, kind: ArtifactKind) -> TsdlResult<()> {
+        let src = self.artifact_path(kind)?;
+        let dst = self.output.out_dir.join(self.parser_name_and_ext(kind));
         let src_metadata = fs::metadata(&src)
             .await
             .map_err(|e| TsdlError::context(format!("Reading {}", src.display()), e))?;
@@ -528,7 +631,7 @@ impl GrammarBuild {
         build_dir: &Path,
         ts_cli: &Path,
         spec: &BuildSpec,
-        grammar_name: &str,
+        grammar_name: &GrammarName,
     ) -> TsdlResult<Vec<PathBuf>> {
         let mut artifacts = Vec::new();
 
@@ -538,7 +641,7 @@ impl GrammarBuild {
                 ts_cli,
                 spec,
                 grammar_name,
-                DLL_EXTENSION,
+                ArtifactKind::Native,
             )?);
         }
 
@@ -548,20 +651,20 @@ impl GrammarBuild {
                 ts_cli,
                 spec,
                 grammar_name,
-                WASM_EXTENSION,
+                ArtifactKind::Wasm,
             )?);
         }
 
         Ok(artifacts)
     }
 
-    fn artifact_path(&self, ext: &str) -> TsdlResult<PathBuf> {
+    fn artifact_path(&self, kind: ArtifactKind) -> TsdlResult<PathBuf> {
         artifact_path_for(
             &self.output.build_dir,
             &self.ts_cli,
             &self.spec,
             &self.name,
-            ext,
+            kind,
         )
     }
 
@@ -581,7 +684,7 @@ impl GrammarBuild {
     }
     fn missing_parser_error(&self, ext: &str) -> TsdlError {
         error::TsdlError::Step(error::Step::new(
-            self.language.clone(),
+            self.language.as_arc(),
             error::ParserOp::Copy {
                 src: self.output.out_dir.to_path_buf(),
                 dst: self.output.build_dir.to_path_buf(),
@@ -592,7 +695,7 @@ impl GrammarBuild {
 
     fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> TsdlError {
         error::TsdlError::Step(error::Step::new(
-            self.language.clone(),
+            self.language.as_arc(),
             error::ParserOp::Copy {
                 src: self.output.out_dir.to_path_buf(),
                 dst: self.output.build_dir.to_path_buf(),
@@ -601,8 +704,8 @@ impl GrammarBuild {
         ))
     }
 
-    fn parser_name_and_ext(&self, ext: &str) -> String {
-        format!("{}{}.{}", self.spec.prefix, self.name, ext)
+    fn parser_name_and_ext(&self, kind: ArtifactKind) -> String {
+        parser_name_and_ext(&self.spec.prefix, &self.name, kind)
     }
 }
 
@@ -610,7 +713,7 @@ impl GrammarBuild {
 pub struct LanguageBuild {
     pub context: BuildContext,
     pub spec: Arc<BuildSpec>,
-    pub name: Arc<str>,
+    pub name: LanguageName,
     pub output: OutputConfig,
 }
 
@@ -619,7 +722,7 @@ impl LanguageBuild {
     pub fn new(
         context: BuildContext,
         spec: Arc<BuildSpec>,
-        name: Arc<str>,
+        name: LanguageName,
         output: OutputConfig,
     ) -> Self {
         Self {
@@ -630,7 +733,7 @@ impl LanguageBuild {
         }
     }
 
-    pub async fn discover_grammars(&self) -> TsdlResult<Vec<(String, PathBuf, String)>> {
+    pub async fn discover_grammars(&self) -> TsdlResult<Vec<(GrammarName, PathBuf, GrammarHash)>> {
         let file_results = collect_grammar_paths(self.output.build_dir.clone()).await?;
         let mut grammars = Vec::new();
 
@@ -665,7 +768,7 @@ impl LanguageBuild {
         .await
         .map_err(|err| {
             error::TsdlError::Step(error::Step::new(
-                self.name.clone(),
+                self.name.as_arc(),
                 error::ParserOp::Clone {
                     dir: self.output.build_dir.to_path_buf(),
                 },
@@ -679,20 +782,20 @@ impl LanguageBuild {
     }
 }
 
-fn parser_name_and_ext(prefix: &str, grammar_name: &str, ext: &str) -> String {
-    format!("{prefix}{grammar_name}.{ext}")
+fn parser_name_and_ext(prefix: &str, grammar_name: &GrammarName, kind: ArtifactKind) -> String {
+    format!("{prefix}{grammar_name}.{}", kind.extension())
 }
 
 fn artifact_path_for(
     build_dir: &Path,
     ts_cli: &Path,
     spec: &BuildSpec,
-    grammar_name: &str,
-    ext: &str,
+    grammar_name: &GrammarName,
+    kind: ArtifactKind,
 ) -> TsdlResult<PathBuf> {
     Ok(build_dir
         .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
-        .join(parser_name_and_ext(&spec.prefix, grammar_name, ext)))
+        .join(parser_name_and_ext(&spec.prefix, grammar_name, kind)))
 }
 
 fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> TsdlResult<String> {
@@ -803,10 +906,10 @@ fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
 }
 
 /// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
-fn extract_grammar_name(dir: &Path) -> TsdlResult<String> {
+fn extract_grammar_name(dir: &Path) -> TsdlResult<GrammarName> {
     let dir_name = extract_dir_name(dir)?;
     let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
-    Ok(name.to_string())
+    Ok(GrammarName::from(name))
 }
 
 #[cfg(test)]
@@ -855,42 +958,6 @@ mod tests {
         );
     }
 
-    /// Extract directory name from a path
-    fn extract_dir_name(dir: &Path) -> TsdlResult<String> {
-        dir.file_name()
-            .ok_or_else(|| TsdlError::message("Could not extract directory name"))
-            .map(|name| name.to_string_lossy().to_string())
-    }
-
-    /// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
-    fn extract_grammar_name(dir: &Path) -> TsdlResult<String> {
-        let dir_name = extract_dir_name(dir)?;
-        let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
-        Ok(name.to_string())
-    }
-
-    /// Generate cache key for a grammar: `language_name/grammar_name`
-    fn make_cache_key(language_name: &str, grammar_path: &Path) -> TsdlResult<String> {
-        let grammar_dir = grammar_path.parent().ok_or_else(|| {
-            TsdlError::Message(format!(
-                "Could not get parent directory for {}",
-                grammar_path.display()
-            ))
-        })?;
-
-        let grammar_name = extract_grammar_name(grammar_dir)?;
-        Ok(format!("{language_name}/{grammar_name}"))
-    }
-
-    /// Parse parser name and extension
-    fn parser_name_and_ext(grammar_name: &str, prefix: &str, ext: &str) -> String {
-        if prefix.is_empty() {
-            format!("{grammar_name}.{ext}")
-        } else {
-            format!("{prefix}{grammar_name}.{ext}")
-        }
-    }
-
     async fn test_grammar_build(
         grammar_dir: PathBuf,
         out_dir: PathBuf,
@@ -909,7 +976,7 @@ mod tests {
             context: BuildContext { overwrite_output },
             cache_decision: CacheDecision::miss(cache::CacheMissReason::MissingEntry),
             dir: grammar_dir.clone().into(),
-            hash: "test".into(),
+            hash: cache::GrammarHash::from("test"),
             language: "rust".into(),
             name: "rust".into(),
             output: OutputConfig {
@@ -932,8 +999,8 @@ mod tests {
         (build, display)
     }
 
-    async fn write_artifact(build: &GrammarBuild, ext: &str, contents: &[u8]) -> PathBuf {
-        let path = build.artifact_path(ext).unwrap();
+    async fn write_artifact(build: &GrammarBuild, kind: ArtifactKind, contents: &[u8]) -> PathBuf {
+        let path = build.artifact_path(kind).unwrap();
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
@@ -948,25 +1015,26 @@ mod tests {
     }
 
     #[test]
-    fn test_make_cache_key() {
-        let path = PathBuf::from("/tmp/build/tree-sitter-typescript/grammar.js");
-        let key = make_cache_key("typescript", &path).unwrap();
-        assert_eq!(key, "typescript/typescript");
+    fn test_cache_key_format() {
+        let key = CacheKey::new(
+            &LanguageName::from("typescript"),
+            &GrammarName::from("typescript"),
+        );
+        assert_eq!(key.as_str(), "typescript/typescript");
 
-        let path = PathBuf::from("/tmp/build/tree-sitter-tsx/grammar.js");
-        let key = make_cache_key("typescript", &path).unwrap();
-        assert_eq!(key, "typescript/tsx");
+        let key = CacheKey::new(&LanguageName::from("typescript"), &GrammarName::from("tsx"));
+        assert_eq!(key.as_str(), "typescript/tsx");
     }
 
     #[test]
     fn test_extract_grammar_name() {
         let dir = Path::new("/tmp/build/tree-sitter-typescript");
         let name = extract_grammar_name(dir).unwrap();
-        assert_eq!(name, "typescript");
+        assert_eq!(name.as_str(), "typescript");
 
         let dir = Path::new("/tmp/build/custom-parser");
         let name = extract_grammar_name(dir).unwrap();
-        assert_eq!(name, "custom-parser");
+        assert_eq!(name.as_str(), "custom-parser");
     }
 
     #[test]
@@ -997,17 +1065,14 @@ mod tests {
 
     #[test]
     fn test_parser_name_and_ext() {
-        let name = parser_name_and_ext("typescript", "", "so");
-        assert_eq!(name, "typescript.so");
-
-        let name = parser_name_and_ext("typescript", "", "wasm");
-        assert_eq!(name, "typescript.wasm");
+        let name = parser_name_and_ext("", &GrammarName::from("typescript"), ArtifactKind::Native);
+        assert_eq!(name, format!("typescript.{DLL_EXTENSION}"));
     }
 
     #[test]
     fn test_parser_name_with_prefix() {
-        let name = parser_name_and_ext("typescript", "lib", "so");
-        assert_eq!(name, "libtypescript.so");
+        let name = parser_name_and_ext("lib", &GrammarName::from("typescript"), ArtifactKind::Native);
+        assert_eq!(name, format!("libtypescript.{DLL_EXTENSION}"));
     }
 
     #[tokio::test]
@@ -1018,11 +1083,11 @@ mod tests {
         tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
         tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join("rust.so");
+        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
         let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let src = write_artifact(&build, "so", b"parser").await;
-        build.install_binary("so").await.unwrap();
+        let src = write_artifact(&build, ArtifactKind::Native, b"parser").await;
+        build.install_binary(ArtifactKind::Native).await.unwrap();
         display.shutdown(false).await;
 
         assert!(same_identity(&src, &dst));
@@ -1036,14 +1101,14 @@ mod tests {
         tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
         tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join("rust.so");
+        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
         let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let src = write_artifact(&build, "so", b"parser").await;
+        let src = write_artifact(&build, ArtifactKind::Native, b"parser").await;
         tokio::fs::write(&dst, b"parser").await.unwrap();
         assert!(!same_identity(&src, &dst));
 
-        build.install_binary("so").await.unwrap();
+        build.install_binary(ArtifactKind::Native).await.unwrap();
         display.shutdown(false).await;
 
         assert!(same_identity(&src, &dst));
@@ -1057,12 +1122,15 @@ mod tests {
         tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
         tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join("rust.so");
+        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
         let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let src = write_artifact(&build, "so", b"new").await;
+        let src = write_artifact(&build, ArtifactKind::Native, b"new").await;
         tokio::fs::write(&dst, b"old").await.unwrap();
-        let err = build.install_binary("so").await.unwrap_err();
+        let err = build
+            .install_binary(ArtifactKind::Native)
+            .await
+            .unwrap_err();
         display.shutdown(false).await;
 
         assert!(err.to_string().contains("differs from the built parser"));
@@ -1078,12 +1146,12 @@ mod tests {
         tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
         tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join("rust.so");
+        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
         let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
-        let src = write_artifact(&build, "so", b"new").await;
+        let src = write_artifact(&build, ArtifactKind::Native, b"new").await;
         tokio::fs::write(&dst, b"old").await.unwrap();
-        build.install_binary("so").await.unwrap();
+        build.install_binary(ArtifactKind::Native).await.unwrap();
         display.shutdown(false).await;
 
         assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"new");
@@ -1098,14 +1166,17 @@ mod tests {
         tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
         tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join("rust.so");
-        let target = out_dir.join("target.so");
+        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
+        let target = out_dir.join(format!("target.{DLL_EXTENSION}"));
 
         let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let _src = write_artifact(&build, "so", b"new").await;
+        let _src = write_artifact(&build, ArtifactKind::Native, b"new").await;
         tokio::fs::write(&target, b"old").await.unwrap();
         symlink(&target, &dst).unwrap();
-        let err = build.install_binary("so").await.unwrap_err();
+        let err = build
+            .install_binary(ArtifactKind::Native)
+            .await
+            .unwrap_err();
         display.shutdown(false).await;
 
         assert!(err.to_string().contains("symlink"));
@@ -1121,35 +1192,18 @@ mod tests {
         tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
         tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join("rust.so");
+        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
         let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
-        let _src = write_artifact(&build, "so", b"new").await;
+        let _src = write_artifact(&build, ArtifactKind::Native, b"new").await;
         tokio::fs::create_dir(&dst).await.unwrap();
-        let err = build.install_binary("so").await.unwrap_err();
+        let err = build
+            .install_binary(ArtifactKind::Native)
+            .await
+            .unwrap_err();
         display.shutdown(false).await;
 
         assert!(err.to_string().contains("directory"));
         assert!(dst.is_dir());
-    }
-
-    #[tokio::test]
-    async fn test_per_grammar_cache_key_format() {
-        // Test that cache keys follow the "language/grammar" format
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("tree-sitter-tsx");
-        tokio::fs::create_dir(&grammar_dir).await.unwrap();
-        let grammar_file = grammar_dir.join("grammar.js");
-        tokio::fs::write(&grammar_file, "module.exports = {};")
-            .await
-            .unwrap();
-
-        let cache_key = make_cache_key("typescript", &grammar_file).unwrap();
-
-        assert_eq!(cache_key, "typescript/tsx");
-        assert!(
-            cache_key.contains('/'),
-            "Cache key should use language/grammar format"
-        );
     }
 }

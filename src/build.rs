@@ -260,7 +260,7 @@ fn unique_languages(app: &App) -> Vec<Result<LanguageBuild, error::Language>> {
                     prefix: app.command.prefix.clone(),
                     target: app.command.target,
                 }),
-                language.clone().into(),
+                parser::LanguageName::from(language.clone()),
                 OutputConfig {
                     build_dir: app
                         .command

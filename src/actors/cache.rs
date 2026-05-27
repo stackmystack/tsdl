@@ -9,16 +9,24 @@ use tracing::info;
 use crate::{
     actors::{Addr, Response},
     build::BuildSpec,
-    cache::{CacheDecision, CacheMissReason, Db, Entry, Source, Update},
+    cache::{CacheDecision, CacheKey, CacheMissReason, Db, Entry, GrammarHash, Source, Update},
+    parser::LanguageName,
     TsdlResult,
 };
 
 #[derive(Debug)]
 #[allow(dead_code)]
 enum ResponseKind<'a> {
-    CacheGet { name: &'a str },
-    HasCompatibleEntries { language: &'a str },
-    NeedsRebuild { name: &'a str, hash: &'a str },
+    CacheGet {
+        name: &'a CacheKey,
+    },
+    HasCompatibleEntries {
+        language: &'a LanguageName,
+    },
+    NeedsRebuild {
+        name: &'a CacheKey,
+        hash: &'a GrammarHash,
+    },
     SaveComplete,
 }
 
@@ -26,26 +34,26 @@ enum ResponseKind<'a> {
 pub enum CacheMessage {
     /// Query if a parser needs rebuild
     NeedsRebuild {
-        hash: Arc<str>,
-        name: Arc<str>,
+        hash: GrammarHash,
+        name: CacheKey,
         source: Source,
         spec: Arc<BuildSpec>,
         artifacts: Vec<PathBuf>,
         tx: oneshot::Sender<CacheDecision>,
     },
     /// Update a cache entry
-    Update { entry: Entry, name: Arc<str> },
+    Update { entry: Entry, name: CacheKey },
     /// Save cache to disk
     Save { tx: oneshot::Sender<TsdlResult<()>> },
     /// Check if cache contains entries compatible with a language spec.
     HasCompatibleEntries {
-        language: Arc<str>,
+        language: LanguageName,
         spec: Arc<BuildSpec>,
         tx: oneshot::Sender<bool>,
     },
     /// Get a cache entry
     Get {
-        name: Arc<str>,
+        name: CacheKey,
         tx: oneshot::Sender<Option<Entry>>,
     },
 }
@@ -75,38 +83,30 @@ impl CacheAddr {
     }
 
     /// Accepts any string type (String, &str, Arc<str>) with minimal cloning
-    pub async fn get<S: Into<Arc<str>>>(&self, name: S) -> Option<Entry> {
-        self.request(|tx| CacheMessage::Get {
-            name: name.into(),
-            tx,
-        })
-        .await
+    pub async fn get(&self, name: CacheKey) -> Option<Entry> {
+        self.request(|tx| CacheMessage::Get { name, tx }).await
     }
 
-    pub async fn has_compatible_entries<S: Into<Arc<str>>>(
+    pub async fn has_compatible_entries(
         &self,
-        language: S,
+        language: LanguageName,
         spec: Arc<BuildSpec>,
     ) -> bool {
-        self.request(|tx| CacheMessage::HasCompatibleEntries {
-            language: language.into(),
-            spec,
-            tx,
-        })
-        .await
+        self.request(|tx| CacheMessage::HasCompatibleEntries { language, spec, tx })
+            .await
     }
 
-    pub async fn needs_rebuild<S: Into<Arc<str>>>(
+    pub async fn needs_rebuild(
         &self,
-        name: S,
-        hash: S,
+        name: CacheKey,
+        hash: GrammarHash,
         spec: Arc<BuildSpec>,
         source: Source,
         artifacts: Vec<PathBuf>,
     ) -> CacheDecision {
         self.request(|tx| CacheMessage::NeedsRebuild {
-            name: name.into(),
-            hash: hash.into(),
+            name,
+            hash,
             source,
             spec,
             artifacts,
@@ -192,7 +192,7 @@ impl CacheActor {
                 }
 
                 CacheMessage::Update { entry, name } => {
-                    self.db.set(name.to_string(), entry);
+                    self.db.set(name, entry);
                 }
 
                 CacheMessage::Save { tx } => {
@@ -216,7 +216,10 @@ impl CacheActor {
                                 .db
                                 .parsers
                                 .iter()
-                                .find(|(key, _)| key.starts_with(&format!("{language}/")))
+                                .find(|(key, _)| {
+                                    key.as_str()
+                                        .starts_with(&CacheKey::language_prefix(&language))
+                                })
                                 .is_some_and(|(_, entry)| entry.spec == spec),
                     );
                 }
