@@ -1,4 +1,5 @@
 use std::io;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,8 +14,8 @@ use tracing::error;
 use crate::actors::Addr;
 use crate::display::{
     compute_icon_cell, compute_msg_cell, compute_name_cell, compute_ref_cell, compute_step_cell,
-    compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemState, Mode, RepoEntry,
-    RowSpec, SuccessOutcome,
+    compute_time_cell, Column, DisplayState, GrammarEntry, GridCache, ItemId, ItemState, Mode,
+    RepoEntry, RowSpec, SuccessOutcome,
 };
 use crate::git;
 
@@ -46,7 +47,7 @@ pub enum DisplayMessage {
 
     /// Update a specific bar.
     Update {
-        id: u64,
+        id: ItemId,
         kind: UpdateKind,
         msg: Arc<str>,
     },
@@ -148,7 +149,7 @@ impl DisplayAddr {
 /// Handle for updating a specific progress bar (repo or grammar).
 #[derive(Debug, Clone)]
 pub struct ProgressAddr {
-    id: u64,
+    id: ItemId,
     tx: mpsc::Sender<DisplayMessage>,
 }
 
@@ -353,7 +354,7 @@ fn clear_from_cursor_down() -> io::Result<()> {
 
 pub struct DisplayActor {
     state: DisplayState,
-    next_id: u64,
+    next_id: ItemId,
     plain_name_width: usize,
     plain_progress_started: bool,
     grid: GridCache,
@@ -370,7 +371,7 @@ impl DisplayActor {
         let (tx, rx) = mpsc::channel(256);
         let actor = Self {
             state: DisplayState::new(mode, build_dir, out_dir),
-            next_id: 1,
+            next_id: ItemId::new(NonZeroU64::MIN),
             plain_name_width: 16,
             plain_progress_started: false,
             grid: GridCache::new(),
@@ -700,7 +701,7 @@ impl DisplayActor {
         println!("✓ {cached} cached  ✓ {built} built  ✗ {cancelled} cancelled  ✗ {failed} failed");
     }
 
-    fn plain_progress_line(&self, id: u64, kind: UpdateKind) -> Option<PlainLine> {
+    fn plain_progress_line(&self, id: ItemId, kind: UpdateKind) -> Option<PlainLine> {
         if let Some(repo) = self.state.repos.get(&id) {
             return Some(PlainLine {
                 name: repo.name.to_string(),
@@ -761,7 +762,7 @@ impl DisplayActor {
         num_tasks: usize,
     ) -> ProgressAddr {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.next_after();
 
         self.state.repos.insert(
             id,
@@ -793,14 +794,14 @@ impl DisplayActor {
         num_tasks: usize,
     ) -> ProgressAddr {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.next_after();
 
         let repo_id = self
             .state
             .repos
             .iter()
             .find(|(_, r)| r.name == language)
-            .map_or(0, |(id, _)| *id);
+            .map(|(id, _)| *id);
 
         self.state.grammars.insert(
             id,
@@ -819,7 +820,7 @@ impl DisplayActor {
         );
 
         self.rows_dirty = true;
-        if repo_id != 0 {
+        if let Some(repo_id) = repo_id {
             self.sync_parent_repo(repo_id);
         }
 
@@ -838,7 +839,9 @@ impl DisplayActor {
                 grammar.state = ItemState::Cancelled;
                 grammar.step = grammar.total;
                 grammar.msg = Arc::from("cancelled");
-                parent_ids.push(grammar.repo_id);
+                if let Some(repo_id) = grammar.repo_id {
+                    parent_ids.push(repo_id);
+                }
                 self.grid.mark_dirty(*id);
             }
         }
@@ -846,9 +849,7 @@ impl DisplayActor {
         parent_ids.sort_unstable();
         parent_ids.dedup();
         for repo_id in parent_ids {
-            if repo_id != 0 {
-                self.sync_parent_repo(repo_id);
-            }
+            self.sync_parent_repo(repo_id);
         }
 
         for (id, repo) in &mut self.state.repos {
@@ -864,14 +865,14 @@ impl DisplayActor {
         }
     }
 
-    fn apply_update(&mut self, id: u64, kind: UpdateKind, msg: Arc<str>) {
+    fn apply_update(&mut self, id: ItemId, kind: UpdateKind, msg: Arc<str>) {
         if let Some(repo) = self.state.repos.get_mut(&id) {
             Self::apply_repo_update(repo, kind, msg);
             self.grid.mark_dirty(id);
             return;
         }
 
-        let mut maybe_parent_id: Option<u64> = None;
+        let mut maybe_parent_id: Option<ItemId> = None;
         if let Some(grammar) = self.state.grammars.get_mut(&id) {
             Self::apply_grammar_update(grammar, kind, msg);
             self.grid.mark_dirty(id);
@@ -885,7 +886,7 @@ impl DisplayActor {
                     | UpdateKind::Cancel
                     | UpdateKind::Step
             ) {
-                maybe_parent_id = Some(grammar.repo_id);
+                maybe_parent_id = grammar.repo_id;
             }
         }
 
@@ -1008,8 +1009,12 @@ impl DisplayActor {
         }
     }
 
-    fn sync_parent_repo(&mut self, repo_id: u64) {
-        let has_any = self.state.grammars.values().any(|g| g.repo_id == repo_id);
+    fn sync_parent_repo(&mut self, repo_id: ItemId) {
+        let has_any = self
+            .state
+            .grammars
+            .values()
+            .any(|g| g.repo_id == Some(repo_id));
         if !has_any {
             return;
         }
@@ -1018,17 +1023,17 @@ impl DisplayActor {
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == repo_id && g.state == ItemState::Failed);
+            .any(|g| g.repo_id == Some(repo_id) && g.state == ItemState::Failed);
         let any_cancelled = self
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == repo_id && g.state == ItemState::Cancelled);
+            .any(|g| g.repo_id == Some(repo_id) && g.state == ItemState::Cancelled);
         let any_active = self
             .state
             .grammars
             .values()
-            .any(|g| g.repo_id == repo_id && g.state.is_live());
+            .any(|g| g.repo_id == Some(repo_id) && g.state.is_live());
 
         let live_outcome = self.aggregate_child_live_outcome(repo_id);
         let done_outcome = self.aggregate_child_done_outcome(repo_id);
@@ -1059,7 +1064,7 @@ impl DisplayActor {
         self.grid.mark_dirty(repo_id);
     }
 
-    fn aggregate_child_live_outcome(&self, repo_id: u64) -> Option<SuccessOutcome> {
+    fn aggregate_child_live_outcome(&self, repo_id: ItemId) -> Option<SuccessOutcome> {
         let mut saw_cached = false;
         let mut saw_unknown = false;
 
@@ -1067,7 +1072,7 @@ impl DisplayActor {
             .state
             .grammars
             .values()
-            .filter(|g| g.repo_id == repo_id)
+            .filter(|g| g.repo_id == Some(repo_id))
         {
             match grammar.state {
                 ItemState::InProgress(Some(SuccessOutcome::Built))
@@ -1088,14 +1093,14 @@ impl DisplayActor {
         }
     }
 
-    fn aggregate_child_done_outcome(&self, repo_id: u64) -> Option<SuccessOutcome> {
+    fn aggregate_child_done_outcome(&self, repo_id: ItemId) -> Option<SuccessOutcome> {
         let mut saw_cached = false;
 
         for grammar in self
             .state
             .grammars
             .values()
-            .filter(|g| g.repo_id == repo_id)
+            .filter(|g| g.repo_id == Some(repo_id))
         {
             match grammar.state {
                 ItemState::Done(SuccessOutcome::Built) => return Some(SuccessOutcome::Built),
@@ -1162,7 +1167,7 @@ mod tests {
                 Arc::new(PathBuf::from("build")),
                 Arc::new(PathBuf::from("out")),
             ),
-            next_id: 1,
+            next_id: ItemId::new(NonZeroU64::MIN),
             plain_name_width: 16,
             plain_progress_started: false,
             grid: GridCache::new(),

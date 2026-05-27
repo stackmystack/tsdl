@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -186,7 +187,7 @@ impl RepoEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct GrammarEntry {
     pub repo: Arc<str>,
-    pub repo_id: u64,
+    pub repo_id: Option<ItemId>,
     pub name: Arc<str>,
     pub git_ref: git::Ref,
     pub state: ItemState,
@@ -222,8 +223,29 @@ pub(crate) enum Column {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CellKey {
-    item_id: u64,
+    item_id: ItemId,
     column: Column,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ItemId(NonZeroU64);
+
+impl ItemId {
+    #[must_use]
+    pub(crate) fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub(crate) fn next_after(self) -> Self {
+        let next = self
+            .0
+            .get()
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .expect("display item id exhausted");
+        Self(next)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +296,7 @@ impl CachedLayout {
 
 pub(crate) struct GridCache {
     cells: HashMap<CellKey, Span<'static>>,
-    pub dirty_items: HashSet<u64>,
+    pub dirty_items: HashSet<ItemId>,
     pub layout: CachedLayout,
 }
 
@@ -292,7 +314,7 @@ impl GridCache {
     /// returned. Otherwise the cached cell is cloned.
     pub fn cell(
         &mut self,
-        item_id: u64,
+        item_id: ItemId,
         column: Column,
         stale: bool,
         compute: impl FnOnce() -> Span<'static>,
@@ -311,7 +333,7 @@ impl GridCache {
         }
     }
 
-    pub fn mark_dirty(&mut self, item_id: u64) {
+    pub fn mark_dirty(&mut self, item_id: ItemId) {
         self.dirty_items.insert(item_id);
     }
 
@@ -338,7 +360,7 @@ pub(crate) enum RowKind {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RowSpec {
-    pub id: u64,
+    pub id: ItemId,
     pub kind: RowKind,
     /// The text to display in the name column (already includes indent).
     pub display_name: Arc<str>,
@@ -484,8 +506,8 @@ fn dim_line(text: String) -> Line<'static> {
 
 pub(crate) struct DisplayState {
     pub mode: Mode,
-    pub repos: HashMap<u64, RepoEntry>,
-    pub grammars: HashMap<u64, GrammarEntry>,
+    pub repos: HashMap<ItemId, RepoEntry>,
+    pub grammars: HashMap<ItemId, GrammarEntry>,
     pub build_dir: Arc<PathBuf>,
     pub out_dir: Arc<PathBuf>,
     footer_build: Line<'static>,
@@ -544,17 +566,16 @@ impl DisplayState {
         let mut rows = Vec::new();
 
         // Sort repos alphabetically by name
-        let mut sorted_repos: Vec<(u64, &RepoEntry)> =
+        let mut sorted_repos: Vec<(ItemId, &RepoEntry)> =
             self.repos.iter().map(|(id, r)| (*id, r)).collect();
         sorted_repos.sort_by(|(_, a), (_, b)| a.name.cmp(&b.name));
 
         // Gather grammar (id, entry) pairs grouped by repo, sorted by name
-        let mut grammars_by_repo: HashMap<u64, Vec<(u64, &GrammarEntry)>> = HashMap::new();
+        let mut grammars_by_repo: HashMap<ItemId, Vec<(ItemId, &GrammarEntry)>> = HashMap::new();
         for (gid, g) in &self.grammars {
-            grammars_by_repo
-                .entry(g.repo_id)
-                .or_default()
-                .push((*gid, g));
+            if let Some(repo_id) = g.repo_id {
+                grammars_by_repo.entry(repo_id).or_default().push((*gid, g));
+            }
         }
         for list in grammars_by_repo.values_mut() {
             list.sort_by(|(_, a), (_, b)| a.name.cmp(&b.name));
@@ -652,9 +673,11 @@ impl DisplayState {
         let mut failed = 0;
         let mut cancelled = 0;
 
-        let mut repos_with_grammars: HashSet<u64> = HashSet::new();
+        let mut repos_with_grammars: HashSet<ItemId> = HashSet::new();
         for grammar in self.grammars.values() {
-            repos_with_grammars.insert(grammar.repo_id);
+            if let Some(repo_id) = grammar.repo_id {
+                repos_with_grammars.insert(repo_id);
+            }
             count_item_state(
                 grammar.state,
                 &mut cached,

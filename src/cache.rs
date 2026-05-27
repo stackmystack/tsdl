@@ -18,10 +18,78 @@ use crate::{
     git, parser, TsdlResult,
 };
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CacheKey(Arc<str>);
+
+impl CacheKey {
+    #[must_use]
+    pub fn new(language: &parser::LanguageName, grammar: &parser::GrammarName) -> Self {
+        Self(Arc::from(format!("{language}/{grammar}")))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn language_prefix(language: &parser::LanguageName) -> String {
+        format!("{language}/")
+    }
+}
+
+impl fmt::Display for CacheKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for CacheKey {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&str> for CacheKey {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GrammarHash(Arc<str>);
+
+impl GrammarHash {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for GrammarHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for GrammarHash {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&str> for GrammarHash {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
 /// The build cache stored in  `[build-dir]/[TSDL_CACHE_FILE]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
-    pub parsers: BTreeMap<String, Entry>,
+    pub parsers: BTreeMap<CacheKey, Entry>,
     pub file: PathBuf,
 }
 
@@ -29,7 +97,7 @@ pub struct Db {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     /// Hash of the grammar.js file(s)
-    pub hash: Arc<str>,
+    pub hash: GrammarHash,
     /// Complete build definition that affects parser output
     pub spec: Arc<BuildSpec>,
     /// Parser source identity used by the cache. Moving refs include the
@@ -84,8 +152,8 @@ pub enum CacheMissReason {
     MissingEntry,
     CacheIgnored,
     HashChanged {
-        cached: Arc<str>,
-        current: Arc<str>,
+        cached: GrammarHash,
+        current: GrammarHash,
     },
     RepoChanged {
         cached: String,
@@ -291,14 +359,19 @@ impl fmt::Display for CacheMissReason {
 
 impl Entry {
     #[must_use]
-    pub fn rebuild_decision(&self, hash: &str, spec: &BuildSpec, source: &Source) -> CacheDecision {
+    pub fn rebuild_decision(
+        &self,
+        hash: &GrammarHash,
+        spec: &BuildSpec,
+        source: &Source,
+    ) -> CacheDecision {
         let mut reasons = Vec::new();
         let cached = self.spec.as_ref();
 
-        if self.hash.as_ref() != hash {
+        if &self.hash != hash {
             reasons.push(CacheMissReason::HashChanged {
                 cached: self.hash.clone(),
-                current: Arc::from(hash),
+                current: hash.clone(),
             });
         }
 
@@ -357,7 +430,7 @@ impl Entry {
 #[derive(Debug, Clone)]
 pub struct Update {
     pub entry: Entry,
-    pub name: Arc<str>,
+    pub name: CacheKey,
 }
 
 impl Db {
@@ -380,7 +453,7 @@ impl Db {
 
     /// Get cache entry for a parser
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Entry> {
+    pub fn get(&self, name: &CacheKey) -> Option<&Entry> {
         self.parsers.get(name)
     }
 
@@ -409,12 +482,11 @@ impl Db {
     /// Explain whether a parser cache entry can satisfy the requested build.
     pub fn rebuild_decision(
         &self,
-        name: &str,
-        hash: &str,
+        name: &CacheKey,
+        hash: &GrammarHash,
         spec: &BuildSpec,
         source: &Source,
     ) -> CacheDecision {
-        // TODO: hash and name are plain str, I'd like strong types here.
         let decision = match self.get(name) {
             None => CacheDecision::miss(CacheMissReason::MissingEntry),
             Some(entry) => entry.rebuild_decision(hash, spec, source),
@@ -426,7 +498,13 @@ impl Db {
 
     /// Check if a parser needs rebuilding by comparing grammar hash and build definition.
     #[must_use]
-    pub fn needs_rebuild(&self, name: &str, hash: &str, spec: &BuildSpec, source: &Source) -> bool {
+    pub fn needs_rebuild(
+        &self,
+        name: &CacheKey,
+        hash: &GrammarHash,
+        spec: &BuildSpec,
+        source: &Source,
+    ) -> bool {
         self.rebuild_decision(name, hash, spec, source)
             .needs_rebuild()
     }
@@ -445,13 +523,13 @@ impl Db {
     }
 
     /// Insert or update a parser cache entry
-    pub fn set(&mut self, name: String, entry: Entry) {
+    pub fn set(&mut self, name: CacheKey, entry: Entry) {
         self.parsers.insert(name, entry);
     }
 }
 
 /// Hash the contents of a file using SHA-1 and return the hex string.
-pub async fn hash_file(path: &Path) -> TsdlResult<String> {
+pub async fn hash_file(path: &Path) -> TsdlResult<GrammarHash> {
     let mut file = tokio::fs::File::open(path).await.map_err(|e| {
         TsdlError::context(format!("Opening file for hashing: {}", path.display()), e)
     })?;
@@ -477,7 +555,7 @@ pub async fn hash_file(path: &Path) -> TsdlResult<String> {
     for byte in result {
         write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
     }
-    Ok(hex)
+    Ok(GrammarHash::from(hex))
 }
 
 #[cfg(test)]
@@ -515,6 +593,14 @@ mod tests {
         Source::moving(git::Sha::new(sha).unwrap())
     }
 
+    fn key() -> CacheKey {
+        CacheKey::from("test-parser")
+    }
+
+    fn grammar_hash(value: &str) -> GrammarHash {
+        GrammarHash::from(value)
+    }
+
     fn cache_with_entry(hash: &str, spec: &BuildSpec) -> Db {
         cache_with_entry_and_source(hash, spec, stable_source(spec))
     }
@@ -522,9 +608,9 @@ mod tests {
     fn cache_with_entry_and_source(hash: &str, spec: &BuildSpec, source: Source) -> Db {
         let mut cache = Db::default();
         cache.set(
-            "test-parser".to_string(),
+            key(),
             Entry {
-                hash: hash.into(),
+                hash: grammar_hash(hash),
                 spec: Arc::new(spec.clone()),
                 source,
             },
@@ -545,7 +631,12 @@ mod tests {
         let spec = test_spec();
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "abc123", &spec, &stable_source(&spec)),
+            cache.rebuild_decision(
+                &key(),
+                &grammar_hash("abc123"),
+                &spec,
+                &stable_source(&spec),
+            ),
             &[CacheMissReason::MissingEntry],
         );
     }
@@ -556,10 +647,15 @@ mod tests {
         let cache = cache_with_entry("abc123", &spec);
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "def456", &spec, &stable_source(&spec)),
+            cache.rebuild_decision(
+                &key(),
+                &grammar_hash("def456"),
+                &spec,
+                &stable_source(&spec),
+            ),
             &[CacheMissReason::HashChanged {
-                cached: "abc123".into(),
-                current: "def456".into(),
+                cached: grammar_hash("abc123"),
+                current: grammar_hash("def456"),
             }],
         );
     }
@@ -573,8 +669,8 @@ mod tests {
 
         assert_miss(
             cache.rebuild_decision(
-                "test-parser",
-                "abc123",
+                &key(),
+                &grammar_hash("abc123"),
                 &requested,
                 &stable_source(&requested),
             ),
@@ -594,8 +690,8 @@ mod tests {
 
         assert_miss(
             cache.rebuild_decision(
-                "test-parser",
-                "abc123",
+                &key(),
+                &grammar_hash("abc123"),
                 &requested,
                 &stable_source(&requested),
             ),
@@ -612,10 +708,20 @@ mod tests {
         let cache = cache_with_entry("abc123", &spec);
 
         assert_eq!(
-            cache.rebuild_decision("test-parser", "abc123", &spec, &stable_source(&spec)),
+            cache.rebuild_decision(
+                &key(),
+                &grammar_hash("abc123"),
+                &spec,
+                &stable_source(&spec)
+            ),
             CacheDecision::Hit
         );
-        assert!(!cache.needs_rebuild("test-parser", "abc123", &spec, &stable_source(&spec)));
+        assert!(!cache.needs_rebuild(
+            &key(),
+            &grammar_hash("abc123"),
+            &spec,
+            &stable_source(&spec)
+        ));
     }
 
     #[test]
@@ -626,7 +732,7 @@ mod tests {
         let cache = cache_with_entry_and_source("abc123", &spec, cached_source.clone());
 
         assert_miss(
-            cache.rebuild_decision("test-parser", "abc123", &spec, &current_source),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &current_source),
             &[CacheMissReason::SourceChanged {
                 cached: cached_source,
                 current: current_source,
@@ -641,7 +747,7 @@ mod tests {
         let cache = cache_with_entry_and_source("abc123", &spec, source.clone());
 
         assert_eq!(
-            cache.rebuild_decision("test-parser", "abc123", &spec, &source),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &source),
             CacheDecision::Hit
         );
     }
@@ -657,15 +763,15 @@ mod tests {
 
         assert_miss(
             cache.rebuild_decision(
-                "test-parser",
-                "def456",
+                &key(),
+                &grammar_hash("def456"),
                 &requested,
                 &stable_source(&requested),
             ),
             &[
                 CacheMissReason::HashChanged {
-                    cached: "abc123".into(),
-                    current: "def456".into(),
+                    cached: grammar_hash("abc123"),
+                    current: grammar_hash("def456"),
                 },
                 CacheMissReason::BuildScriptChanged,
                 CacheMissReason::PrefixChanged {
