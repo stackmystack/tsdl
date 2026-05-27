@@ -24,6 +24,7 @@ informative and more coherent.
 - **cache**: Parser builds that track moving refs such as `HEAD` or branches now
   notice when those refs move and rebuild the affected parsers. The parser cache
   format changed for this major release and older cache files are not migrated.
+- Downloaded `tree-sitter` cli are now verified upon download (no crypto).
 
 ### Bug Fixes
 
