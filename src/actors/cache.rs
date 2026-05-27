@@ -4,11 +4,12 @@ use tokio::{
     fs,
     sync::{mpsc, oneshot},
 };
+use tracing::info;
 
 use crate::{
     actors::{Addr, Response},
     build::BuildSpec,
-    cache::{CacheDecision, CacheMissReason, Db, Entry, Update},
+    cache::{CacheDecision, CacheMissReason, Db, Entry, Source, Update},
     TsdlResult,
 };
 
@@ -27,6 +28,7 @@ pub enum CacheMessage {
     NeedsRebuild {
         hash: Arc<str>,
         name: Arc<str>,
+        source: Source,
         spec: Arc<BuildSpec>,
         artifacts: Vec<PathBuf>,
         tx: oneshot::Sender<CacheDecision>,
@@ -95,11 +97,13 @@ impl CacheAddr {
         name: S,
         hash: S,
         spec: Arc<BuildSpec>,
+        source: Source,
         artifacts: Vec<PathBuf>,
     ) -> CacheDecision {
         self.request(|tx| CacheMessage::NeedsRebuild {
             name: name.into(),
             hash: hash.into(),
+            source,
             spec,
             artifacts,
             tx,
@@ -155,19 +159,23 @@ impl CacheActor {
                     hash,
                     name,
                     spec,
+                    source,
                     artifacts,
                     tx,
                 } => {
                     let decision = if self.force {
                         CacheDecision::miss(CacheMissReason::CacheIgnored)
                     } else {
-                        let decision = self.db.rebuild_decision(&name, &hash, &spec);
+                        let decision = self.db.rebuild_decision(&name, &hash, &spec, &source);
                         if decision.is_hit() {
                             verify_artifacts(artifacts).await
                         } else {
                             decision
                         }
                     };
+                    if decision.needs_rebuild() {
+                        info!("Cache miss for {name}: {}", decision.short_message());
+                    }
 
                     Response {
                         tx,

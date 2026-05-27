@@ -18,9 +18,8 @@ use crate::{
     consts::TSDL_FROM,
     error::{self, TsdlError},
     format_duration,
-    git::GitRef,
     lock::{Lock, LockGuard, LockOwner, LockStatus, LockTakeoverError},
-    parser::LanguageBuild,
+    parser::{self, LanguageBuild},
     prompt_user,
     shutdown::{self, Shutdown},
     SafeCanonicalize, TsdlResult,
@@ -29,7 +28,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BuildSpec {
     pub build_script: Option<String>,
-    pub git_ref: GitRef,
+    pub git_ref: parser::Ref,
     pub prefix: String,
     pub repo: Url,
     pub target: Target,
@@ -155,13 +154,13 @@ fn default_repo(language: &str) -> TsdlResult<Url> {
 fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, ParserConfig>>,
-) -> TsdlResult<(Option<String>, GitRef, Url)> {
+) -> TsdlResult<(Option<String>, parser::Ref, Url)> {
     let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
     match config {
         Some(ParserConfig::Ref(git_ref)) => Ok((
             None,
-            GitRef::from_version_or_ref(git_ref).map_err(|e| {
+            parser::Ref::parse(git_ref).map_err(|e| {
                 TsdlError::context(format!("Parsing git ref {git_ref:?} for {language}"), e)
             })?,
             default_repo(language)?,
@@ -181,14 +180,14 @@ fn get_language_coords(
 
             Ok((
                 build_script.clone(),
-                GitRef::from_version_or_ref(git_ref).map_err(|e| {
+                parser::Ref::parse(git_ref).map_err(|e| {
                     TsdlError::context(format!("Parsing git ref {git_ref:?} for {language}"), e)
                 })?,
                 repo,
             ))
         }
 
-        None => Ok((None, GitRef::head(), default_repo(language)?)),
+        None => Ok((None, parser::Ref::head(), default_repo(language)?)),
     }
 }
 

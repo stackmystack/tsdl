@@ -5,16 +5,13 @@ use std::{
 };
 
 use clap::{
-    parser::ValueSource,
-    value_parser, Arg, ArgAction, ArgMatches, CommandFactory, FromArgMatches,
+    parser::ValueSource, value_parser, Arg, ArgAction, ArgMatches, CommandFactory, FromArgMatches,
 };
 use serde::Serialize;
 use tracing::debug;
 
 use crate::{
-    args::{
-        Args, BuildCommand, ConfigCommand, OptionalBuildCommand, Target,
-    },
+    args::{Args, BuildCommand, ConfigCommand, OptionalBuildCommand, Target},
     columns,
     error::TsdlError,
     TsdlResult,
@@ -240,7 +237,10 @@ pub fn build_cli(defaults: &BuildCommand) -> Vec<Arg> {
             .short('b')
             .env("TSDL_BUILD_DIR")
             .value_parser(value_parser!(PathBuf))
-            .help(format!("Build Directory [default: {}]", defaults.build_dir.display())),
+            .help(format!(
+                "Build Directory [default: {}]",
+                defaults.build_dir.display()
+            )),
         Arg::new("force")
             .long("force")
             .env("TSDL_FORCE")
@@ -281,13 +281,19 @@ pub fn build_cli(defaults: &BuildCommand) -> Vec<Arg> {
             .short('o')
             .env("TSDL_OUT_DIR")
             .value_parser(value_parser!(PathBuf))
-            .help(format!("Output Directory [default: {}]", defaults.out_dir.display())),
+            .help(format!(
+                "Output Directory [default: {}]",
+                defaults.out_dir.display()
+            )),
         Arg::new("prefix")
             .long("prefix")
             .short('p')
             .env("TSDL_PREFIX")
             .value_parser(value_parser!(String))
-            .help(format!("Prefix parser names [default: {}]", defaults.prefix)),
+            .help(format!(
+                "Prefix parser names [default: {}]",
+                defaults.prefix
+            )),
         Arg::new("show-config")
             .long("show-config")
             .env("TSDL_SHOW_CONFIG")
@@ -309,7 +315,10 @@ pub fn build_cli(defaults: &BuildCommand) -> Vec<Arg> {
                 clap::builder::PossibleValue::new("wasm"),
                 clap::builder::PossibleValue::new("all"),
             ])
-            .help(format!("Build target [default: {}]", defaults.target.to_lowercase())),
+            .help(format!(
+                "Build target [default: {}]",
+                defaults.target.to_lowercase()
+            )),
         Arg::new("tree-sitter-version")
             .long("tree-sitter-version")
             .short('V')
@@ -340,7 +349,9 @@ pub fn build_cli(defaults: &BuildCommand) -> Vec<Arg> {
             .long("unlock-timeout")
             .env("TSDL_UNLOCK_TIMEOUT")
             .value_parser(value_parser!(u64).range(1..))
-            .help(format!("Seconds to wait after terminating a lock owner [default: {ut_default}]")),
+            .help(format!(
+                "Seconds to wait after terminating a lock owner [default: {ut_default}]"
+            )),
     ]
 }
 
@@ -352,12 +363,8 @@ pub fn extract_overrides(
     let mut p = BuildProvenance::default();
 
     extract_simple(matches, "build-dir", &mut o.build_dir, &mut p.build_dir);
-    extract_bool(
-        matches, "force", "no-force", &mut o.force, &mut p.force,
-    );
-    extract_bool(
-        matches, "fresh", "no-fresh", &mut o.fresh, &mut p.fresh,
-    );
+    extract_bool(matches, "force", "no-force", &mut o.force, &mut p.force);
+    extract_bool(matches, "fresh", "no-fresh", &mut o.fresh, &mut p.fresh);
 
     if let Some(source) = source_for(matches, "languages") {
         let vals: Vec<String> = matches
@@ -384,11 +391,31 @@ pub fn extract_overrides(
 
     extract_target(matches, "target", &mut o.target, &mut p.target);
 
-    extract_simple(matches, "tree-sitter-version", &mut o.tree_sitter.version, &mut p.tree_sitter.version);
-    extract_simple(matches, "tree-sitter-platform", &mut o.tree_sitter.platform, &mut p.tree_sitter.platform);
-    extract_simple(matches, "tree-sitter-repo", &mut o.tree_sitter.repo, &mut p.tree_sitter.repo);
+    extract_simple(
+        matches,
+        "tree-sitter-version",
+        &mut o.tree_sitter.version,
+        &mut p.tree_sitter.version,
+    );
+    extract_simple(
+        matches,
+        "tree-sitter-platform",
+        &mut o.tree_sitter.platform,
+        &mut p.tree_sitter.platform,
+    );
+    extract_simple(
+        matches,
+        "tree-sitter-repo",
+        &mut o.tree_sitter.repo,
+        &mut p.tree_sitter.repo,
+    );
 
-    extract_simple_u64(matches, "unlock-timeout", &mut o.unlock_timeout, &mut p.unlock_timeout);
+    extract_simple_u64(
+        matches,
+        "unlock-timeout",
+        &mut o.unlock_timeout,
+        &mut p.unlock_timeout,
+    );
 
     (o, p)
 }
@@ -553,9 +580,7 @@ pub fn parse_with_matches() -> (Args, ArgMatches) {
     (args, matches)
 }
 
-pub fn try_parse_from_with_matches<I, T>(
-    itr: I,
-) -> Result<(Args, ArgMatches), clap::Error>
+pub fn try_parse_from_with_matches<I, T>(itr: I) -> Result<(Args, ArgMatches), clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,

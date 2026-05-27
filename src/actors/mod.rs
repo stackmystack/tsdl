@@ -12,6 +12,7 @@ use tracing::{debug, info};
 
 use crate::{
     args::TreeSitter,
+    cache::Source,
     error::TsdlError,
     parser::{GrammarBuild, LanguageBuild},
     shutdown, tree_sitter, TsdlResult,
@@ -87,7 +88,10 @@ pub async fn run(
     display.reference(tree_sitter_ref, "tree-sitter-cli").await;
     for language in &languages {
         display
-            .reference(language.spec.git_ref.clone(), language.name.clone())
+            .reference(
+                language.spec.git_ref.requested().clone(),
+                language.name.clone(),
+            )
             .await;
     }
 
@@ -126,7 +130,12 @@ async fn run_inner(
     languages: Vec<LanguageBuild>,
     tree_sitter: &TreeSitter,
 ) -> TsdlResult<()> {
-    let ts_cli = Arc::new(tree_sitter::prepare(build_dir, display.clone(), tree_sitter).await?);
+    let prepared = tree_sitter::prepare(build_dir, display.clone(), tree_sitter).await?;
+    let ts_cli = Arc::new(prepared.path);
+    let languages = languages
+        .into_iter()
+        .map(|language| language.with_tree_sitter(prepared.tree_sitter.clone()))
+        .collect::<Vec<_>>();
 
     let mut errors : Vec<TsdlError> =
       // 1. Source: Create a stream from the input list
@@ -207,27 +216,14 @@ async fn discover_grammars(
     debug!("[discover] lang={}", language.name);
 
     let progress = display
-        .add_language(language.spec.git_ref.clone(), language.name.clone(), 2)
+        .add_language(
+            language.spec.git_ref.requested().clone(),
+            language.name.clone(),
+            2,
+        )
         .await;
 
-    let needs_clone = cache
-        .needs_clone(language.name.clone(), language.spec.clone())
-        .await;
-
-    if needs_clone {
-        progress.set_outcome_built().await;
-        progress.step("cloning");
-        if let Err(e) = language.clone().await {
-            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                progress.cancel().await;
-            } else {
-                progress.err("clone failed").await;
-            }
-            return Err(e);
-        }
-    } else {
-        progress.set_outcome_cached().await;
-    }
+    let source = resolve_source(&cache, &language, &progress).await?;
 
     progress.step("scanning");
     let grammars = match language.discover_grammars().await {
@@ -258,12 +254,18 @@ async fn discover_grammars(
             &name_arc,
         )?;
         let cache_decision = cache
-            .needs_rebuild(key, hash.clone(), language.spec.clone(), artifacts)
+            .needs_rebuild(
+                key,
+                hash.clone(),
+                language.spec.clone(),
+                source.clone(),
+                artifacts,
+            )
             .await;
 
         let progress = display
             .add_grammar(
-                language.spec.git_ref.clone(),
+                language.spec.git_ref.requested().clone(),
                 language.name.clone(),
                 name_arc.clone(),
                 4,
@@ -279,10 +281,67 @@ async fn discover_grammars(
             name: name_arc,
             output: language.output.clone(),
             progress,
+            source: source.clone(),
             spec: language.spec.clone(),
             ts_cli: ts_cli.clone(),
         });
     }
 
     Ok(builds)
+}
+
+async fn resolve_source(
+    cache: &CacheAddr,
+    language: &LanguageBuild,
+    progress: &ProgressAddr,
+) -> TsdlResult<Source> {
+    if language.spec.git_ref.is_moving() {
+        info!(
+            "Resolving moving parser git ref for {}: {}",
+            language.name,
+            language.spec.git_ref.requested().as_str()
+        );
+        progress.set_outcome_built().await;
+        progress.step("cloning");
+        match language.checkout().await {
+            Ok(commit) => {
+                info!(
+                    "Resolved parser {} git ref {} to commit {}",
+                    language.name,
+                    language.spec.git_ref.requested().as_str(),
+                    commit.as_str()
+                );
+                Ok(language.spec.git_ref.moving_source(commit))
+            }
+            Err(e) => {
+                if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                    progress.cancel().await;
+                } else {
+                    progress.err("clone failed").await;
+                }
+                Err(e)
+            }
+        }
+    } else {
+        let needs_clone = cache
+            .needs_clone(language.name.clone(), language.spec.clone())
+            .await;
+
+        if needs_clone {
+            progress.set_outcome_built().await;
+            progress.step("cloning");
+            if let Err(e) = language.checkout().await {
+                if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                    progress.cancel().await;
+                } else {
+                    progress.err("clone failed").await;
+                }
+                return Err(e);
+            }
+        } else {
+            progress.set_outcome_cached().await;
+        }
+
+        Ok(language.spec.git_ref.stable_source())
+    }
 }

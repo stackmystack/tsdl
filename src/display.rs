@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::args::ProgressStyle;
-use crate::git::GitRef;
+use crate::git;
 
 // ── Column geometry ──────────────────────────────────────────────
 /// Fixed width of the time column (right-aligned, " 0.00s" … "59:59").
@@ -165,7 +165,7 @@ impl ItemState {
 #[derive(Debug, Clone)]
 pub(crate) struct RepoEntry {
     pub name: Arc<str>,
-    pub git_ref: GitRef,
+    pub git_ref: git::Ref,
     pub state: ItemState,
     pub msg: Arc<str>,
     pub step: usize,
@@ -188,7 +188,7 @@ pub(crate) struct GrammarEntry {
     pub repo: Arc<str>,
     pub repo_id: u64,
     pub name: Arc<str>,
-    pub git_ref: GitRef,
+    pub git_ref: git::Ref,
     pub state: ItemState,
     pub msg: Arc<str>,
     pub step: usize,
@@ -213,7 +213,7 @@ impl GrammarEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Column {
     Time,
-    GitRef,
+    Ref,
     Step,
     Icon,
     Name,
@@ -384,7 +384,7 @@ impl ItemInfo<'_> {
         }
     }
 
-    pub(crate) fn git_ref(&self) -> &GitRef {
+    pub(crate) fn git_ref(&self) -> &git::Ref {
         match self {
             ItemInfo::Repo(r) => &r.git_ref,
             ItemInfo::Grammar(g) => &g.git_ref,

@@ -11,7 +11,7 @@ use tokio::{fs, process::Command};
 use crate::{error::TsdlError, sh::Exec, TsdlResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitRefParseError {
+pub enum RefError {
     EmptyRef,
     InvalidRefCharacter { index: usize, character: char },
     InvalidRefSyntax { reason: &'static str },
@@ -19,7 +19,7 @@ pub enum GitRefParseError {
     InvalidShaHex { index: usize, character: char },
 }
 
-impl fmt::Display for GitRefParseError {
+impl fmt::Display for RefError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyRef => write!(f, "git ref cannot be empty"),
@@ -39,20 +39,20 @@ impl fmt::Display for GitRefParseError {
     }
 }
 
-impl std::error::Error for GitRefParseError {}
+impl std::error::Error for RefError {}
 
-impl From<GitRefParseError> for TsdlError {
-    fn from(error: GitRefParseError) -> Self {
+impl From<RefError> for TsdlError {
+    fn from(error: RefError) -> Self {
         TsdlError::message(error.to_string())
     }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct GitRef(Arc<str>);
+pub struct Ref(Arc<str>);
 
-impl GitRef {
+impl Ref {
     /// Create a validated git ref.
-    pub fn new(value: impl Into<Arc<str>>) -> Result<Self, GitRefParseError> {
+    pub fn new(value: impl Into<Arc<str>>) -> Result<Self, RefError> {
         let value = value.into();
         validate_git_ref(&value)?;
         Ok(Self(value))
@@ -66,8 +66,8 @@ impl GitRef {
 
     /// Create a validated git ref from user input, normalizing dotted numeric
     /// versions such as `0.21.0` to the conventional git tag `v0.21.0`.
-    pub fn from_version_or_ref(value: &str) -> Result<Self, GitRefParseError> {
-        if GitSha::is_full_sha(value) || value.starts_with('v') {
+    pub fn from_version_or_ref(value: &str) -> Result<Self, RefError> {
+        if Sha::is_full_sha(value) || value.starts_with('v') {
             return Self::new(value);
         }
 
@@ -87,7 +87,7 @@ impl GitRef {
     /// Get a human-oriented representation, shortening full commit SHAs.
     #[must_use]
     pub fn short(&self) -> &str {
-        if GitSha::is_full_sha(self.as_str()) {
+        if Sha::is_full_sha(self.as_str()) {
             &self.0[..7]
         } else {
             &self.0
@@ -96,47 +96,47 @@ impl GitRef {
 
     #[must_use]
     pub fn is_exact_sha(&self) -> bool {
-        GitSha::is_full_sha(self.as_str())
+        Sha::is_full_sha(self.as_str())
     }
 }
 
-impl AsRef<str> for GitRef {
+impl AsRef<str> for Ref {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl TryFrom<&str> for GitRef {
-    type Error = GitRefParseError;
+impl TryFrom<&str> for Ref {
+    type Error = RefError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
     }
 }
 
-impl TryFrom<String> for GitRef {
-    type Error = GitRefParseError;
+impl TryFrom<String> for Ref {
+    type Error = RefError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::new(value)
     }
 }
 
-impl std::str::FromStr for GitRef {
-    type Err = GitRefParseError;
+impl std::str::FromStr for Ref {
+    type Err = RefError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::new(value)
     }
 }
 
-impl fmt::Display for GitRef {
+impl fmt::Display for Ref {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.short())
     }
 }
 
-impl Serialize for GitRef {
+impl Serialize for Ref {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -145,7 +145,7 @@ impl Serialize for GitRef {
     }
 }
 
-impl<'de> Deserialize<'de> for GitRef {
+impl<'de> Deserialize<'de> for Ref {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -156,11 +156,11 @@ impl<'de> Deserialize<'de> for GitRef {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct GitSha(Arc<str>);
+pub struct Sha(Arc<str>);
 
-impl GitSha {
+impl Sha {
     /// Create a validated full 40-character git SHA-1.
-    pub fn new(value: impl Into<Arc<str>>) -> Result<Self, GitRefParseError> {
+    pub fn new(value: impl Into<Arc<str>>) -> Result<Self, RefError> {
         let value = value.into();
         validate_git_sha(&value)?;
         Ok(Self(value))
@@ -182,43 +182,43 @@ impl GitSha {
     }
 }
 
-impl AsRef<str> for GitSha {
+impl AsRef<str> for Sha {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl TryFrom<&str> for GitSha {
-    type Error = GitRefParseError;
+impl TryFrom<&str> for Sha {
+    type Error = RefError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
     }
 }
 
-impl TryFrom<String> for GitSha {
-    type Error = GitRefParseError;
+impl TryFrom<String> for Sha {
+    type Error = RefError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::new(value)
     }
 }
 
-impl std::str::FromStr for GitSha {
-    type Err = GitRefParseError;
+impl std::str::FromStr for Sha {
+    type Err = RefError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::new(value)
     }
 }
 
-impl fmt::Display for GitSha {
+impl fmt::Display for Sha {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.short())
     }
 }
 
-impl Serialize for GitSha {
+impl Serialize for Sha {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -227,7 +227,7 @@ impl Serialize for GitSha {
     }
 }
 
-impl<'de> Deserialize<'de> for GitSha {
+impl<'de> Deserialize<'de> for Sha {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -237,16 +237,16 @@ impl<'de> Deserialize<'de> for GitSha {
     }
 }
 
-impl From<GitSha> for GitRef {
-    fn from(sha: GitSha) -> Self {
+impl From<Sha> for Ref {
+    fn from(sha: Sha) -> Self {
         Self(sha.0)
     }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ResolvedRef {
-    Tag { label: String, sha: GitSha },
-    Ref(GitRef),
+    Tag { label: String, sha: Sha },
+    Ref(Ref),
 }
 
 impl fmt::Display for ResolvedRef {
@@ -258,37 +258,37 @@ impl fmt::Display for ResolvedRef {
     }
 }
 
-fn validate_git_ref(value: &str) -> Result<(), GitRefParseError> {
+fn validate_git_ref(value: &str) -> Result<(), RefError> {
     if value.is_empty() {
-        return Err(GitRefParseError::EmptyRef);
+        return Err(RefError::EmptyRef);
     }
 
     if value == "@" {
-        return Err(GitRefParseError::InvalidRefSyntax {
+        return Err(RefError::InvalidRefSyntax {
             reason: "single @ is not a ref",
         });
     }
 
     if value.starts_with('/') || value.ends_with('/') {
-        return Err(GitRefParseError::InvalidRefSyntax {
+        return Err(RefError::InvalidRefSyntax {
             reason: "refs cannot start or end with /",
         });
     }
 
     if value.ends_with('.') {
-        return Err(GitRefParseError::InvalidRefSyntax {
+        return Err(RefError::InvalidRefSyntax {
             reason: "refs cannot end with .",
         });
     }
 
     if value.contains("..") {
-        return Err(GitRefParseError::InvalidRefSyntax {
+        return Err(RefError::InvalidRefSyntax {
             reason: "refs cannot contain ..",
         });
     }
 
     if value.contains("@{") {
-        return Err(GitRefParseError::InvalidRefSyntax {
+        return Err(RefError::InvalidRefSyntax {
             reason: "refs cannot contain @{",
         });
     }
@@ -298,24 +298,24 @@ fn validate_git_ref(value: &str) -> Result<(), GitRefParseError> {
             || c.is_ascii_whitespace()
             || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
     }) {
-        return Err(GitRefParseError::InvalidRefCharacter { index, character });
+        return Err(RefError::InvalidRefCharacter { index, character });
     }
 
     for component in value.split('/') {
         if component.is_empty() {
-            return Err(GitRefParseError::InvalidRefSyntax {
+            return Err(RefError::InvalidRefSyntax {
                 reason: "refs cannot contain empty path components",
             });
         }
 
         if component.starts_with('.') {
-            return Err(GitRefParseError::InvalidRefSyntax {
+            return Err(RefError::InvalidRefSyntax {
                 reason: "ref path components cannot start with .",
             });
         }
 
         if component.strip_suffix(".lock").is_some() {
-            return Err(GitRefParseError::InvalidRefSyntax {
+            return Err(RefError::InvalidRefSyntax {
                 reason: "ref path components cannot end with .lock",
             });
         }
@@ -324,15 +324,15 @@ fn validate_git_ref(value: &str) -> Result<(), GitRefParseError> {
     Ok(())
 }
 
-fn validate_git_sha(value: &str) -> Result<(), GitRefParseError> {
+fn validate_git_sha(value: &str) -> Result<(), RefError> {
     if value.len() != 40 {
-        return Err(GitRefParseError::InvalidShaLength {
+        return Err(RefError::InvalidShaLength {
             actual: value.len(),
         });
     }
 
     if let Some((index, character)) = value.char_indices().find(|(_, c)| !c.is_ascii_hexdigit()) {
-        return Err(GitRefParseError::InvalidShaHex { index, character });
+        return Err(RefError::InvalidShaHex { index, character });
     }
 
     Ok(())
@@ -373,16 +373,16 @@ pub async fn clone(repo: &str, cwd: &Path) -> TsdlResult<()> {
     Ok(())
 }
 
-pub async fn clone_fast(repo: &str, git_ref: &GitRef, cwd: &Path) -> TsdlResult<()> {
+pub async fn clone_fast(repo: &str, git_ref: &Ref, cwd: &Path) -> TsdlResult<Sha> {
     clone_fast_with_force(repo, git_ref, cwd, false).await
 }
 
 pub async fn clone_fast_with_force(
     repo: &str,
-    git_ref: &GitRef,
+    git_ref: &Ref,
     cwd: &Path,
     force: bool,
-) -> TsdlResult<()> {
+) -> TsdlResult<Sha> {
     if force || !is_same_remote(cwd, repo).await {
         clean_anyway(cwd).await?;
     }
@@ -391,10 +391,15 @@ pub async fn clone_fast_with_force(
     } else {
         init_fetch_and_checkout(cwd, repo, git_ref).await?;
     }
-    Ok(())
+    get_head_sha(cwd).await.map_err(|err| {
+        TsdlError::context(
+            format!("Resolving checked out commit for {}", cwd.display()),
+            err,
+        )
+    })
 }
 
-async fn fetch_and_checkout(cwd: &Path, git_ref: &GitRef) -> TsdlResult<()> {
+async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
     Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(cwd)
@@ -421,6 +426,11 @@ async fn get_head_sha1(cwd: &Path) -> TsdlResult<String> {
     .map_err(|e| TsdlError::context("rev-parse HEAD is not a valid utf-8", e))
 }
 
+async fn get_head_sha(cwd: &Path) -> TsdlResult<Sha> {
+    let value = get_head_sha1(cwd).await?;
+    Sha::new(value.trim()).map_err(|e| TsdlError::context("Parsing HEAD commit", e))
+}
+
 async fn get_remote_url(cwd: &Path) -> TsdlResult<String> {
     String::from_utf8(
         Command::new("git")
@@ -433,7 +443,7 @@ async fn get_remote_url(cwd: &Path) -> TsdlResult<String> {
     .map_err(|e| TsdlError::context("remote get-url origin did not return a valid utf-8", e))
 }
 
-async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &GitRef) -> TsdlResult<()> {
+async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> TsdlResult<()> {
     clean_anyway(cwd).await?;
     fs::create_dir_all(cwd).await?;
 
@@ -524,7 +534,7 @@ pub async fn list_grammar_files(cwd: &Path) -> TsdlResult<Vec<PathBuf>> {
     Ok(result)
 }
 
-async fn reset_head_hard(cwd: &Path, git_ref: &GitRef) -> TsdlResult<()> {
+async fn reset_head_hard(cwd: &Path, git_ref: &Ref) -> TsdlResult<()> {
     if git_ref.as_str() != get_head_sha1(cwd).await?.trim() {
         Command::new("git")
             .current_dir(cwd)
@@ -536,7 +546,7 @@ async fn reset_head_hard(cwd: &Path, git_ref: &GitRef) -> TsdlResult<()> {
     Ok(())
 }
 
-pub async fn tag_for_ref(cwd: &Path, git_ref: &GitRef) -> TsdlResult<String> {
+pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> TsdlResult<String> {
     // Try to find a tag for this ref
     let tag = Command::new("git")
         .current_dir(cwd)
@@ -570,14 +580,14 @@ mod tests {
 
     #[test]
     fn git_ref_rejects_empty_refs() {
-        assert_eq!(GitRef::new(""), Err(GitRefParseError::EmptyRef));
+        assert_eq!(Ref::new(""), Err(RefError::EmptyRef));
     }
 
     #[test]
     fn git_ref_rejects_whitespace() {
         assert_eq!(
-            GitRef::new("feature branch"),
-            Err(GitRefParseError::InvalidRefCharacter {
+            Ref::new("feature branch"),
+            Err(RefError::InvalidRefCharacter {
                 index: 7,
                 character: ' ',
             })
@@ -587,31 +597,31 @@ mod tests {
     #[test]
     fn git_ref_rejects_invalid_git_ref_syntax() {
         assert_eq!(
-            GitRef::new("feature..branch"),
-            Err(GitRefParseError::InvalidRefSyntax {
+            Ref::new("feature..branch"),
+            Err(RefError::InvalidRefSyntax {
                 reason: "refs cannot contain ..",
             })
         );
         assert_eq!(
-            GitRef::new("feature.lock"),
-            Err(GitRefParseError::InvalidRefSyntax {
+            Ref::new("feature.lock"),
+            Err(RefError::InvalidRefSyntax {
                 reason: "ref path components cannot end with .lock",
             })
         );
         assert_eq!(
-            GitRef::new("refs/heads/main"),
-            Ok(GitRef::new("refs/heads/main").unwrap())
+            Ref::new("refs/heads/main"),
+            Ok(Ref::new("refs/heads/main").unwrap())
         );
     }
 
     #[test]
     fn git_ref_normalizes_dotted_numeric_versions() {
         assert_eq!(
-            GitRef::from_version_or_ref("0.21.0").unwrap().as_str(),
+            Ref::from_version_or_ref("0.21.0").unwrap().as_str(),
             "v0.21.0"
         );
         assert_eq!(
-            GitRef::from_version_or_ref("v0.21.0").unwrap().as_str(),
+            Ref::from_version_or_ref("v0.21.0").unwrap().as_str(),
             "v0.21.0"
         );
     }
@@ -619,18 +629,18 @@ mod tests {
     #[test]
     fn git_ref_preserves_branches_and_full_shas() {
         assert_eq!(
-            GitRef::from_version_or_ref("master").unwrap().as_str(),
+            Ref::from_version_or_ref("master").unwrap().as_str(),
             "master"
         );
         assert_eq!(
-            GitRef::from_version_or_ref(FULL_SHA).unwrap().as_str(),
+            Ref::from_version_or_ref(FULL_SHA).unwrap().as_str(),
             FULL_SHA
         );
     }
 
     #[test]
     fn git_ref_display_is_short_but_as_str_is_exact() {
-        let git_ref = GitRef::new(FULL_SHA).unwrap();
+        let git_ref = Ref::new(FULL_SHA).unwrap();
 
         assert_eq!(git_ref.as_str(), FULL_SHA);
         assert_eq!(git_ref.short(), "6368017");
@@ -639,15 +649,15 @@ mod tests {
 
     #[test]
     fn git_sha_requires_full_hex_sha() {
-        assert_eq!(GitSha::new(FULL_SHA).unwrap().as_str(), FULL_SHA);
-        assert_eq!(GitSha::new(FULL_SHA).unwrap().short(), "6368017");
+        assert_eq!(Sha::new(FULL_SHA).unwrap().as_str(), FULL_SHA);
+        assert_eq!(Sha::new(FULL_SHA).unwrap().short(), "6368017");
         assert_eq!(
-            GitSha::new("6368017"),
-            Err(GitRefParseError::InvalidShaLength { actual: 7 })
+            Sha::new("6368017"),
+            Err(RefError::InvalidShaLength { actual: 7 })
         );
         assert_eq!(
-            GitSha::new("636801770eea172d140e64b691815ff11f6b556x"),
-            Err(GitRefParseError::InvalidShaHex {
+            Sha::new("636801770eea172d140e64b691815ff11f6b556x"),
+            Err(RefError::InvalidShaHex {
                 index: 39,
                 character: 'x',
             })
@@ -656,7 +666,7 @@ mod tests {
 
     #[test]
     fn serde_rejects_invalid_git_refs() {
-        let err = toml::from_str::<std::collections::BTreeMap<String, GitRef>>(r#"git_ref = """#)
+        let err = toml::from_str::<std::collections::BTreeMap<String, Ref>>(r#"git_ref = """#)
             .unwrap_err();
 
         assert!(err.to_string().contains("git ref cannot be empty"));
