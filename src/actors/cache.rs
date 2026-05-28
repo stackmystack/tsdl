@@ -131,6 +131,7 @@ impl CacheAddr {
 /// The Cache Actor: Manages cache state and processes messages
 pub struct CacheActor {
     db: cache::Db,
+    store: cache::Store,
     force: bool,
     rx: mpsc::Receiver<CacheMessage>,
 }
@@ -200,7 +201,7 @@ impl CacheActor {
                         tx,
                         kind: ResponseKind::SaveComplete,
                     }
-                    .send(self.db.save().await);
+                    .send(self.store.save(&self.db).await);
                 }
 
                 CacheMessage::HasCompatibleEntries { language, spec, tx } => {
@@ -236,9 +237,14 @@ impl CacheActor {
     }
 
     #[must_use]
-    pub fn spawn(db: cache::Db, force: bool) -> CacheAddr {
+    pub fn spawn(db: cache::Db, store: cache::Store, force: bool) -> CacheAddr {
         let (tx, rx) = mpsc::channel(64);
-        let actor = Self { db, force, rx };
+        let actor = Self {
+            db,
+            store,
+            force,
+            rx,
+        };
         tokio::spawn(actor.run());
         CacheAddr::new(tx)
     }

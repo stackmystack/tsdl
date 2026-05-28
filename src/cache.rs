@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Write as _},
+    io::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -10,7 +11,7 @@ use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, ReadBuf};
 use tracing::debug;
 
-use crate::{args, build, consts, git, parser, Result, ResultExt};
+use crate::{args, build, consts, git, parser, Error, Result, ResultExt};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -80,11 +81,21 @@ impl From<&str> for GrammarHash {
     }
 }
 
-/// The build cache stored in  `[build-dir]/[consts::CACHE_FILE]`
+/// The logical build cache contents.
+///
+/// Persistence details such as the cache file path intentionally live in
+/// [`Store`], not in this serializable structure. That keeps the on-disk TOML
+/// schema independent from the runtime `--build-dir` location.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
+    #[serde(default)]
     pub parsers: BTreeMap<Key, Entry>,
-    pub file: PathBuf,
+}
+
+/// File-backed storage for a [`Db`].
+#[derive(Debug, Clone)]
+pub struct Store {
+    file: PathBuf,
 }
 
 /// Cache entry for a single parser
@@ -427,49 +438,81 @@ pub struct Update {
     pub name: Key,
 }
 
+impl Store {
+    #[must_use]
+    pub fn new(build_dir: &Path) -> Self {
+        Self {
+            file: build_dir.join(consts::CACHE_FILE),
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.file
+    }
+
+    /// Delete the cache file from disk.
+    pub async fn delete(&self) -> Result<()> {
+        match tokio::fs::metadata(&self.file).await {
+            Ok(_) => {
+                tokio::fs::remove_file(&self.file)
+                    .await
+                    .with_context(|| format!("Deleting cache file at {}", self.file.display()))?;
+                debug!("Cache file deleted");
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("Reading cache file metadata at {}", self.file.display())
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load the cache from disk, or return an empty cache.
+    pub fn load(&self) -> Result<Db> {
+        if !self.file.exists() {
+            debug!(
+                "Cache file not found at {}, returning empty cache",
+                self.file.display()
+            );
+            return Ok(Db::default());
+        }
+
+        let contents = std::fs::read_to_string(&self.file)
+            .with_context(|| format!("Reading cache file at {}", self.file.display()))?;
+
+        toml::from_str(&contents)
+            .with_context(|| format!("Parsing cache file at {}", self.file.display()))
+    }
+
+    /// Atomically save the cache to disk.
+    pub async fn save(&self, db: &Db) -> Result<()> {
+        let contents = toml::to_string_pretty(db).context("Serializing cache to TOML")?;
+        let file = self.file.clone();
+        let result =
+            tokio::task::spawn_blocking(move || write_cache_file_atomically(&file, &contents))
+                .await
+                .context("Joining cache save task")?;
+        result?;
+
+        debug!("Cache saved to {}", self.file.display());
+        Ok(())
+    }
+}
+
 impl Db {
-    /// Clear all entries
+    /// Clear all entries.
     pub fn clear(&mut self) {
         self.parsers.clear();
     }
 
-    /// Delete the cache file from disk
-    pub async fn delete(build_dir: &Path) -> Result<()> {
-        let file = build_dir.join(consts::CACHE_FILE);
-        if tokio::fs::metadata(&file).await.is_ok() {
-            tokio::fs::remove_file(&file)
-                .await
-                .with_context(|| format!("Deleting cache file at {}", file.display()))?;
-            debug!("Cache file deleted");
-        }
-        Ok(())
-    }
-
-    /// Get cache entry for a parser
+    /// Get cache entry for a parser.
     #[must_use]
     pub fn get(&self, name: &Key) -> Option<&Entry> {
         self.parsers.get(name)
-    }
-
-    /// Load the cache from disk, or return the empty cache.
-    pub fn load(build_dir: &Path) -> Result<Self> {
-        let file = build_dir.join(consts::CACHE_FILE);
-        if !file.exists() {
-            debug!(
-                "Cache file not found at {}, returning empty cache",
-                file.display()
-            );
-            return Ok(Db {
-                parsers: BTreeMap::new(),
-                file,
-            });
-        }
-
-        let contents = std::fs::read_to_string(&file)
-            .with_context(|| format!("Reading cache file at {}", file.display()))?;
-
-        toml::from_str(&contents)
-            .with_context(|| format!("Parsing cache file at {}", file.display()))
     }
 
     /// Explain whether a parser cache entry can satisfy the requested build.
@@ -502,22 +545,52 @@ impl Db {
             .needs_rebuild()
     }
 
-    /// Save the cache to disk
-    pub async fn save(&self) -> Result<()> {
-        let contents = toml::to_string_pretty(self).context("Serializing cache to TOML")?;
-
-        tokio::fs::write(&self.file, contents)
-            .await
-            .with_context(|| format!("Writing cache file to {}", self.file.display()))?;
-
-        debug!("Cache saved to {}", self.file.display());
-        Ok(())
-    }
-
-    /// Insert or update a parser cache entry
+    /// Insert or update a parser cache entry.
     pub fn set(&mut self, name: Key, entry: Entry) {
         self.parsers.insert(name, entry);
     }
+}
+
+fn write_cache_file_atomically(file: &Path, contents: &str) -> Result<()> {
+    let parent = file.parent().ok_or_else(|| Error::Message {
+        message: format!(
+            "Cache file path has no parent directory: {}",
+            file.display()
+        ),
+    })?;
+
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("Creating cache directory {}", parent.display()))?;
+
+    let mut temp = tempfile::Builder::new()
+        .prefix(".cache.toml.")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("Creating temporary cache file in {}", parent.display()))?;
+
+    temp.write_all(contents.as_bytes())
+        .with_context(|| format!("Writing temporary cache file {}", temp.path().display()))?;
+    temp.as_file_mut()
+        .sync_all()
+        .with_context(|| format!("Syncing temporary cache file {}", temp.path().display()))?;
+
+    temp.persist(file)
+        .map_err(|err| err.error)
+        .with_context(|| format!("Installing cache file to {}", file.display()))?;
+
+    if let Err(err) = sync_directory(parent) {
+        debug!(
+            "Could not sync cache directory {} after saving {}: {err}",
+            parent.display(),
+            file.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
 }
 
 /// Hash the contents of a file using SHA-1 and return the hex string.
@@ -776,5 +849,53 @@ mod tests {
                 },
             ],
         );
+    }
+
+    #[test]
+    fn store_loads_cache_without_runtime_file_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Store::new(temp.path());
+        let spec = test_spec();
+        let cache = cache_with_entry("abc123", &spec);
+        let contents = toml::to_string_pretty(&cache).unwrap();
+
+        std::fs::write(store.path(), contents).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert!(loaded.get(&key()).is_some());
+    }
+
+    #[tokio::test]
+    async fn store_ignores_legacy_file_field_and_saves_to_current_path() {
+        let current = tempfile::TempDir::new().unwrap();
+        let stale = tempfile::TempDir::new().unwrap();
+        let store = Store::new(current.path());
+        let stale_file = stale.path().join(consts::CACHE_FILE);
+        let spec = test_spec();
+        let cache = cache_with_entry("abc123", &spec);
+        let contents = toml::to_string_pretty(&cache).unwrap();
+        let legacy_contents = format!(
+            "file = {:?}\n{contents}",
+            stale_file.to_string_lossy().as_ref()
+        );
+
+        std::fs::write(store.path(), legacy_contents).unwrap();
+
+        let mut loaded = store.load().unwrap();
+        assert!(loaded.get(&key()).is_some());
+        loaded.clear();
+
+        store.save(&loaded).await.unwrap();
+
+        assert!(
+            !stale_file.exists(),
+            "cache save should not use a legacy serialized file path"
+        );
+        let saved = std::fs::read_to_string(store.path()).unwrap();
+        assert!(
+            !saved.lines().any(|line| line.starts_with("file")),
+            "cache TOML should not serialize runtime storage path: {saved}"
+        );
+        assert!(saved.contains("parsers"));
     }
 }
