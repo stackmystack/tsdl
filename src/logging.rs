@@ -14,32 +14,82 @@ use crate::{absolute_normalize, args, consts, Error, Result, ResultExt};
 #[allow(dead_code)]
 pub struct Guard(WorkerGuard);
 
+pub struct Policy<'a> {
+    pub explicit: Option<&'a Path>,
+    pub implicit: Implicit<'a>,
+}
+
+pub enum Implicit<'a> {
+    BuildDir { dir: &'a Path },
+    None,
+}
+
+pub struct Session {
+    path: Option<PathBuf>,
+    _guard: Option<Guard>,
+}
+
+impl Session {
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
 pub fn init(
-    log: Option<&PathBuf>,
+    policy: Policy<'_>,
     log_color: args::LogColor,
     verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
-    build_dir: &Path,
-) -> Result<(PathBuf, Guard)> {
+) -> Result<Session> {
     let color = match log_color {
         args::LogColor::Auto => atty::is(atty::Stream::Stdout),
         args::LogColor::No => false,
         args::LogColor::Yes => true,
     };
     console::set_colors_enabled(color);
+
     let filter = verbose.log_level_filter().as_trace();
-    let path = resolve_log_path(log, build_dir)?;
-    let file = open_log_file(&path)?;
-    let (writer, guard) = tracing_appender::non_blocking(file);
+    let path = resolve_log_path(policy)?;
+    let (writer, guard) = match path.as_ref() {
+        Some(path) => {
+            let file = open_log_file(path)?;
+            let (writer, guard) = tracing_appender::non_blocking(file);
+            (Some(writer), Some(Guard(guard)))
+        }
+        None => (None, None),
+    };
+
     init_tracing(writer, color, filter);
-    Ok((path, Guard(guard)))
+    Ok(Session {
+        path,
+        _guard: guard,
+    })
 }
 
 fn init_tracing(
-    writer: tracing_appender::non_blocking::NonBlocking,
+    writer: Option<tracing_appender::non_blocking::NonBlocking>,
     color: bool,
     filter: LevelFilter,
 ) {
-    let stdout_layer = tracing_subscriber::fmt::layer()
+    let mut layers: Vec<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> = Vec::new();
+
+    if let Some(writer) = writer {
+        layers.push(file_layer(writer, color, filter));
+    }
+
+    if filter == LevelFilter::DEBUG || filter == LevelFilter::TRACE {
+        layers.push(stderr_layer(color, filter));
+    }
+
+    let subscriber = tracing_subscriber::registry().with(layers);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+}
+
+fn stderr_layer(
+    color: bool,
+    filter: LevelFilter,
+) -> Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> {
+    tracing_subscriber::fmt::layer()
         .compact()
         .with_ansi(color)
         .with_file(true)
@@ -49,8 +99,16 @@ fn init_tracing(
         .with_thread_ids(false)
         .with_writer(std::io::stderr)
         .without_time()
-        .with_filter(filter);
-    let file_layer = tracing_subscriber::fmt::layer()
+        .with_filter(filter)
+        .boxed()
+}
+
+fn file_layer(
+    writer: tracing_appender::non_blocking::NonBlocking,
+    color: bool,
+    filter: LevelFilter,
+) -> Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> {
+    tracing_subscriber::fmt::layer()
         .compact()
         .with_ansi(color)
         .with_file(true)
@@ -59,22 +117,34 @@ fn init_tracing(
         .with_target(true)
         .with_thread_ids(true)
         .with_writer(writer)
-        .with_filter(filter);
-    if filter == LevelFilter::DEBUG || filter == LevelFilter::TRACE {
-        let subscriber = tracing_subscriber::registry()
-            .with(file_layer)
-            .with(stdout_layer);
-        tracing::subscriber::set_global_default(subscriber).unwrap();
-    } else {
-        let subscriber = tracing_subscriber::registry().with(file_layer);
-        tracing::subscriber::set_global_default(subscriber).unwrap();
+        .with_filter(filter)
+        .boxed()
+}
+
+fn resolve_log_path(policy: Policy<'_>) -> Result<Option<PathBuf>> {
+    match (policy.explicit, policy.implicit) {
+        (Some(log), Implicit::BuildDir { dir }) => validate_log_path(dir, log).map(Some),
+        (Some(log), Implicit::None) => validate_standalone_log_path(log).map(Some),
+        (None, Implicit::BuildDir { dir }) => {
+            validate_log_path(dir, &dir.join(consts::LOG_FILE)).map(Some)
+        }
+        (None, Implicit::None) => Ok(None),
     }
 }
 
-fn resolve_log_path(log: Option<&PathBuf>, build_dir: &Path) -> Result<PathBuf> {
-    let log = log.map_or_else(|| build_dir.join(consts::LOG_FILE), Clone::clone);
+fn validate_standalone_log_path(log: &Path) -> Result<PathBuf> {
+    let log = absolute_normalize(log)?;
 
-    validate_log_path(build_dir, &log)
+    if log.is_dir() {
+        return Err(Error::Message {
+            message: format!(
+                "--log must be a file path, not a directory: {}",
+                log.display()
+            ),
+        });
+    }
+
+    Ok(log)
 }
 
 fn validate_log_path(build_dir: &Path, log: &Path) -> Result<PathBuf> {
@@ -111,12 +181,12 @@ fn validate_log_path(build_dir: &Path, log: &Path) -> Result<PathBuf> {
 
         if component_count != 1 {
             return Err(Error::Message {
-                            message: format!(
-                                "--log path {} is nested inside --build-dir {}. Put logs directly under the build directory root or outside it.",
-                                log.display(),
-                                build_dir.display()
-                            ),
-                        });
+                message: format!(
+                    "--log path {} is nested inside --build-dir {}. Put logs directly under the build directory root or outside it.",
+                    log.display(),
+                    build_dir.display()
+                ),
+            });
         }
 
         let Some(name) = relative.file_name() else {

@@ -2,7 +2,7 @@ use std::{process::ExitCode, time::Instant};
 
 use console::style;
 use tracing::{error, info};
-use tsdl::{app, args, error::Error, Result};
+use tsdl::{app, error::Error, Result};
 
 fn main() -> ExitCode {
     set_panic_hook();
@@ -15,7 +15,7 @@ fn main() -> ExitCode {
     };
 
     info!("Starting");
-    match run(app) {
+    match run(&app) {
         Err(Error::Interrupted { signal }) => ExitCode::from(signal.shell_exit_code()),
         Err(e) => {
             eprintln!("{e}");
@@ -25,10 +25,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(app: app::App) -> Result<()> {
-    match app.subcommand {
-        tsdl::args::Command::Build => {
-            let (result, duration) = time(|| tsdl::build::run(&app));
+fn run(app: &app::App) -> Result<()> {
+    match &app.command {
+        app::ResolvedCommand::Build(build) => {
+            let (result, duration) = time(|| tsdl::build::run(app, &build.command));
             match &result {
                 Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
                 Err(Error::Interrupted { signal }) => println!(
@@ -39,8 +39,9 @@ fn run(app: app::App) -> Result<()> {
             }
             result
         }
-        args::Command::Config { command } => tsdl::config::run(&app.config_path, &command),
-        args::Command::Selfupdate{ force, target} => tsdl::selfupdate::run(force, target.as_str()),
+        app::ResolvedCommand::ConfigCurrent(build) => tsdl::config::print_current(&build.command),
+        app::ResolvedCommand::ConfigDefault => tsdl::config::print_default(),
+        app::ResolvedCommand::Selfupdate{ force, target} => tsdl::selfupdate::run(*force, target.as_str()),
     }
 }
 

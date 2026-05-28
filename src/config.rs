@@ -526,19 +526,25 @@ pub fn print_indent(s: &str, indent: &str) {
 
 pub fn run(config_path: &Path, command: &args::ConfigCommand) -> Result<()> {
     match command {
-        args::ConfigCommand::Current => {
-            let cmd: args::BuildCommand = current(config_path, None)?;
-            println!(
-                "{}",
-                toml::to_string(&cmd).context("Generating default TOML config")?
-            );
-        }
-        args::ConfigCommand::Default => println!(
-            "{}",
-            toml::to_string(&args::BuildCommand::default())
-                .context("Generating default TOML config")?
-        ),
+        args::ConfigCommand::Current => print_current(&current(config_path, None)?),
+        args::ConfigCommand::Default => print_default(),
     }
+}
+
+pub fn print_current(command: &args::BuildCommand) -> Result<()> {
+    println!(
+        "{}",
+        toml::to_string(command).context("Generating current TOML config")?
+    );
+    Ok(())
+}
+
+pub fn print_default() -> Result<()> {
+    println!(
+        "{}",
+        toml::to_string(&args::BuildCommand::default())
+            .context("Generating default TOML config")?
+    );
     Ok(())
 }
 

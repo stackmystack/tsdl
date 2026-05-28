@@ -2,7 +2,10 @@ use assert_fs::prelude::*;
 use indoc::formatdoc;
 use predicates::{self as p};
 
-use tsdl::{args::BuildCommand, consts::BUILD_DIR};
+use tsdl::{
+    args::BuildCommand,
+    consts::{BUILD_DIR, CONFIG_FILE},
+};
 
 use crate::cmd::Sandbox;
 
@@ -29,13 +32,61 @@ fn default_is_default_toml() {
     sandbox.cmd.assert().success().stdout(p::str::contains(
         toml::to_string(&BuildCommand::default()).unwrap(),
     ));
-    assert!(!sandbox.is_empty());
+    assert!(sandbox.is_empty());
+}
+
+#[test]
+fn default_uses_explicit_log_file() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .cmd
+        .args(["--log", "config-default.log", "config", "default"]);
+    sandbox.cmd.assert().success();
     sandbox
         .tmp
-        .child(BUILD_DIR)
-        .child("log")
+        .child("config-default.log")
         .assert(p::path::exists())
         .assert(p::path::is_file());
+    sandbox.tmp.child(BUILD_DIR).assert(p::path::missing());
+}
+
+#[test]
+fn default_ignores_malformed_config_file() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .tmp
+        .child(CONFIG_FILE)
+        .write_str("not valid toml =")
+        .unwrap();
+
+    sandbox
+        .cmd
+        .args(["config", "default"])
+        .assert()
+        .success()
+        .stdout(p::str::contains(
+            toml::to_string(&BuildCommand::default()).unwrap(),
+        ));
+}
+
+#[test]
+fn current_rejects_malformed_config_file() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .tmp
+        .child(CONFIG_FILE)
+        .write_str("not valid toml =")
+        .unwrap();
+
+    sandbox
+        .cmd
+        .args(["config", "current"])
+        .assert()
+        .failure()
+        .stderr(p::str::contains(
+            "Resolving build configuration for `config current`",
+        ))
+        .stderr(p::str::contains("Parsing config file"));
 }
 
 #[test]
@@ -47,13 +98,22 @@ fn current_uses_default() {
         .assert()
         .success()
         .stdout(p::str::contains(toml::to_string(&sandbox.build).unwrap()));
-    assert!(!sandbox.is_empty());
+    assert!(sandbox.is_empty());
+}
+
+#[test]
+fn current_uses_explicit_log_file() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .cmd
+        .args(["--log", "config-current.log", "config", "current"]);
+    sandbox.cmd.assert().success();
     sandbox
         .tmp
-        .child(BUILD_DIR)
-        .child("log")
+        .child("config-current.log")
         .assert(p::path::exists())
         .assert(p::path::is_file());
+    sandbox.tmp.child(BUILD_DIR).assert(p::path::missing());
 }
 
 #[test]
@@ -75,10 +135,5 @@ fn current_uses_config_file() {
         .success()
         .stdout(p::str::contains(toml::to_string(&sandbox.build).unwrap()));
     assert!(!sandbox.is_empty());
-    sandbox
-        .tmp
-        .child(build_dir)
-        .child("log")
-        .assert(p::path::exists())
-        .assert(p::path::is_file());
+    sandbox.tmp.child(build_dir).assert(p::path::missing());
 }

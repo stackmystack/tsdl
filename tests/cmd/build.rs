@@ -14,6 +14,26 @@ use tsdl::parser::WASM_EXTENSION;
 use crate::cmd::Sandbox;
 
 #[rstest]
+fn build_rejects_malformed_config_file() {
+    let mut sandbox = Sandbox::new();
+    sandbox
+        .tmp
+        .child(CONFIG_FILE)
+        .write_str("not valid toml =")
+        .unwrap();
+
+    sandbox
+        .cmd
+        .arg("build")
+        .assert()
+        .failure()
+        .stderr(p::str::contains(
+            "Resolving build configuration for `build`",
+        ))
+        .stderr(p::str::contains("Parsing config file"));
+}
+
+#[rstest]
 fn no_args_should_download_tree_sitter_cli() {
     let mut sandbox = Sandbox::new();
     sandbox.cmd.arg("build");
