@@ -15,7 +15,9 @@ use fs2::FileExt;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 use tracing::info;
 
-use crate::{absolute_normalize, consts, format_duration, Error, Result, ResultExt};
+use crate::{
+    absolute_normalize, build_dir::BuildDir, consts, format_duration, Error, Result, ResultExt,
+};
 
 /// Information about the process currently holding the build lock.
 #[derive(Debug, Clone)]
@@ -293,9 +295,9 @@ pub struct Lock {
 
 impl Lock {
     #[must_use]
-    pub fn new(build_dir: &Path) -> Self {
+    pub fn new(build_dir: &BuildDir) -> Self {
         Self {
-            lock_path: build_dir.join(consts::LOCK_FILE),
+            lock_path: build_dir.lock_file(),
             current_pid: Pid::from(process::id() as usize),
         }
     }
@@ -565,7 +567,8 @@ mod tests {
         let lock_file = temp.path().join(consts::LOCK_FILE);
         fs::write(&lock_file, unused_pid().to_string()).unwrap();
 
-        let lock = Lock::new(temp.path());
+        let build_dir = BuildDir::new(temp.path()).unwrap();
+        let lock = Lock::new(&build_dir);
         let status = lock.try_acquire().unwrap();
 
         assert!(
