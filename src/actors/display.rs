@@ -412,7 +412,7 @@ impl DisplayActor {
             }
         };
 
-        // Initial render
+        // One-time bootstrap render so the user sees state immediately.
         let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
         if let Err(err) = draw_lines(&mut terminal, lines) {
             ratatui::restore();
@@ -425,8 +425,24 @@ impl DisplayActor {
         let mut tick_interval = time::interval(Duration::from_millis(100));
 
         loop {
-            // Drain all pending messages before rendering
+            // ── wait for the next event ─────────────────────────────
             let mut shutdown = None;
+            tokio::select! {
+                msg = self.rx.recv() => {
+                    match msg {
+                        Some(Message::Shutdown { interrupted, tx }) => {
+                            shutdown = Some((interrupted, tx));
+                        }
+                        Some(other) => self.handle_message(other),
+                        None => break,
+                    }
+                }
+                _ = tick_interval.tick() => {
+                    // fall through to drain + render
+                }
+            }
+
+            // ── drain any messages that queued up concurrently ─────
             while let Ok(msg) = self.rx.try_recv() {
                 match msg {
                     Message::Shutdown { interrupted, tx } => {
@@ -437,12 +453,13 @@ impl DisplayActor {
                 }
             }
 
+            // ── shutdown after draining ────────────────────────────
             if let Some((interrupted, tx)) = shutdown {
                 self.finish_fancy(&mut terminal, interrupted, tx);
                 return;
             }
 
-            // Render current state
+            // ── render once per event cycle ────────────────────────
             let lines = self.materialize(terminal.size().map_or(80, |s| s.width));
             if let Err(err) = draw_lines(&mut terminal, lines) {
                 ratatui::restore();
@@ -450,23 +467,6 @@ impl DisplayActor {
                 eprintln!("tsdl: fancy display failed; falling back to plain progress: {err}");
                 self.run_plain().await;
                 return;
-            }
-
-            // Wait for next event
-            tokio::select! {
-                msg = self.rx.recv() => {
-                    match msg {
-                        Some(Message::Shutdown { interrupted, tx }) => {
-                            self.finish_fancy(&mut terminal, interrupted, tx);
-                            return;
-                        }
-                        Some(other) => self.handle_message(other),
-                        None => break,
-                    }
-                }
-                _ = tick_interval.tick() => {
-                    // Next materialize will update live clocks.
-                }
             }
         }
 
