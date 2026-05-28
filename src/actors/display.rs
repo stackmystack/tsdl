@@ -363,11 +363,7 @@ pub struct DisplayActor {
 
 impl DisplayActor {
     #[must_use]
-    pub fn spawn(
-        mode: display::Mode,
-        build_dir: Arc<PathBuf>,
-        out_dir: Arc<PathBuf>,
-    ) -> DisplayAddr {
+    pub fn spawn(mode: display::Mode, build_dir: PathBuf, out_dir: PathBuf) -> DisplayAddr {
         let (tx, rx) = mpsc::channel(256);
         let actor = Self {
             state: display::State::new(mode, build_dir, out_dir),
@@ -1197,8 +1193,8 @@ mod tests {
         DisplayActor {
             state: display::State::new(
                 display::Mode::Fancy,
-                Arc::new(PathBuf::from("build")),
-                Arc::new(PathBuf::from("out")),
+                PathBuf::from("build"),
+                PathBuf::from("out"),
             ),
             next_id: display::ItemId::new(NonZeroU64::MIN),
             plain_name_width: 16,
