@@ -132,7 +132,7 @@ async fn run_inner(
         .collect::<Vec<_>>();
 
     let mut errors: Vec<Error> =
-      // 1. crate::cache::Source: Create a stream from the input list
+      // 1. Create a stream from the input list
       stream::iter(languages)
           // 2. Stage: Discovery
           // Transform Language -> Future<Result<Vec<Grammar>>>
@@ -217,7 +217,7 @@ async fn discover_grammars(
         )
         .await;
 
-    let source = resolve_source(&cache, &language, &progress).await?;
+    let revision = resolve_revision(&cache, &language, &progress).await?;
 
     progress.step("scanning");
     let grammars = match language.discover_grammars().await {
@@ -251,7 +251,7 @@ async fn discover_grammars(
                 key,
                 hash.clone(),
                 language.spec.clone(),
-                source.clone(),
+                revision.clone(),
                 artifacts,
             )
             .await;
@@ -274,7 +274,7 @@ async fn discover_grammars(
             name,
             output: language.output.clone(),
             progress,
-            source: source.clone(),
+            revision: revision.clone(),
             spec: language.spec.clone(),
             ts_cli: ts_cli.clone(),
         });
@@ -283,11 +283,11 @@ async fn discover_grammars(
     Ok(builds)
 }
 
-async fn resolve_source(
+async fn resolve_revision(
     cache: &CacheAddr,
     language: &parser::LanguageBuild,
     progress: &ProgressAddr,
-) -> Result<crate::cache::Source> {
+) -> Result<crate::cache::Revision> {
     if language.spec.git_ref.is_moving() {
         info!(
             "Resolving moving parser git ref for {}: {}",
@@ -304,7 +304,7 @@ async fn resolve_source(
                     language.spec.git_ref.requested().as_str(),
                     checkout.commit.as_str()
                 );
-                Ok(crate::cache::Source::moving(checkout.commit))
+                Ok(crate::cache::Revision::moving(checkout.commit))
             }
             Err(e) => {
                 if shutdown::current().is_some_and(|s| s.is_cancelled()) {
@@ -336,6 +336,6 @@ async fn resolve_source(
             progress.set_outcome_cached().await;
         }
 
-        Ok(crate::cache::Source::stable())
+        Ok(crate::cache::Revision::stable())
     }
 }

@@ -98,26 +98,51 @@ pub struct Store {
     file: PathBuf,
 }
 
-/// Cache entry for a single parser
+/// Cache entry for a single parser.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
-    /// Hash of the grammar.js file(s)
+    /// Hash of the grammar.js file(s).
     pub hash: GrammarHash,
-    /// Complete build definition that affects parser output
-    pub spec: Arc<build::Spec>,
-    /// Parser source identity used by the cache. Moving refs include the
+    /// Resolved parser revision used by the cache. Moving refs include the
     /// checked-out commit.
-    pub source: Source,
+    pub revision: Revision,
+    /// Build inputs that affect parser output, excluding the requested output set.
+    pub recipe: BuildRecipe,
+    /// Parser outputs known to be available for this entry.
+    pub outputs: args::Target,
+}
+
+/// Build inputs that affect parser output, excluding the requested output set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildRecipe {
+    pub build_script: Option<String>,
+    pub git_ref: parser::Ref,
+    pub prefix: String,
+    pub repo: url::Url,
+    pub tree_sitter: args::TreeSitter,
+}
+
+impl BuildRecipe {
+    #[must_use]
+    pub fn from_spec(spec: &build::Spec) -> Self {
+        Self {
+            build_script: spec.build_script.clone(),
+            git_ref: spec.git_ref.clone(),
+            prefix: spec.prefix.clone(),
+            repo: spec.repo.clone(),
+            tree_sitter: spec.tree_sitter.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
-pub enum Source {
+pub enum Revision {
     Stable,
     Moving { commit: git::Sha },
 }
 
-impl Source {
+impl Revision {
     #[must_use]
     pub const fn stable() -> Self {
         Self::Stable
@@ -129,7 +154,7 @@ impl Source {
     }
 }
 
-impl fmt::Display for Source {
+impl fmt::Display for Revision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Stable => write!(f, "stable"),
@@ -168,9 +193,9 @@ pub enum MissReason {
         cached: parser::Ref,
         current: parser::Ref,
     },
-    SourceChanged {
-        cached: Source,
-        current: Source,
+    RevisionChanged {
+        cached: Revision,
+        current: Revision,
     },
     TreeSitterChanged {
         cached: args::TreeSitter,
@@ -181,9 +206,9 @@ pub enum MissReason {
         cached: String,
         current: String,
     },
-    TargetChanged {
-        cached: args::Target,
-        current: args::Target,
+    OutputsMissing {
+        available: args::Target,
+        requested: args::Target,
     },
     ArtifactMissing {
         path: PathBuf,
@@ -281,11 +306,11 @@ impl MissReason {
             Self::HashChanged { .. } => "hash",
             Self::RepoChanged { .. } => "repo",
             Self::RefChanged { .. } => "ref",
-            Self::SourceChanged { .. } => "source",
+            Self::RevisionChanged { .. } => "revision",
             Self::TreeSitterChanged { .. } => "tree-sitter",
             Self::BuildScriptChanged => "script",
             Self::PrefixChanged { .. } => "prefix",
-            Self::TargetChanged { .. } => "target",
+            Self::OutputsMissing { .. } => "outputs",
             Self::ArtifactMissing { .. }
             | Self::ArtifactNotFile { .. }
             | Self::ArtifactInaccessible { .. } => "artifact",
@@ -300,11 +325,11 @@ impl MissReason {
             Self::HashChanged { .. } => "grammar changed",
             Self::RepoChanged { .. } => "repo changed",
             Self::RefChanged { .. } => "git ref changed",
-            Self::SourceChanged { .. } => "git ref resolved commit changed",
+            Self::RevisionChanged { .. } => "git ref resolved commit changed",
             Self::TreeSitterChanged { .. } => "tree-sitter changed",
             Self::BuildScriptChanged => "build script changed",
             Self::PrefixChanged { .. } => "prefix changed",
-            Self::TargetChanged { .. } => "target changed",
+            Self::OutputsMissing { .. } => "requested output not cached",
             Self::ArtifactMissing { .. } => "artifact missing",
             Self::ArtifactNotFile { .. } => "artifact invalid",
             Self::ArtifactInaccessible { .. } => "artifact inaccessible",
@@ -329,8 +354,8 @@ impl fmt::Display for MissReason {
                 cached.requested().as_str(),
                 current.requested().as_str()
             ),
-            Self::SourceChanged { cached, current } => {
-                write!(f, "source changed cached={cached} current={current}")
+            Self::RevisionChanged { cached, current } => {
+                write!(f, "revision changed cached={cached} current={current}")
             }
             Self::TreeSitterChanged { cached, current } => write!(
                 f,
@@ -346,8 +371,14 @@ impl fmt::Display for MissReason {
             Self::PrefixChanged { cached, current } => {
                 write!(f, "prefix changed cached={cached:?} current={current:?}")
             }
-            Self::TargetChanged { cached, current } => {
-                write!(f, "target changed cached={cached:?} current={current:?}")
+            Self::OutputsMissing {
+                available,
+                requested,
+            } => {
+                write!(
+                    f,
+                    "requested output not cached available={available:?} requested={requested:?}"
+                )
             }
             Self::ArtifactMissing { path } => {
                 write!(f, "artifact missing path={}", path.display())
@@ -368,10 +399,10 @@ impl Entry {
         &self,
         hash: &GrammarHash,
         spec: &build::Spec,
-        source: &Source,
+        revision: &Revision,
     ) -> Decision {
         let mut reasons = Vec::new();
-        let cached = self.spec.as_ref();
+        let cached = &self.recipe;
 
         if &self.hash != hash {
             reasons.push(MissReason::HashChanged {
@@ -395,10 +426,10 @@ impl Entry {
             });
         }
 
-        if !git_ref_changed && self.source != *source {
-            reasons.push(MissReason::SourceChanged {
-                cached: self.source.clone(),
-                current: source.clone(),
+        if !git_ref_changed && self.revision != *revision {
+            reasons.push(MissReason::RevisionChanged {
+                cached: self.revision.clone(),
+                current: revision.clone(),
             });
         }
 
@@ -420,14 +451,24 @@ impl Entry {
             });
         }
 
-        if cached.target != spec.target {
-            reasons.push(MissReason::TargetChanged {
-                cached: cached.target,
-                current: spec.target,
+        if !self.outputs.covers(spec.target) {
+            reasons.push(MissReason::OutputsMissing {
+                available: self.outputs,
+                requested: spec.target,
             });
         }
 
         Decision::from_reasons(reasons)
+    }
+
+    #[must_use]
+    pub fn covers_request(&self, spec: &build::Spec) -> bool {
+        self.recipe == BuildRecipe::from_spec(spec) && self.outputs.covers(spec.target)
+    }
+
+    #[must_use]
+    pub fn same_subject(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.revision == other.revision && self.recipe == other.recipe
     }
 }
 
@@ -521,11 +562,11 @@ impl Db {
         name: &Key,
         hash: &GrammarHash,
         spec: &build::Spec,
-        source: &Source,
+        revision: &Revision,
     ) -> Decision {
         let decision = match self.get(name) {
             None => Decision::miss(MissReason::MissingEntry),
-            Some(entry) => entry.rebuild_decision(hash, spec, source),
+            Some(entry) => entry.rebuild_decision(hash, spec, revision),
         };
 
         debug!("Cache decision for {name}: {decision}");
@@ -539,14 +580,32 @@ impl Db {
         name: &Key,
         hash: &GrammarHash,
         spec: &build::Spec,
-        source: &Source,
+        revision: &Revision,
     ) -> bool {
-        self.rebuild_decision(name, hash, spec, source)
+        self.rebuild_decision(name, hash, spec, revision)
             .needs_rebuild()
     }
 
+    #[must_use]
+    pub fn has_compatible_entry_for_language(
+        &self,
+        language: &parser::LanguageName,
+        spec: &build::Spec,
+    ) -> bool {
+        let prefix = Key::language_prefix(language);
+        self.parsers
+            .iter()
+            .any(|(key, entry)| key.as_str().starts_with(&prefix) && entry.covers_request(spec))
+    }
+
     /// Insert or update a parser cache entry.
-    pub fn set(&mut self, name: Key, entry: Entry) {
+    pub fn set(&mut self, name: Key, mut entry: Entry) {
+        if let Some(existing) = self.parsers.get(&name) {
+            if existing.same_subject(&entry) {
+                entry.outputs = existing.outputs.union(entry.outputs);
+            }
+        }
+
         self.parsers.insert(name, entry);
     }
 }
@@ -649,13 +708,13 @@ mod tests {
         }
     }
 
-    fn stable_source(_spec: &build::Spec) -> Source {
-        Source::stable()
+    fn stable_revision() -> Revision {
+        Revision::stable()
     }
 
-    fn moving_source(spec: &build::Spec, sha: &str) -> Source {
+    fn moving_revision(spec: &build::Spec, sha: &str) -> Revision {
         assert!(spec.git_ref.is_moving());
-        Source::moving(git::Sha::new(sha).unwrap())
+        Revision::moving(git::Sha::new(sha).unwrap())
     }
 
     fn key() -> Key {
@@ -666,20 +725,22 @@ mod tests {
         GrammarHash::from(value)
     }
 
-    fn cache_with_entry(hash: &str, spec: &build::Spec) -> Db {
-        cache_with_entry_and_source(hash, spec, stable_source(spec))
+    fn entry(hash: &str, spec: &build::Spec, revision: Revision) -> Entry {
+        Entry {
+            hash: grammar_hash(hash),
+            revision,
+            recipe: BuildRecipe::from_spec(spec),
+            outputs: spec.target,
+        }
     }
 
-    fn cache_with_entry_and_source(hash: &str, spec: &build::Spec, source: Source) -> Db {
+    fn cache_with_entry(hash: &str, spec: &build::Spec) -> Db {
+        cache_with_entry_and_revision(hash, spec, stable_revision())
+    }
+
+    fn cache_with_entry_and_revision(hash: &str, spec: &build::Spec, revision: Revision) -> Db {
         let mut cache = Db::default();
-        cache.set(
-            key(),
-            Entry {
-                hash: grammar_hash(hash),
-                spec: Arc::new(spec.clone()),
-                source,
-            },
-        );
+        cache.set(key(), entry(hash, spec, revision));
         cache
     }
 
@@ -696,12 +757,7 @@ mod tests {
         let spec = test_spec();
 
         assert_miss(
-            cache.rebuild_decision(
-                &key(),
-                &grammar_hash("abc123"),
-                &spec,
-                &stable_source(&spec),
-            ),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &stable_revision()),
             &[MissReason::MissingEntry],
         );
     }
@@ -712,12 +768,7 @@ mod tests {
         let cache = cache_with_entry("abc123", &spec);
 
         assert_miss(
-            cache.rebuild_decision(
-                &key(),
-                &grammar_hash("def456"),
-                &spec,
-                &stable_source(&spec),
-            ),
+            cache.rebuild_decision(&key(), &grammar_hash("def456"), &spec, &stable_revision()),
             &[MissReason::HashChanged {
                 cached: grammar_hash("abc123"),
                 current: grammar_hash("def456"),
@@ -737,7 +788,7 @@ mod tests {
                 &key(),
                 &grammar_hash("abc123"),
                 &requested,
-                &stable_source(&requested),
+                &stable_revision(),
             ),
             &[MissReason::RefChanged {
                 cached: parser::Ref::parse("v1.0.0").unwrap(),
@@ -747,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rebuild_decision_target_changed() {
+    fn test_rebuild_decision_outputs_must_cover_requested_target() {
         let cached = test_spec();
         let mut requested = cached.clone();
         requested.target = args::Target::Wasm;
@@ -758,13 +809,34 @@ mod tests {
                 &key(),
                 &grammar_hash("abc123"),
                 &requested,
-                &stable_source(&requested),
+                &stable_revision(),
             ),
-            &[MissReason::TargetChanged {
-                cached: args::Target::Native,
-                current: args::Target::Wasm,
+            &[MissReason::OutputsMissing {
+                available: args::Target::Native,
+                requested: args::Target::Wasm,
             }],
         );
+    }
+
+    #[test]
+    fn test_rebuild_decision_all_outputs_cover_narrower_targets() {
+        let mut cached = test_spec();
+        cached.target = args::Target::All;
+        let cache = cache_with_entry("abc123", &cached);
+
+        for target in [args::Target::Native, args::Target::Wasm] {
+            let mut requested = cached.clone();
+            requested.target = target;
+            assert_eq!(
+                cache.rebuild_decision(
+                    &key(),
+                    &grammar_hash("abc123"),
+                    &requested,
+                    &stable_revision(),
+                ),
+                Decision::Hit
+            );
+        }
     }
 
     #[test]
@@ -773,46 +845,36 @@ mod tests {
         let cache = cache_with_entry("abc123", &spec);
 
         assert_eq!(
-            cache.rebuild_decision(
-                &key(),
-                &grammar_hash("abc123"),
-                &spec,
-                &stable_source(&spec)
-            ),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &stable_revision()),
             Decision::Hit
         );
-        assert!(!cache.needs_rebuild(
-            &key(),
-            &grammar_hash("abc123"),
-            &spec,
-            &stable_source(&spec)
-        ));
+        assert!(!cache.needs_rebuild(&key(), &grammar_hash("abc123"), &spec, &stable_revision()));
     }
 
     #[test]
-    fn test_rebuild_decision_moving_source_commit_changed() {
+    fn test_rebuild_decision_moving_revision_commit_changed() {
         let spec = moving_spec();
-        let cached_source = moving_source(&spec, SHA1);
-        let current_source = moving_source(&spec, SHA2);
-        let cache = cache_with_entry_and_source("abc123", &spec, cached_source.clone());
+        let cached_revision = moving_revision(&spec, SHA1);
+        let current_revision = moving_revision(&spec, SHA2);
+        let cache = cache_with_entry_and_revision("abc123", &spec, cached_revision.clone());
 
         assert_miss(
-            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &current_source),
-            &[MissReason::SourceChanged {
-                cached: cached_source,
-                current: current_source,
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &current_revision),
+            &[MissReason::RevisionChanged {
+                cached: cached_revision,
+                current: current_revision,
             }],
         );
     }
 
     #[test]
-    fn test_rebuild_decision_moving_source_commit_unchanged_hits() {
+    fn test_rebuild_decision_moving_revision_commit_unchanged_hits() {
         let spec = moving_spec();
-        let source = moving_source(&spec, SHA1);
-        let cache = cache_with_entry_and_source("abc123", &spec, source.clone());
+        let revision = moving_revision(&spec, SHA1);
+        let cache = cache_with_entry_and_revision("abc123", &spec, revision.clone());
 
         assert_eq!(
-            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &source),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &revision),
             Decision::Hit
         );
     }
@@ -831,7 +893,7 @@ mod tests {
                 &key(),
                 &grammar_hash("def456"),
                 &requested,
-                &stable_source(&requested),
+                &stable_revision(),
             ),
             &[
                 MissReason::HashChanged {
@@ -843,12 +905,58 @@ mod tests {
                     cached: String::new(),
                     current: "custom-".to_string(),
                 },
-                MissReason::TargetChanged {
-                    cached: args::Target::Native,
-                    current: args::Target::All,
+                MissReason::OutputsMissing {
+                    available: args::Target::Native,
+                    requested: args::Target::All,
                 },
             ],
         );
+    }
+
+    #[test]
+    fn set_merges_outputs_for_same_entry_subject() {
+        let native = test_spec();
+        let mut wasm = native.clone();
+        wasm.target = args::Target::Wasm;
+        let mut cache = Db::default();
+
+        cache.set(key(), entry("abc123", &native, stable_revision()));
+        cache.set(key(), entry("abc123", &wasm, stable_revision()));
+
+        assert_eq!(cache.get(&key()).unwrap().outputs, args::Target::All);
+    }
+
+    #[test]
+    fn set_replaces_when_recipe_changes() {
+        let native = test_spec();
+        let mut wasm = native.clone();
+        wasm.target = args::Target::Wasm;
+        wasm.prefix = "other-".to_string();
+        let mut cache = Db::default();
+
+        cache.set(key(), entry("abc123", &native, stable_revision()));
+        cache.set(key(), entry("abc123", &wasm, stable_revision()));
+
+        let stored = cache.get(&key()).unwrap();
+        assert_eq!(stored.outputs, args::Target::Wasm);
+        assert_eq!(stored.recipe.prefix, "other-");
+    }
+
+    #[test]
+    fn compatible_entries_use_output_coverage() {
+        let mut cached = test_spec();
+        cached.target = args::Target::All;
+        let mut requested = cached.clone();
+        requested.target = args::Target::Native;
+        let mut cache = Db::default();
+
+        cache.set(
+            Key::from("rust/rust"),
+            entry("abc123", &cached, stable_revision()),
+        );
+
+        assert!(cache
+            .has_compatible_entry_for_language(&parser::LanguageName::from("rust"), &requested));
     }
 
     #[test]

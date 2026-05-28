@@ -136,6 +136,18 @@ impl Target {
     }
 
     #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Native, Self::Native) => Self::Native,
+            (Self::Wasm, Self::Wasm) => Self::Wasm,
+            (Self::All, _)
+            | (_, Self::All)
+            | (Self::Native, Self::Wasm)
+            | (Self::Wasm, Self::Native) => Self::All,
+        }
+    }
+
+    #[must_use]
     pub fn native(&self) -> bool {
         matches!(self, Self::All | Self::Native)
     }

@@ -41,6 +41,13 @@ informative and more coherent.
 - `tsdl config default` and `tsdl selfupdate` no longer :
   - crash on malformed configs,
   - write any logs _unless_ `--log` is explicitly set.
+- Cycling through `--target` values `{all,native,wasm}` would not invalidate the
+  cache for artifacts built in the previous calls. This used to happen:
+  ```sh
+  tsdl build --target native  # cache says native
+  tsdl build --target wasm    # cache says wasm
+  tsdl build --target native  # cache misses
+  ```
 
 ## [2.0.0] - 2026-02-20
 

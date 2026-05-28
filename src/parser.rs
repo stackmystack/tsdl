@@ -237,7 +237,7 @@ pub struct GrammarBuild {
     pub name: GrammarName,
     pub output: build::OutputConfig,
     pub progress: actors::ProgressAddr, // Use language's handle
-    pub source: cache::Source,
+    pub revision: cache::Revision,
     pub spec: Arc<build::Spec>,
     pub ts_cli: Arc<PathBuf>,
 }
@@ -299,8 +299,9 @@ impl GrammarBuild {
             name: key,
             entry: cache::Entry {
                 hash: self.hash.clone(),
-                spec: self.spec.clone(),
-                source: self.source.clone(),
+                revision: self.revision.clone(),
+                recipe: cache::BuildRecipe::from_spec(self.spec.as_ref()),
+                outputs: self.spec.target,
             },
         };
 
@@ -1038,7 +1039,7 @@ mod tests {
                 out_dir: out_dir.into(),
             },
             progress,
-            source: cache::Source::stable(),
+            revision: cache::Revision::stable(),
             spec: Arc::new(build::Spec {
                 build_script: None,
                 git_ref: source_ref,

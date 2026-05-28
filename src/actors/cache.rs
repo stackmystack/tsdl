@@ -33,7 +33,7 @@ pub enum CacheMessage {
     NeedsRebuild {
         hash: cache::GrammarHash,
         name: cache::Key,
-        source: cache::Source,
+        revision: cache::Revision,
         spec: Arc<build::Spec>,
         artifacts: Vec<PathBuf>,
         tx: oneshot::Sender<cache::Decision>,
@@ -101,13 +101,13 @@ impl CacheAddr {
         name: cache::Key,
         hash: cache::GrammarHash,
         spec: Arc<build::Spec>,
-        source: cache::Source,
+        revision: cache::Revision,
         artifacts: Vec<PathBuf>,
     ) -> cache::Decision {
         self.request(|tx| CacheMessage::NeedsRebuild {
             name,
             hash,
-            source,
+            revision,
             spec,
             artifacts,
             tx,
@@ -164,14 +164,14 @@ impl CacheActor {
                     hash,
                     name,
                     spec,
-                    source,
+                    revision,
                     artifacts,
                     tx,
                 } => {
                     let decision = if self.force {
                         cache::Decision::miss(cache::MissReason::CacheIgnored)
                     } else {
-                        let decision = self.db.rebuild_decision(&name, &hash, &spec, &source);
+                        let decision = self.db.rebuild_decision(&name, &hash, &spec, &revision);
                         if decision.is_hit() {
                             verify_artifacts(artifacts).await
                         } else {
@@ -215,13 +215,7 @@ impl CacheActor {
                         !self.force
                             && self
                                 .db
-                                .parsers
-                                .iter()
-                                .find(|(key, _)| {
-                                    key.as_str()
-                                        .starts_with(&cache::Key::language_prefix(&language))
-                                })
-                                .is_some_and(|(_, entry)| entry.spec == spec),
+                                .has_compatible_entry_for_language(&language, spec.as_ref()),
                     );
                 }
 

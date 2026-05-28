@@ -262,8 +262,16 @@ fn cache_file_structure() {
         "Cache should have git_ref field"
     );
     assert!(
-        cache_content.contains("source"),
-        "Cache should have source identity field"
+        cache_content.contains("revision"),
+        "Cache should have revision identity field"
+    );
+    assert!(
+        cache_content.contains("recipe"),
+        "Cache should have build recipe field"
+    );
+    assert!(
+        cache_content.contains("outputs"),
+        "Cache should have outputs field"
     );
     assert!(
         !cache_content.lines().any(|line| line.starts_with("file")),
