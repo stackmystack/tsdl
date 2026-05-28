@@ -1,14 +1,16 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Write as _},
-    io::Write as _,
+    io::{self, Write as _},
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
 };
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tokio::io::{AsyncReadExt, ReadBuf};
+use tokio::io::AsyncWrite;
 use tracing::debug;
 
 use crate::{args, build, build_dir::BuildDir, git, parser, Error, Result, ResultExt};
@@ -659,20 +661,10 @@ pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
         .with_context(|| format!("Opening file for hashing: {}", path.display()))?;
 
     let mut hasher = Sha1::new();
-    let mut buffer = vec![0u8; 8192];
 
-    loop {
-        let mut read_buf = ReadBuf::new(&mut buffer);
-        file.read_buf(&mut read_buf)
-            .await
-            .with_context(|| format!("Reading file for hashing: {}", path.display()))?;
-
-        if read_buf.filled().is_empty() {
-            break;
-        }
-
-        hasher.update(read_buf.filled());
-    }
+    tokio::io::copy(&mut file, &mut HashWriter(&mut hasher))
+        .await
+        .with_context(|| format!("Reading file for hashing: {}", path.display()))?;
 
     let result = hasher.finalize();
     let mut hex = String::with_capacity(result.len() * 2);
@@ -680,6 +672,27 @@ pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
         write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
     }
     Ok(GrammarHash::from(hex))
+}
+
+struct HashWriter<'a>(&'a mut Sha1);
+
+impl AsyncWrite for HashWriter<'_> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.0.update(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
 }
 
 #[cfg(test)]
