@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     result::Result as StdResult,
     sync::Arc,
     time::Duration,
@@ -38,16 +38,16 @@ pub struct Context {
     pub overwrite_output: bool,
 }
 
-pub fn run(app: &app::App) -> Result<()> {
-    if app.command.show_config {
-        crate::config::show(&app.command)?;
+pub fn run(app: &app::App, command: &args::BuildCommand) -> Result<()> {
+    if command.show_config {
+        crate::config::show(command)?;
     }
 
-    let lock = lock::Lock::new(&app.command.build_dir);
-    let guard = acquire_lock(&lock, Duration::from_secs(app.command.unlock_timeout))?;
+    let lock = lock::Lock::new(&command.build_dir);
+    let guard = acquire_lock(&lock, Duration::from_secs(command.unlock_timeout))?;
 
-    clear(app, &guard)?;
-    ignite(app)?;
+    clear(command, app.logging.path(), &guard)?;
+    ignite(app, command)?;
     Ok(())
 }
 
@@ -119,18 +119,22 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
-fn clear(app: &app::App, guard: &lock::Guard) -> Result<()> {
-    if app.command.fresh && app.command.build_dir.exists() {
-        guard.clear_directory(std::slice::from_ref(&app.log_path))?;
+fn clear(command: &args::BuildCommand, log_path: Option<&Path>, guard: &lock::Guard) -> Result<()> {
+    if command.fresh && command.build_dir.exists() {
+        let protected_files = log_path
+            .map(Path::to_path_buf)
+            .into_iter()
+            .collect::<Vec<_>>();
+        guard.clear_directory(&protected_files)?;
     }
 
-    fs::create_dir_all(&app.command.build_dir)?;
+    fs::create_dir_all(&command.build_dir)?;
 
     Ok(())
 }
 
-fn collect_languages(app: &app::App) -> Result<Vec<parser::LanguageBuild>> {
-    let results = unique_languages(app);
+fn collect_languages(command: &args::BuildCommand) -> Result<Vec<parser::LanguageBuild>> {
+    let results = unique_languages(command);
     let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     if err.is_empty() {
@@ -184,8 +188,8 @@ fn get_language_coords(
     }
 }
 
-fn ignite(app: &app::App) -> Result<()> {
-    fs::create_dir_all(&app.command.out_dir)?;
+fn ignite(app: &app::App, command: &args::BuildCommand) -> Result<()> {
+    fs::create_dir_all(&command.out_dir)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -193,25 +197,25 @@ fn ignite(app: &app::App) -> Result<()> {
 
     let guard = rt.enter();
 
-    let db = cache::Db::load(&app.command.build_dir)?;
-    let languages = collect_languages(app)?;
+    let db = cache::Db::load(&command.build_dir)?;
+    let languages = collect_languages(command)?;
 
     let result = rt.block_on(async move {
         let shutdown = shutdown::Handle::new();
         let _signals = shutdown.spawn_signal_listener()?;
-        let cache = actors::CacheActor::spawn(db, app.command.force);
-        let build_dir: Arc<PathBuf> = app.command.build_dir.canon()?.into();
-        let out_dir: Arc<PathBuf> = app.command.out_dir.canon()?.into();
+        let cache = actors::CacheActor::spawn(db, command.force);
+        let build_dir: Arc<PathBuf> = command.build_dir.canon()?.into();
+        let out_dir: Arc<PathBuf> = command.out_dir.canon()?.into();
         let display = actors::DisplayActor::spawn(app.progress_mode, build_dir, out_dir);
 
         shutdown::scope(shutdown, async move {
             actors::run(
-                &app.command.build_dir,
+                &command.build_dir,
                 cache,
                 display,
-                app.command.jobs,
+                command.jobs,
                 languages,
-                &app.command.tree_sitter,
+                &command.tree_sitter,
             )
             .await
         })
@@ -225,9 +229,9 @@ fn ignite(app: &app::App) -> Result<()> {
     result
 }
 
-fn unique_languages(app: &app::App) -> Vec<Result<parser::LanguageBuild>> {
-    let requested_languages = &app.command.languages;
-    let defined_parsers = app.command.parsers.as_ref();
+fn unique_languages(command: &args::BuildCommand) -> Vec<Result<parser::LanguageBuild>> {
+    let requested_languages = &command.languages;
+    let defined_parsers = command.parsers.as_ref();
 
     let final_languages = match requested_languages {
         Some(langs) if !langs.is_empty() => langs.clone(),
@@ -243,27 +247,25 @@ fn unique_languages(app: &app::App) -> Vec<Result<parser::LanguageBuild>> {
         let result = match get_language_coords(&language, defined_parsers) {
             Ok((build_script, git_ref, repo)) => Ok(parser::LanguageBuild::new(
                 Context {
-                    overwrite_output: app.command.force,
+                    overwrite_output: command.force,
                 },
                 Arc::new(Spec {
                     build_script,
                     git_ref,
                     repo,
-                    tree_sitter: app.command.tree_sitter.clone(),
-                    prefix: app.command.prefix.clone(),
-                    target: app.command.target,
+                    tree_sitter: command.tree_sitter.clone(),
+                    prefix: command.prefix.clone(),
+                    target: command.target,
                 }),
                 parser::LanguageName::from(language.clone()),
                 OutputConfig {
-                    build_dir: app
-                        .command
+                    build_dir: command
                         .build_dir
                         .join(format!("tree-sitter-{}", &language))
                         .canon()
                         .expect("Build dir canonicalization failed")
                         .into(),
-                    out_dir: app
-                        .command
+                    out_dir: command
                         .out_dir
                         .canon()
                         .expect("Out dir canonicalization failed")
@@ -284,10 +286,10 @@ fn unique_languages(app: &app::App) -> Vec<Result<parser::LanguageBuild>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{args::BuildCommand, config::BuildProvenance, display::Mode};
+    use crate::args::BuildCommand;
 
-    fn app_with_languages(languages: &[&str]) -> app::App {
-        let command = BuildCommand {
+    fn command_with_languages(languages: &[&str]) -> BuildCommand {
+        BuildCommand {
             languages: Some(
                 languages
                     .iter()
@@ -295,25 +297,14 @@ mod tests {
                     .collect(),
             ),
             ..BuildCommand::default()
-        };
-
-        app::App {
-            subcommand: crate::args::Command::Build,
-            command,
-            config_path: PathBuf::from("parsers.toml"),
-            log_path: PathBuf::from("tmp/log"),
-            progress_mode: Mode::Plain,
-            provenance: BuildProvenance::default(),
-            verbose: clap_verbosity_flag::Verbosity::default(),
-            logging_guard: None,
         }
     }
 
     #[test]
     fn unique_languages_sorts_and_deduplicates_requested_languages() {
-        let app = app_with_languages(&["rust", "json", "ruby", "json", "rust"]);
+        let command = command_with_languages(&["rust", "json", "ruby", "json", "rust"]);
 
-        let languages = unique_languages(&app)
+        let languages = unique_languages(&command)
             .into_iter()
             .map(|language| language.unwrap().name.to_string())
             .collect::<Vec<_>>();

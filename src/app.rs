@@ -1,44 +1,135 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use clap::ArgMatches;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
-use crate::{args, config, display, logging, Result};
+use crate::{args, config, display, logging, Result, ResultExt};
+
+/// Resolved build state for commands that actually need build configuration.
+pub struct ResolvedBuild {
+    pub command: args::BuildCommand,
+    pub provenance: config::BuildProvenance,
+}
+
+/// The selected command after resolving only the configuration it needs.
+pub enum ResolvedCommand {
+    Build(ResolvedBuild),
+    ConfigCurrent(ResolvedBuild),
+    ConfigDefault,
+    Selfupdate { force: bool, target: String },
+}
+
+impl ResolvedCommand {
+    fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
+        let implicit = match self {
+            Self::Build(build) => logging::Implicit::BuildDir {
+                dir: &build.command.build_dir,
+            },
+            _ => logging::Implicit::None
+        };
+
+        logging::Policy { explicit, implicit }
+    }
+}
 
 /// Resolved application state, ready to run.
 pub struct App {
-    pub subcommand: args::Command,
-    pub command: args::BuildCommand,
-    pub provenance: config::BuildProvenance,
+    pub command: ResolvedCommand,
     pub config_path: PathBuf,
-    pub log_path: PathBuf,
+    pub logging: logging::Session,
     pub progress_mode: display::Mode,
     pub verbose: Verbosity<InfoLevel>,
-    pub logging_guard: Option<logging::Guard>,
 }
 
 pub fn setup() -> Result<App> {
     let (args, matches) = config::parse_with_matches();
-    let build_matches = crate::args::build_matches(&matches);
-
-    let (command, provenance) = config::current_with_provenance(&args.config, build_matches)?;
-
-    let (log_path, logging_guard) = logging::init(
-        args.log.as_ref(),
+    let command = resolve_command(&args, &matches)?;
+    let logging = logging::init(
+        command.logging_policy(args.log.as_deref()),
         args.log_color,
         args.verbose,
-        &command.build_dir,
     )?;
 
     let progress_mode = display::mode_from_args(&args.progress, &args.verbose);
 
     Ok(App {
-        subcommand: args.command,
         command,
-        provenance,
         config_path: args.config,
-        log_path,
+        logging,
         progress_mode,
         verbose: args.verbose,
-        logging_guard: Some(logging_guard),
     })
+}
+
+fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
+    match &args.command {
+        args::Command::Build => {
+            resolve_build(&args.config, args::build_matches(matches), "`build`")
+                .map(ResolvedCommand::Build)
+        }
+
+        args::Command::Config {
+            command: args::ConfigCommand::Current,
+        } => resolve_build(&args.config, None, "`config current`")
+            .map(ResolvedCommand::ConfigCurrent),
+
+        args::Command::Config {
+            command: args::ConfigCommand::Default,
+        } => Ok(ResolvedCommand::ConfigDefault),
+
+        args::Command::Selfupdate { force, target } => Ok(ResolvedCommand::Selfupdate { force: *force, target: target.clone() }),
+    }
+}
+
+fn resolve_build(
+    config_path: &Path,
+    matches: Option<&ArgMatches>,
+    purpose: &str,
+) -> Result<ResolvedBuild> {
+    let (command, provenance) = config::current_with_provenance(config_path, matches)
+        .with_context(|| format!("Resolving build configuration for {purpose}"))?;
+
+    Ok(ResolvedBuild {
+        command,
+        provenance,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_with_config(config: &Path, command: &[&str]) -> (args::Args, ArgMatches) {
+        let mut argv = vec![
+            "tsdl".into(),
+            "--config".into(),
+            config.as_os_str().to_owned(),
+        ];
+        argv.extend(command.iter().map(Into::into));
+        config::try_parse_from_with_matches(argv).unwrap()
+    }
+
+    #[test]
+    fn config_default_does_not_resolve_build_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("parsers.toml");
+        std::fs::write(&config_path, "not valid toml =").unwrap();
+
+        let (args, matches) = parse_with_config(&config_path, &["config", "default"]);
+        let command = resolve_command(&args, &matches).unwrap();
+
+        assert!(matches!(command, ResolvedCommand::ConfigDefault));
+    }
+
+    #[test]
+    fn selfupdate_does_not_resolve_build_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("parsers.toml");
+        std::fs::write(&config_path, "not valid toml =").unwrap();
+
+        let (args, matches) = parse_with_config(&config_path, &["selfupdate"]);
+        let command = resolve_command(&args, &matches).unwrap();
+
+        assert!(matches!(command, ResolvedCommand::Selfupdate{ .. }));
+    }
 }

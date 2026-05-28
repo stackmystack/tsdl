@@ -38,6 +38,9 @@ informative and more coherent.
   installed through visible temporary hardlinks.
 - `--jobs` is a strictly positive number now.
 - `tsdl` now fails on repos with no `grammar.js`.
+- `tsdl config default` and `tsdl selfupdate` no longer :
+  - crash on malformed configs,
+  - write any logs _unless_ `--log` is explicitly set.
 
 ## [2.0.0] - 2026-02-20
 
