@@ -197,13 +197,14 @@ fn ignite(app: &app::App, command: &args::BuildCommand) -> Result<()> {
 
     let guard = rt.enter();
 
-    let db = cache::Db::load(&command.build_dir)?;
+    let cache_store = cache::Store::new(&command.build_dir);
+    let db = cache_store.load()?;
     let languages = collect_languages(command)?;
 
     let result = rt.block_on(async move {
         let shutdown = shutdown::Handle::new();
         let _signals = shutdown.spawn_signal_listener()?;
-        let cache = actors::CacheActor::spawn(db, command.force);
+        let cache = actors::CacheActor::spawn(db, cache_store, command.force);
         let build_dir: Arc<PathBuf> = command.build_dir.canon()?.into();
         let out_dir: Arc<PathBuf> = command.out_dir.canon()?.into();
         let display = actors::DisplayActor::spawn(app.progress_mode, build_dir, out_dir);

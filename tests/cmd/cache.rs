@@ -265,4 +265,8 @@ fn cache_file_structure() {
         cache_content.contains("source"),
         "Cache should have source identity field"
     );
+    assert!(
+        !cache_content.lines().any(|line| line.starts_with("file")),
+        "Cache should not serialize its runtime storage path"
+    );
 }
