@@ -231,7 +231,7 @@ fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
 pub struct GrammarBuild {
     pub context: build::Context,
     pub cache_decision: cache::Decision,
-    pub dir: Arc<PathBuf>,
+    pub dir: PathBuf,
     pub hash: cache::GrammarHash,
     pub language: LanguageName, // Required for error reporting and cache keys; set from parent LanguageBuild
     pub name: GrammarName,
@@ -239,7 +239,7 @@ pub struct GrammarBuild {
     pub progress: actors::ProgressAddr, // Use language's handle
     pub revision: cache::Revision,
     pub spec: Arc<build::Spec>,
-    pub ts_cli: Arc<PathBuf>,
+    pub ts_cli: PathBuf,
 }
 
 impl GrammarBuild {
@@ -366,7 +366,7 @@ impl GrammarBuild {
         ensure_parent_dir(&artifact).await?;
 
         let mut cmd = self.builtin_build_command(kind, &artifact);
-        cmd.current_dir(self.dir.as_ref())
+        cmd.current_dir(self.dir.as_path())
             .exec()
             .await
             .map_err(|err| self.build_step_error(err))?;
@@ -377,7 +377,7 @@ impl GrammarBuild {
 
     async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> Result<PathBuf> {
         let mut cmd = Command::from_str(script);
-        cmd.current_dir(self.dir.as_ref())
+        cmd.current_dir(self.dir.as_path())
             .exec()
             .await
             .map_err(|err| self.build_step_error(err))?;
@@ -393,7 +393,7 @@ impl GrammarBuild {
         Error::Step {
             name: self.language.as_arc(),
             kind: error::ParserOp::Build {
-                dir: self.dir.to_path_buf(),
+                dir: self.dir.clone(),
             },
             source: err.into(),
         }
@@ -424,7 +424,7 @@ impl GrammarBuild {
     async fn brute_force_discover(&self, kind: ArtifactKind) -> Result<PathBuf> {
         let ext = kind.extension();
         let expected_name = self.parser_name_and_ext(kind);
-        let mut files = fs::read_dir(self.dir.as_ref())
+        let mut files = fs::read_dir(self.dir.as_path())
             .await
             .with_context(|| format!("Failed to read directory {}", self.dir.display()))?;
 
@@ -480,7 +480,7 @@ impl GrammarBuild {
             .map_err(|err| Error::Step {
                 name: self.language.as_arc(),
                 kind: error::ParserOp::Generate {
-                    dir: self.dir.to_path_buf(),
+                    dir: self.dir.clone(),
                 },
                 source: err.into(),
             })
@@ -680,8 +680,8 @@ impl GrammarBuild {
         Error::Step {
             name: self.language.as_arc(),
             kind: error::ParserOp::Copy {
-                src: self.output.out_dir.to_path_buf(),
-                dst: self.output.build_dir.to_path_buf(),
+                src: self.output.out_dir.clone(),
+                dst: self.output.build_dir.clone(),
             },
             source: Error::Message {
                 message: format!("Couldn't find any {ext} file"),
@@ -694,8 +694,8 @@ impl GrammarBuild {
         Error::Step {
             name: self.language.as_arc(),
             kind: error::ParserOp::Copy {
-                src: self.output.out_dir.to_path_buf(),
-                dst: self.output.build_dir.to_path_buf(),
+                src: self.output.out_dir.clone(),
+                dst: self.output.build_dir.clone(),
             },
             source: Error::Message {
                 message: format!("Found multiple {ext} files: {candidates:?}"),
@@ -736,7 +736,7 @@ impl LanguageBuild {
     pub async fn discover_grammars(
         &self,
     ) -> Result<Vec<(GrammarName, PathBuf, cache::GrammarHash)>> {
-        let file_results = collect_grammar_paths(self.output.build_dir.clone()).await?;
+        let file_results = collect_grammar_paths(&self.output.build_dir).await?;
         let mut grammars = Vec::new();
 
         for (grammar_path, hash) in file_results {
@@ -754,7 +754,7 @@ impl LanguageBuild {
             return Err(Error::Step {
                 name: self.name.as_arc(),
                 kind: error::ParserOp::Discover {
-                    dir: self.output.build_dir.to_path_buf(),
+                    dir: self.output.build_dir.clone(),
                 },
                 source: Error::Message {
                     message: format!(
@@ -789,7 +789,7 @@ impl LanguageBuild {
         .map_err(|err| Error::Step {
             name: self.name.as_arc(),
             kind: error::ParserOp::Clone {
-                dir: self.output.build_dir.to_path_buf(),
+                dir: self.output.build_dir.clone(),
             },
             source: err.into(),
         })
@@ -991,10 +991,7 @@ mod tests {
                 tree_sitter: TreeSitter::default(),
             }),
             LanguageName::from("empty"),
-            build::OutputConfig {
-                build_dir: build_dir.into(),
-                out_dir: out_dir.into(),
-            },
+            build::OutputConfig { build_dir, out_dir },
         )
     }
 
@@ -1018,11 +1015,7 @@ mod tests {
         out_dir: PathBuf,
         overwrite_output: bool,
     ) -> (GrammarBuild, DisplayAddr) {
-        let display = DisplayActor::spawn(
-            Mode::Plain,
-            Arc::new(grammar_dir.clone()),
-            Arc::new(out_dir.clone()),
-        );
+        let display = DisplayActor::spawn(Mode::Plain, grammar_dir.clone(), out_dir.clone());
         let progress = display
             .add_grammar(git::Ref::head(), "rust", "rust", 1)
             .await;
@@ -1030,13 +1023,13 @@ mod tests {
         let build = GrammarBuild {
             context: build::Context { overwrite_output },
             cache_decision: cache::Decision::miss(cache::MissReason::MissingEntry),
-            dir: grammar_dir.clone().into(),
+            dir: grammar_dir.clone(),
             hash: cache::GrammarHash::from("test"),
             language: "rust".into(),
             name: "rust".into(),
             output: build::OutputConfig {
-                build_dir: grammar_dir.into(),
-                out_dir: out_dir.into(),
+                build_dir: grammar_dir,
+                out_dir,
             },
             progress,
             revision: cache::Revision::stable(),
@@ -1048,7 +1041,7 @@ mod tests {
                 target: Target::Native,
                 tree_sitter: TreeSitter::default(),
             }),
-            ts_cli: Arc::new(PathBuf::from("tree-sitter-macos-arm64-v0.26.5")),
+            ts_cli: PathBuf::from("tree-sitter-macos-arm64-v0.26.5"),
         };
 
         (build, display)

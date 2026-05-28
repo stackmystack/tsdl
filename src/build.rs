@@ -29,8 +29,8 @@ pub struct Spec {
 
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
-    pub build_dir: Arc<PathBuf>,
-    pub out_dir: Arc<PathBuf>,
+    pub build_dir: PathBuf,
+    pub out_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,8 +205,8 @@ fn ignite(app: &app::App, command: &args::BuildCommand) -> Result<()> {
         let shutdown = shutdown::Handle::new();
         let _signals = shutdown.spawn_signal_listener()?;
         let cache = actors::CacheActor::spawn(db, cache_store, command.force);
-        let build_dir: Arc<PathBuf> = command.build_dir.canon()?.into();
-        let out_dir: Arc<PathBuf> = command.out_dir.canon()?.into();
+        let build_dir = command.build_dir.canon()?;
+        let out_dir = command.out_dir.canon()?;
         let display = actors::DisplayActor::spawn(app.progress_mode, build_dir, out_dir);
 
         shutdown::scope(shutdown, async move {
@@ -264,13 +264,11 @@ fn unique_languages(command: &args::BuildCommand) -> Vec<Result<parser::Language
                         .build_dir
                         .join(format!("tree-sitter-{}", &language))
                         .canon()
-                        .expect("Build dir canonicalization failed")
-                        .into(),
+                        .expect("Build dir canonicalization failed"),
                     out_dir: command
                         .out_dir
                         .canon()
-                        .expect("Out dir canonicalization failed")
-                        .into(),
+                        .expect("Out dir canonicalization failed"),
                 },
             )),
             Err(err) => Err(Error::Language {

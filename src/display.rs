@@ -508,14 +508,14 @@ pub(crate) struct State {
     pub mode: Mode,
     pub repos: HashMap<ItemId, RepoEntry>,
     pub grammars: HashMap<ItemId, GrammarEntry>,
-    pub build_dir: Arc<PathBuf>,
-    pub out_dir: Arc<PathBuf>,
+    pub build_dir: PathBuf,
+    pub out_dir: PathBuf,
     footer_build: Line<'static>,
     footer_out: Line<'static>,
 }
 
 impl State {
-    pub fn new(mode: Mode, build_dir: Arc<PathBuf>, out_dir: Arc<PathBuf>) -> Self {
+    pub fn new(mode: Mode, build_dir: PathBuf, out_dir: PathBuf) -> Self {
         let footer_build = dim_line(format!("build: {}", build_dir.display()));
         let footer_out = dim_line(format!("out:   {}", out_dir.display()));
         Self {

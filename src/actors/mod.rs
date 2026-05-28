@@ -1,7 +1,7 @@
 mod cache;
 mod display;
 
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf};
 
 pub use cache::{CacheActor, CacheAddr};
 pub use display::{DisplayActor, DisplayAddr, Message, ProgressAddr};
@@ -125,7 +125,7 @@ async fn run_inner(
     tree_sitter: &args::TreeSitter,
 ) -> Result<()> {
     let prepared = tree_sitter::prepare(build_dir, display.clone(), tree_sitter).await?;
-    let ts_cli = Arc::new(prepared.path);
+    let ts_cli = prepared.path;
     let languages = languages
         .into_iter()
         .map(|language| language.with_tree_sitter(prepared.tree_sitter.clone()))
@@ -203,7 +203,7 @@ async fn discover_grammars(
     cache: CacheAddr,
     display: DisplayAddr,
     language: parser::LanguageBuild,
-    ts_cli: Arc<PathBuf>,
+    ts_cli: PathBuf,
 ) -> Result<Vec<crate::parser::GrammarBuild>> {
     shutdown::test_delay().await;
     shutdown::check()?;
@@ -268,7 +268,7 @@ async fn discover_grammars(
         builds.push(parser::GrammarBuild {
             context: language.context.clone(),
             cache_decision,
-            dir: dir.into(),
+            dir,
             hash,
             language: language.name.clone(),
             name,
