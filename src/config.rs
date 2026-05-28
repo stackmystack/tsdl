@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
     fs,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     result::Result as StdResult,
 };
@@ -274,7 +275,7 @@ pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
             .long("jobs")
             .short('j')
             .env("TSDL_NCPUS")
-            .value_parser(value_parser!(usize))
+            .value_parser(value_parser!(NonZeroUsize))
             .help(format!("Number of threads [default: {jobs_default}]")),
         Arg::new("out-dir")
             .long("out-dir")
