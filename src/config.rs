@@ -6,13 +6,116 @@ use std::{
     result::Result as StdResult,
 };
 
-use clap::{
-    parser::ValueSource, value_parser, Arg, ArgAction, ArgMatches, CommandFactory, FromArgMatches,
-};
+use clap::{parser::ValueSource, ArgMatches, Args, CommandFactory, FromArgMatches};
 use serde::Serialize;
 use tracing::debug;
 
 use crate::{args, columns, Result, ResultExt};
+
+// ── Arg ID constants for provenance tracking ────────────────────────────
+//
+// clap derive uses the Rust field name as the arg ID, not the long flag
+// name.  These constants match the field names so `ArgMatches::value_source`
+// can look them up.
+
+const ARG_BUILD_DIR: &str = "build_dir";
+const ARG_FORCE: &str = "force";
+const ARG_NO_FORCE: &str = "no_force";
+const ARG_FRESH: &str = "fresh";
+const ARG_NO_FRESH: &str = "no_fresh";
+const ARG_LANGUAGES: &str = "languages";
+const ARG_JOBS: &str = "jobs";
+const ARG_OUT_DIR: &str = "out_dir";
+const ARG_PREFIX: &str = "prefix";
+const ARG_SHOW_CONFIG: &str = "show_config";
+const ARG_NO_SHOW_CONFIG: &str = "no_show_config";
+const ARG_TARGET: &str = "target";
+const ARG_TS_VERSION: &str = "version";
+const ARG_TS_PLATFORM: &str = "platform";
+const ARG_TS_REPO: &str = "repo";
+const ARG_UNLOCK_TIMEOUT: &str = "unlock_timeout";
+
+// ── Build CLI argument structs ─────────────────────────────────────────
+
+/// CLI arguments for the `build` subcommand, defined via derive so the arg
+/// definitions and value extraction stay in sync.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct BuildArgs {
+    #[arg(long = "build-dir", short = 'b', env = "BUILD_DIR")]
+    pub build_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "force",
+        env = "FORCE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
+    pub force: Option<bool>,
+    #[arg(long = "no-force")]
+    pub no_force: bool,
+
+    #[arg(
+        long = "fresh",
+        short = 'f',
+        env = "FRESH",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
+    pub fresh: Option<bool>,
+    #[arg(long = "no-fresh")]
+    pub no_fresh: bool,
+
+    #[arg(num_args = 0..)]
+    pub languages: Vec<String>,
+
+    #[arg(long = "jobs", short = 'j', env = "TSDL_NCPUS")]
+    pub jobs: Option<usize>,
+
+    #[arg(long = "out-dir", short = 'o', env = "PARSER_OUT_DIR")]
+    pub out_dir: Option<PathBuf>,
+
+    #[arg(long = "prefix", short = 'p', env = "PREFIX")]
+    pub prefix: Option<String>,
+
+    #[arg(
+        long = "show-config",
+        env = "SHOW_CONFIG",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
+    pub show_config: Option<bool>,
+    #[arg(long = "no-show-config")]
+    pub no_show_config: bool,
+
+    #[arg(long = "target", short = 't', env = "TSDL_TARGET", value_enum)]
+    pub target: Option<args::Target>,
+
+    #[command(flatten)]
+    pub tree_sitter: TreeSitterArgs,
+
+    #[arg(
+        long = "unlock-timeout",
+        env = "UNLOCK_TIMEOUT",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub unlock_timeout: Option<u64>,
+}
+
+/// Nested CLI arguments for tree-sitter configuration.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct TreeSitterArgs {
+    #[arg(long = "tree-sitter-version", short = 'V', env = "TSDL_VERSION")]
+    pub version: Option<String>,
+    #[arg(long = "tree-sitter-platform", env = "TSDL_PLATFORM")]
+    pub platform: Option<String>,
+    #[arg(long = "tree-sitter-repo", short = 'R', env = "TSDL_REPO")]
+    pub repo: Option<String>,
+}
+
+// ── Source / provenance types ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -59,6 +162,8 @@ pub struct BuildProvenance {
     pub unlock_timeout: Source,
 }
 
+// ── Configuration resolution ───────────────────────────────────────────
+
 pub fn current(config: &Path, matches: Option<&ArgMatches>) -> Result<args::BuildCommand> {
     let (cmd, _provenance) = current_with_provenance(config, matches)?;
     Ok(cmd)
@@ -73,7 +178,7 @@ pub fn current_with_provenance(
     let file_provenance = file_provenance_from(&file_overrides);
 
     let (cli_overrides, cli_provenance) = if let Some(matches) = matches {
-        extract_overrides(matches, &defaults)
+        extract_overrides(matches)
     } else {
         (
             args::OptionalBuildCommand::default(),
@@ -226,195 +331,119 @@ fn merge_source(file: Source, cli: Source) -> Source {
     }
 }
 
-#[must_use]
-#[allow(clippy::too_many_lines)]
-pub fn build_cli(defaults: &args::BuildCommand) -> Vec<Arg> {
-    let jobs_default = defaults.jobs.to_string();
-    let ut_default = defaults.unlock_timeout.to_string();
+// ── CLI override extraction ────────────────────────────────────────────
 
-    vec![
-        Arg::new("build-dir")
-            .long("build-dir")
-            .short('b')
-            .env("BUILD_DIR")
-            .value_parser(value_parser!(PathBuf))
-            .help(format!(
-                "Build Directory [default: {}]",
-                defaults.build_dir.display()
-            )),
-        Arg::new("force")
-            .long("force")
-            .env("FORCE")
-            .num_args(0..=1)
-            .require_equals(true)
-            .default_missing_value("true")
-            .value_parser(value_parser!(bool))
-            .help("Force clone the repository and rebuild, bypassing cache checks"),
-        Arg::new("no-force")
-            .long("no-force")
-            .action(ArgAction::SetTrue)
-            .help("Disable --force, overriding config files or environment variables"),
-        Arg::new("fresh")
-            .long("fresh")
-            .short('f')
-            .env("FRESH")
-            .num_args(0..=1)
-            .require_equals(true)
-            .default_missing_value("true")
-            .value_parser(value_parser!(bool))
-            .help("Clears the build-dir and starts a fresh build"),
-        Arg::new("no-fresh")
-            .long("no-fresh")
-            .action(ArgAction::SetTrue)
-            .help("Disable --fresh, overriding config files or environment variables"),
-        Arg::new("languages")
-            .num_args(0..)
-            .value_parser(value_parser!(String))
-            .help("Parsers to compile"),
-        Arg::new("jobs")
-            .long("jobs")
-            .short('j')
-            .env("TSDL_NCPUS")
-            .value_parser(value_parser!(NonZeroUsize))
-            .help(format!("Number of threads [default: {jobs_default}]")),
-        Arg::new("out-dir")
-            .long("out-dir")
-            .short('o')
-            .env("PARSER_OUT_DIR")
-            .value_parser(value_parser!(PathBuf))
-            .help(format!(
-                "Output Directory [default: {}]",
-                defaults.out_dir.display()
-            )),
-        Arg::new("prefix")
-            .long("prefix")
-            .short('p')
-            .env("PREFIX")
-            .value_parser(value_parser!(String))
-            .help(format!(
-                "Prefix parser names [default: {}]",
-                defaults.prefix
-            )),
-        Arg::new("show-config")
-            .long("show-config")
-            .env("SHOW_CONFIG")
-            .num_args(0..=1)
-            .require_equals(true)
-            .default_missing_value("true")
-            .value_parser(value_parser!(bool))
-            .help("Show Config"),
-        Arg::new("no-show-config")
-            .long("no-show-config")
-            .action(ArgAction::SetTrue)
-            .help("Disable --show-config, overriding config files or environment variables"),
-        Arg::new("target")
-            .long("target")
-            .short('t')
-            .env("TSDL_TARGET")
-            .value_parser([
-                clap::builder::PossibleValue::new("native"),
-                clap::builder::PossibleValue::new("wasm"),
-                clap::builder::PossibleValue::new("all"),
-            ])
-            .help(format!(
-                "Build target [default: {}]",
-                defaults.target.to_lowercase()
-            )),
-        Arg::new("tree-sitter-version")
-            .long("tree-sitter-version")
-            .short('V')
-            .env("TSDL_VERSION")
-            .value_parser(value_parser!(String))
-            .help(format!(
-                "Tree-sitter version [default: {}]",
-                defaults.tree_sitter.version
-            )),
-        Arg::new("tree-sitter-platform")
-            .long("tree-sitter-platform")
-            .env("TSDL_PLATFORM")
-            .value_parser(value_parser!(String))
-            .help(format!(
-                "Tree-sitter platform to build [default: {}]",
-                defaults.tree_sitter.platform
-            )),
-        Arg::new("tree-sitter-repo")
-            .long("tree-sitter-repo")
-            .short('R')
-            .env("TSDL_REPO")
-            .value_parser(value_parser!(String))
-            .help(format!(
-                "Tree-sitter repo [default: {}]",
-                defaults.tree_sitter.repo
-            )),
-        Arg::new("unlock-timeout")
-            .long("unlock-timeout")
-            .env("UNLOCK_TIMEOUT")
-            .value_parser(value_parser!(u64).range(1..))
-            .help(format!(
-                "Seconds to wait after terminating a lock owner [default: {ut_default}]"
-            )),
-    ]
+/// Extract CLI overrides from parsed `ArgMatches` into `OptionalBuildCommand`
+/// with provenance tracking.
+#[must_use]
+pub fn extract_overrides(matches: &ArgMatches) -> (args::OptionalBuildCommand, BuildProvenance) {
+    let cli = BuildArgs::from_arg_matches(matches).unwrap_or_else(|err| err.exit());
+    overrides_from_build_args(cli, matches)
 }
 
-#[must_use]
-pub fn extract_overrides(
+fn overrides_from_build_args(
+    cli: BuildArgs,
     matches: &ArgMatches,
-    _defaults: &args::BuildCommand,
 ) -> (args::OptionalBuildCommand, BuildProvenance) {
     let mut o = args::OptionalBuildCommand::default();
     let mut p = BuildProvenance::default();
 
-    extract_simple(matches, "build-dir", &mut o.build_dir, &mut p.build_dir);
-    extract_bool(matches, "force", "no-force", &mut o.force, &mut p.force);
-    extract_bool(matches, "fresh", "no-fresh", &mut o.fresh, &mut p.fresh);
+    set_simple(
+        matches,
+        ARG_BUILD_DIR,
+        cli.build_dir,
+        &mut o.build_dir,
+        &mut p.build_dir,
+    );
+    resolve_bool(
+        matches,
+        cli.force,
+        ARG_FORCE,
+        ARG_NO_FORCE,
+        &mut o.force,
+        &mut p.force,
+    );
+    resolve_bool(
+        matches,
+        cli.fresh,
+        ARG_FRESH,
+        ARG_NO_FRESH,
+        &mut o.fresh,
+        &mut p.fresh,
+    );
 
-    if let Some(source) = source_for(matches, "languages") {
-        let vals: Vec<String> = matches
-            .get_many::<String>("languages")
-            .map(|v| v.cloned().collect())
-            .unwrap_or_default();
-        if !vals.is_empty() {
-            o.languages = Some(vals);
+    if !cli.languages.is_empty() {
+        if let Some(source) = source_for(matches, ARG_LANGUAGES) {
+            o.languages = Some(cli.languages);
             p.languages = source;
         }
     }
 
-    extract_simple_usize(matches, "jobs", &mut o.jobs, &mut p.jobs);
-    extract_simple(matches, "out-dir", &mut o.out_dir, &mut p.out_dir);
-    extract_simple(matches, "prefix", &mut o.prefix, &mut p.prefix);
+    if let Some(n) = cli.jobs.and_then(NonZeroUsize::new) {
+        if let Some(source) = source_for(matches, ARG_JOBS) {
+            o.jobs = Some(n);
+            p.jobs = source;
+        }
+    }
 
-    extract_bool(
+    set_simple(
         matches,
-        "show-config",
-        "no-show-config",
+        ARG_OUT_DIR,
+        cli.out_dir,
+        &mut o.out_dir,
+        &mut p.out_dir,
+    );
+    set_simple(
+        matches,
+        ARG_PREFIX,
+        cli.prefix,
+        &mut o.prefix,
+        &mut p.prefix,
+    );
+
+    resolve_bool(
+        matches,
+        cli.show_config,
+        ARG_SHOW_CONFIG,
+        ARG_NO_SHOW_CONFIG,
         &mut o.show_config,
         &mut p.show_config,
     );
 
-    extract_target(matches, "target", &mut o.target, &mut p.target);
-
-    extract_simple(
+    set_simple(
         matches,
-        "tree-sitter-version",
+        ARG_TARGET,
+        cli.target,
+        &mut o.target,
+        &mut p.target,
+    );
+
+    set_simple(
+        matches,
+        ARG_TS_VERSION,
+        cli.tree_sitter.version,
         &mut o.tree_sitter.version,
         &mut p.tree_sitter.version,
     );
-    extract_simple(
+    set_simple(
         matches,
-        "tree-sitter-platform",
+        ARG_TS_PLATFORM,
+        cli.tree_sitter.platform,
         &mut o.tree_sitter.platform,
         &mut p.tree_sitter.platform,
     );
-    extract_simple(
+    set_simple(
         matches,
-        "tree-sitter-repo",
+        ARG_TS_REPO,
+        cli.tree_sitter.repo,
         &mut o.tree_sitter.repo,
         &mut p.tree_sitter.repo,
     );
 
-    extract_simple_u64(
+    set_simple(
         matches,
-        "unlock-timeout",
+        ARG_UNLOCK_TIMEOUT,
+        cli.unlock_timeout,
         &mut o.unlock_timeout,
         &mut p.unlock_timeout,
     );
@@ -422,95 +451,44 @@ pub fn extract_overrides(
     (o, p)
 }
 
-fn extract_simple<T: Clone + Send + Sync + 'static>(
+/// Set a simple `Option<T>` override when the arg's `ValueSource` indicates
+/// the user supplied it (CLI or env).
+fn set_simple<T>(
     matches: &ArgMatches,
     id: &str,
+    value: Option<T>,
     field: &mut Option<T>,
     provenance: &mut Source,
 ) {
     if let Some(source) = source_for(matches, id) {
-        if let Some(val) = matches.get_one::<T>(id) {
-            *field = Some(val.clone());
-            *provenance = source;
-        }
-    }
-}
-
-fn extract_simple_usize(
-    matches: &ArgMatches,
-    id: &str,
-    field: &mut Option<std::num::NonZeroUsize>,
-    provenance: &mut Source,
-) {
-    if let Some(source) = source_for(matches, id) {
-        if let Some(&n) = matches.get_one::<usize>(id) {
-            if let Some(nz) = std::num::NonZeroUsize::new(n) {
-                *field = Some(nz);
-                *provenance = source;
-            }
-        }
-    }
-}
-
-fn extract_simple_u64(
-    matches: &ArgMatches,
-    id: &str,
-    field: &mut Option<u64>,
-    provenance: &mut Source,
-) {
-    if let Some(source) = source_for(matches, id) {
-        if let Some(&val) = matches.get_one::<u64>(id) {
+        if let Some(val) = value {
             *field = Some(val);
             *provenance = source;
         }
     }
 }
 
-fn extract_target(
+/// Resolve a boolean field that has both a positive (`--force`) and negative
+/// (`--no-force`) flag.  The negative form only takes effect when passed
+/// explicitly on the command line; env-var / config values flow through the
+/// positive arg.
+fn resolve_bool(
     matches: &ArgMatches,
-    id: &str,
-    field: &mut Option<args::Target>,
-    provenance: &mut Source,
-) {
-    if let Some(source) = source_for(matches, id) {
-        if let Some(raw) = matches.get_one::<String>(id) {
-            match raw.to_lowercase().as_str() {
-                "native" => {
-                    *field = Some(args::Target::Native);
-                    *provenance = source;
-                }
-                "wasm" => {
-                    *field = Some(args::Target::Wasm);
-                    *provenance = source;
-                }
-                "all" => {
-                    *field = Some(args::Target::All);
-                    *provenance = source;
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn extract_bool(
-    matches: &ArgMatches,
-    positive_id: &str,
-    negative_id: &str,
+    positive: Option<bool>,
+    pos_id: &str,
+    neg_id: &str,
     field: &mut Option<bool>,
     provenance: &mut Source,
 ) {
-    let pos_source = source_for(matches, positive_id);
-    let neg_source = source_for(matches, negative_id);
-
-    if matches!(neg_source, Some(Source::CommandLine)) {
+    // --no-* on the command line always wins.
+    if matches!(source_for(matches, neg_id), Some(Source::CommandLine)) {
         *field = Some(false);
         *provenance = Source::CommandLine;
         return;
     }
 
-    if let Some(source) = pos_source {
-        if let Some(&val) = matches.get_one::<bool>(positive_id) {
+    if let Some(source) = source_for(matches, pos_id) {
+        if let Some(val) = positive {
             *field = Some(val);
             *provenance = source;
         }
@@ -520,6 +498,8 @@ fn extract_bool(
 fn source_for(matches: &ArgMatches, id: &str) -> Option<Source> {
     matches.value_source(id).and_then(Source::from_value_source)
 }
+
+// ── Display helpers ────────────────────────────────────────────────────
 
 pub fn print_indent(s: &str, indent: &str) {
     s.lines().for_each(|line| println!("{indent}{line}"));
@@ -566,17 +546,13 @@ pub fn show(command: &args::BuildCommand) -> Result<()> {
     Ok(())
 }
 
+// ── Parsing ────────────────────────────────────────────────────────────
+
 #[must_use]
 pub fn parse_with_matches() -> (args::Args, ArgMatches) {
-    let defaults = args::BuildCommand::default();
-    let build_args = build_cli(&defaults);
     let mut cmd = args::Args::command();
     if let Some(build_sub) = cmd.find_subcommand_mut("build") {
-        let mut new_sub = build_sub.clone();
-        for arg in build_args {
-            new_sub = new_sub.arg(arg);
-        }
-        *build_sub = new_sub;
+        *build_sub = BuildArgs::augment_args(build_sub.clone());
     }
     let matches = cmd.get_matches();
     let args = args::Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
@@ -588,15 +564,9 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let defaults = args::BuildCommand::default();
-    let build_args = build_cli(&defaults);
     let mut cmd = args::Args::command();
     if let Some(build_sub) = cmd.find_subcommand_mut("build") {
-        let mut new_sub = build_sub.clone();
-        for arg in build_args {
-            new_sub = new_sub.arg(arg);
-        }
-        *build_sub = new_sub;
+        *build_sub = BuildArgs::augment_args(build_sub.clone());
     }
     let matches = cmd.try_get_matches_from(itr)?;
     let args = args::Args::from_arg_matches(&matches)?;
