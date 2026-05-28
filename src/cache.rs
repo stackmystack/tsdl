@@ -654,6 +654,30 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.sync_all()
 }
 
+/// Verify that every path in `artifacts` exists as a regular file.
+///
+/// Returns [`Decision::Hit`] when all artifacts are present, or a
+/// [`Decision::Miss`] listing every missing or non-file path.
+pub async fn verify_artifacts(artifacts: Vec<PathBuf>) -> Decision {
+    let mut reasons = Vec::new();
+
+    for path in artifacts {
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => reasons.push(MissReason::ArtifactNotFile { path }),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                reasons.push(MissReason::ArtifactMissing { path });
+            }
+            Err(err) => reasons.push(MissReason::ArtifactInaccessible {
+                path,
+                error: err.to_string(),
+            }),
+        }
+    }
+
+    Decision::from_reasons(reasons)
+}
+
 /// Hash the contents of a file using SHA-1 and return the hex string.
 pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
     let mut file = tokio::fs::File::open(path)
@@ -1020,5 +1044,32 @@ mod tests {
             "cache TOML should not serialize runtime storage path: {saved}"
         );
         assert!(saved.contains("parsers"));
+    }
+
+    #[tokio::test]
+    async fn verify_artifacts_hits_when_all_paths_are_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let artifact = temp.path().join("parser.so");
+        tokio::fs::write(&artifact, b"parser").await.unwrap();
+
+        assert_eq!(verify_artifacts(vec![artifact]).await, Decision::Hit);
+    }
+
+    #[tokio::test]
+    async fn verify_artifacts_reports_missing_and_non_file_paths() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("missing.so");
+        let directory = temp.path().join("parser.so");
+        tokio::fs::create_dir(&directory).await.unwrap();
+
+        assert_eq!(
+            verify_artifacts(vec![missing.clone(), directory.clone()]).await,
+            Decision::Miss(Miss {
+                reasons: vec![
+                    MissReason::ArtifactMissing { path: missing },
+                    MissReason::ArtifactNotFile { path: directory },
+                ],
+            })
+        );
     }
 }

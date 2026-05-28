@@ -250,14 +250,18 @@ async fn discover_grammars(
             &name,
         )?;
         let cache_decision = cache
-            .needs_rebuild(
-                key,
-                hash.clone(),
-                language.spec.clone(),
-                revision.clone(),
-                artifacts,
-            )
+            .needs_rebuild(key, hash.clone(), language.spec.clone(), revision.clone())
             .await;
+
+        // The cache actor only checks in-memory metadata.  When it reports a
+        // hit we still need to verify that the expected output files actually
+        // exist on disk — those checks involve filesystem I/O that we perform
+        // here in the build pipeline so the cache actor never blocks on I/O.
+        let cache_decision = if cache_decision.is_hit() {
+            crate::cache::verify_artifacts(artifacts).await
+        } else {
+            cache_decision
+        };
 
         let progress = display
             .add_grammar(
