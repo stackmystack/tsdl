@@ -1,15 +1,12 @@
 mod cache;
 mod display;
 
-use std::{
-    num::NonZeroUsize,
-    path::{Path, PathBuf},
-};
+use std::{num::NonZeroUsize, path::Path};
 
 pub use cache::{CacheActor, CacheAddr};
 pub use display::{DisplayActor, DisplayAddr, Message, ProgressAddr};
 use futures::{stream, StreamExt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use tracing::{debug, info};
 
@@ -127,12 +124,20 @@ async fn run_inner(
     languages: Vec<parser::LanguageBuild>,
     tree_sitter: &args::TreeSitter,
 ) -> Result<()> {
-    let prepared = tree_sitter::prepare(build_dir, display.clone(), tree_sitter).await?;
-    let ts_cli = prepared.path;
-    let languages = languages
-        .into_iter()
-        .map(|language| language.with_tree_sitter(prepared.tree_sitter.clone()))
-        .collect::<Vec<_>>();
+    // Spawn tree-sitter CLI preparation concurrently so its network I/O
+    // (git ls-remote) overlaps with language discovery work.
+    let (prepared_tx, prepared_rx) = watch::channel(None::<Result<tree_sitter::PreparedCli>>);
+    let prepare_build_dir = build_dir.to_path_buf();
+    let prepare_display = display.clone();
+    let prepare_tree_sitter = tree_sitter.clone();
+    tokio::spawn(async move {
+        let result =
+            tree_sitter::prepare(&prepare_build_dir, prepare_display, &prepare_tree_sitter).await;
+        let _ = prepared_tx.send(Some(result));
+    });
+
+    let prepared_rx = prepared_rx;
+    let languages_empty = languages.is_empty();
 
     let mut errors: Vec<Error> =
       // 1. Create a stream from the input list
@@ -140,10 +145,10 @@ async fn run_inner(
           // 2. Stage: Discovery
           // Transform Language -> Future<Result<Vec<Grammar>>>
           .map(|language| {
-              let (cache, display, ts_cli) = (cache.clone(), display.clone(), ts_cli.clone());
+              let (cache, display) = (cache.clone(), display.clone());
+              let mut rx = prepared_rx.clone();
               async move {
-                  // We refactor `discover` to return the list instead of sending messages
-                  discover_grammars(cache, display, language, ts_cli).await
+                  discover_grammars(cache, display, language, &mut rx).await
               }
           })
           // Run up to `concurrency` discovery tasks at once
@@ -189,6 +194,18 @@ async fn run_inner(
           })
           .await;
 
+    // Drain the CLI preparation result so we never exit before the binary is
+    // downloaded.
+    let mut prepared_rx = prepared_rx;
+    if let Err(e) = wait_for_prepared(&mut prepared_rx).await {
+        if languages_empty {
+            errors.push(e);
+        }
+        // else: the pipeline already consumed `prepared_rx` via each
+        // `discover_grammars` call; a second read finding an error is a
+        // redundant delivery — suppress it to avoid double-counting.
+    }
+
     if let Err(e) = cache.save().await {
         errors.push(e);
     }
@@ -206,7 +223,7 @@ async fn discover_grammars(
     cache: CacheAddr,
     display: DisplayAddr,
     language: parser::LanguageBuild,
-    ts_cli: PathBuf,
+    prepared_rx: &mut watch::Receiver<Option<Result<tree_sitter::PreparedCli>>>,
 ) -> Result<Vec<crate::parser::GrammarBuild>> {
     shutdown::test_delay().await;
     shutdown::check()?;
@@ -220,8 +237,14 @@ async fn discover_grammars(
         )
         .await;
 
+    // Phase 1: resolve the parser revision (cache check + possible clone).
+    // This runs concurrently with tree-sitter CLI preparation — it only
+    // touches the cache actor and git subprocesses, neither of which depend
+    // on the resolved tree-sitter version.
     let revision = resolve_revision(&cache, &language, &progress).await?;
 
+    // Phase 2: scan for grammar.js files (git ls-files + hashing).
+    // Also concurrent with CLI preparation.
     progress.step("scanning");
     let grammars = match language.discover_grammars().await {
         Ok(grammars) => grammars,
@@ -236,7 +259,15 @@ async fn discover_grammars(
     };
     progress.fin("done").await;
 
-    // Map the raw discovery data into the Build struct immediately
+    // Phase 3: wait for the tree-sitter CLI to be ready so we have the
+    // resolved tree-sitter version for cache comparisons and the binary path
+    // for computing artifact paths.
+    let prepared = wait_for_prepared(prepared_rx).await?;
+    let ts_cli = prepared.path;
+    let language = language.with_tree_sitter(prepared.tree_sitter);
+
+    // Map the raw discovery data into Build structs, now with the resolved
+    // tree-sitter version available for accurate cache-key comparison.
     let mut builds = Vec::new();
     for (name, dir, hash) in grammars {
         shutdown::test_delay().await;
@@ -253,10 +284,8 @@ async fn discover_grammars(
             .needs_rebuild(key, hash.clone(), language.spec.clone(), revision.clone())
             .await;
 
-        // The cache actor only checks in-memory metadata.  When it reports a
-        // hit we still need to verify that the expected output files actually
-        // exist on disk — those checks involve filesystem I/O that we perform
-        // here in the build pipeline so the cache actor never blocks on I/O.
+        // Cache actor checks in-memory metadata only.  When it reports a hit
+        // we still verify that the expected output files exist on disk.
         let cache_decision = if cache_decision.is_hit() {
             crate::cache::verify_artifacts(artifacts).await
         } else {
@@ -288,6 +317,30 @@ async fn discover_grammars(
     }
 
     Ok(builds)
+}
+
+/// Wait for the tree-sitter CLI preparation task to finish, returning the
+/// prepared CLI or the error that preparation failed with.
+async fn wait_for_prepared(
+    rx: &mut watch::Receiver<Option<Result<tree_sitter::PreparedCli>>>,
+) -> Result<tree_sitter::PreparedCli> {
+    loop {
+        if let Some(result) = rx.borrow().as_ref() {
+            return match result {
+                Ok(prepared) => Ok(prepared.clone()),
+                Err(e) => Err(Error::Message {
+                    message: format!("tree-sitter CLI preparation failed: {e}"),
+                }),
+            };
+        }
+        if rx.changed().await.is_err() {
+            return Err(Error::Message {
+                message:
+                    "tree-sitter CLI preparation failed unexpectedly (task panicked or was dropped)"
+                        .into(),
+            });
+        }
+    }
 }
 
 async fn resolve_revision(

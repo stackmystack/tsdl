@@ -464,11 +464,6 @@ impl Entry {
     }
 
     #[must_use]
-    pub fn covers_request(&self, spec: &build::Spec) -> bool {
-        self.recipe == BuildRecipe::from_spec(spec) && self.outputs.covers(spec.target)
-    }
-
-    #[must_use]
     pub fn same_subject(&self, other: &Self) -> bool {
         self.hash == other.hash && self.revision == other.revision && self.recipe == other.recipe
     }
@@ -588,6 +583,13 @@ impl Db {
             .needs_rebuild()
     }
 
+    /// True when the cache contains at least one entry for `language`
+    /// that was built from the same repository and git ref.
+    ///
+    /// The tree-sitter CLI version, build script, prefix, and target are
+    /// intentionally excluded — they affect artefact validity (checked by
+    /// [`needs_rebuild`]) but not whether a prior checkout of the parser
+    /// source is still usable.
     #[must_use]
     pub fn has_compatible_entry_for_language(
         &self,
@@ -595,9 +597,11 @@ impl Db {
         spec: &build::Spec,
     ) -> bool {
         let prefix = Key::language_prefix(language);
-        self.parsers
-            .iter()
-            .any(|(key, entry)| key.as_str().starts_with(&prefix) && entry.covers_request(spec))
+        self.parsers.iter().any(|(key, entry)| {
+            key.as_str().starts_with(&prefix)
+                && entry.recipe.repo == spec.repo
+                && entry.recipe.git_ref == spec.git_ref
+        })
     }
 
     /// Insert or update a parser cache entry.
