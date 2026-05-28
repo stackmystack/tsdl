@@ -1,7 +1,10 @@
 mod cache;
 mod display;
 
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::{
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
 pub use cache::{CacheActor, CacheAddr};
 pub use display::{DisplayActor, DisplayAddr, Message, ProgressAddr};
@@ -61,7 +64,7 @@ impl<K: std::fmt::Debug, T: std::fmt::Debug> Response<K, T> {
 
 /// The entire build pipeline.
 pub async fn run(
-    build_dir: &PathBuf,
+    build_dir: &Path,
     cache: CacheAddr,
     display: DisplayAddr,
     jobs: NonZeroUsize,
@@ -117,7 +120,7 @@ pub async fn run(
 }
 
 async fn run_inner(
-    build_dir: &PathBuf,
+    build_dir: &Path,
     cache: CacheAddr,
     display: DisplayAddr,
     jobs: NonZeroUsize,

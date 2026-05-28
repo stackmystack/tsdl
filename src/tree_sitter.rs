@@ -42,17 +42,14 @@ async fn chmod_x(prog: &Path) -> Result<()> {
 }
 
 async fn cli(
-    build_dir: &PathBuf,
+    build_dir: &Path,
     handle: &actors::ProgressAddr,
     platform: &str,
     repo: &str,
     tag: &str,
 ) -> Result<PathBuf> {
     let cli = format!("tree-sitter-{platform}");
-    let res = PathBuf::new()
-        .join(build_dir)
-        .join(format!("{cli}-{tag}"))
-        .canon()?;
+    let res = build_dir.join(format!("{cli}-{tag}")).canon()?;
 
     let gz_basename = format!("{cli}.gz");
     let url = format!("{repo}/releases/download/{tag}/{gz_basename}");
@@ -85,7 +82,7 @@ async fn cli(
 }
 
 async fn resolve_release_tag(
-    build_dir: &PathBuf,
+    build_dir: &Path,
     handle: &actors::ProgressAddr,
     repo: &str,
     resolved_ref: &git::ResolvedRef,
@@ -94,7 +91,7 @@ async fn resolve_release_tag(
         git::ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
         git::ResolvedRef::Ref(git_ref) => {
             handle.msg(format!("resolving exact tag for {resolved_ref}"));
-            let tree_sitter = PathBuf::new().join(build_dir).join("tree-sitter");
+            let tree_sitter = build_dir.join("tree-sitter");
             git::clone(repo, &tree_sitter).await?;
             Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
         }
@@ -347,7 +344,7 @@ fn parse_refs(stdout: &str) -> HashMap<String, String> {
 }
 
 pub async fn prepare(
-    build_dir: &PathBuf,
+    build_dir: &Path,
     display: actors::DisplayAddr,
     tree_sitter: &args::TreeSitter,
 ) -> Result<PreparedCli> {
