@@ -13,8 +13,8 @@ use url::Url;
 
 use crate::consts::FROM;
 use crate::{
-    actors, app, args, cache, format_duration, lock, parser, prompt_user, shutdown, Error, Result,
-    ResultExt, SafeCanonicalize,
+    actors, app, args, build_dir::BuildDir, cache, format_duration, lock, parser, prompt_user,
+    shutdown, Error, Result, ResultExt, SafeCanonicalize,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,11 +43,12 @@ pub fn run(app: &app::App, command: &args::BuildCommand) -> Result<()> {
         crate::config::show(command)?;
     }
 
-    let lock = lock::Lock::new(&command.build_dir);
+    let build_dir = BuildDir::new(&command.build_dir)?;
+    let lock = lock::Lock::new(&build_dir);
     let guard = acquire_lock(&lock, Duration::from_secs(command.unlock_timeout))?;
 
-    clear(command, app.logging.path(), &guard)?;
-    ignite(app, command)?;
+    clear(command.fresh, &build_dir, app.logging.path(), &guard)?;
+    ignite(app, command, &build_dir)?;
     Ok(())
 }
 
@@ -119,8 +120,13 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
-fn clear(command: &args::BuildCommand, log_path: Option<&Path>, guard: &lock::Guard) -> Result<()> {
-    if command.fresh && command.build_dir.exists() {
+fn clear(
+    fresh: bool,
+    build_dir: &BuildDir,
+    log_path: Option<&Path>,
+    guard: &lock::Guard,
+) -> Result<()> {
+    if fresh && build_dir.as_path().exists() {
         let protected_files = log_path
             .map(Path::to_path_buf)
             .into_iter()
@@ -128,13 +134,16 @@ fn clear(command: &args::BuildCommand, log_path: Option<&Path>, guard: &lock::Gu
         guard.clear_directory(&protected_files)?;
     }
 
-    fs::create_dir_all(&command.build_dir)?;
+    fs::create_dir_all(build_dir.as_path())?;
 
     Ok(())
 }
 
-fn collect_languages(command: &args::BuildCommand) -> Result<Vec<parser::LanguageBuild>> {
-    let results = unique_languages(command);
+fn collect_languages(
+    command: &args::BuildCommand,
+    build_dir: &BuildDir,
+) -> Result<Vec<parser::LanguageBuild>> {
+    let results = unique_languages(command, build_dir);
     let (ok, err): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
     if err.is_empty() {
@@ -188,7 +197,7 @@ fn get_language_coords(
     }
 }
 
-fn ignite(app: &app::App, command: &args::BuildCommand) -> Result<()> {
+fn ignite(app: &app::App, command: &args::BuildCommand, build_dir: &BuildDir) -> Result<()> {
     fs::create_dir_all(&command.out_dir)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -197,21 +206,22 @@ fn ignite(app: &app::App, command: &args::BuildCommand) -> Result<()> {
 
     let guard = rt.enter();
 
-    let cache_store = cache::Store::new(&command.build_dir);
+    let cache_store = cache::Store::new(build_dir);
     let db = cache_store.load()?;
-    let languages = collect_languages(command)?;
+    let languages = collect_languages(command, build_dir)?;
 
     let result = rt.block_on(async move {
         let shutdown = shutdown::Handle::new();
         let _signals = shutdown.spawn_signal_listener()?;
         let cache = actors::CacheActor::spawn(db, cache_store, command.force);
-        let build_dir = command.build_dir.canon()?;
-        let out_dir = command.out_dir.canon()?;
-        let display = actors::DisplayActor::spawn(app.progress_mode, build_dir, out_dir);
+        let display_build_dir = build_dir.as_path().to_path_buf();
+        let display_out_dir = command.out_dir.canon()?;
+        let display =
+            actors::DisplayActor::spawn(app.progress_mode, display_build_dir, display_out_dir);
 
         shutdown::scope(shutdown, async move {
             actors::run(
-                &command.build_dir,
+                build_dir.as_path(),
                 cache,
                 display,
                 command.jobs,
@@ -230,7 +240,10 @@ fn ignite(app: &app::App, command: &args::BuildCommand) -> Result<()> {
     result
 }
 
-fn unique_languages(command: &args::BuildCommand) -> Vec<Result<parser::LanguageBuild>> {
+fn unique_languages(
+    command: &args::BuildCommand,
+    build_dir: &BuildDir,
+) -> Vec<Result<parser::LanguageBuild>> {
     let requested_languages = &command.languages;
     let defined_parsers = command.parsers.as_ref();
 
@@ -260,9 +273,8 @@ fn unique_languages(command: &args::BuildCommand) -> Vec<Result<parser::Language
                 }),
                 parser::LanguageName::from(language.clone()),
                 OutputConfig {
-                    build_dir: command
-                        .build_dir
-                        .join(format!("tree-sitter-{}", &language))
+                    build_dir: build_dir
+                        .checkout_dir(&language)
                         .canon()
                         .expect("Build dir canonicalization failed"),
                     out_dir: command
@@ -302,8 +314,9 @@ mod tests {
     #[test]
     fn unique_languages_sorts_and_deduplicates_requested_languages() {
         let command = command_with_languages(&["rust", "json", "ruby", "json", "rust"]);
+        let build_dir = BuildDir::new("test-build").unwrap();
 
-        let languages = unique_languages(&command)
+        let languages = unique_languages(&command, &build_dir)
             .into_iter()
             .map(|language| language.unwrap().name.to_string())
             .collect::<Vec<_>>();

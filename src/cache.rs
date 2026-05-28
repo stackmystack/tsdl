@@ -11,7 +11,7 @@ use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, ReadBuf};
 use tracing::debug;
 
-use crate::{args, build, consts, git, parser, Error, Result, ResultExt};
+use crate::{args, build, build_dir::BuildDir, git, parser, Error, Result, ResultExt};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -481,9 +481,9 @@ pub struct Update {
 
 impl Store {
     #[must_use]
-    pub fn new(build_dir: &Path) -> Self {
+    pub fn new(build_dir: &BuildDir) -> Self {
         Self {
-            file: build_dir.join(consts::CACHE_FILE),
+            file: build_dir.cache_file(),
         }
     }
 
@@ -685,7 +685,7 @@ pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{git, parser};
+    use crate::{consts, git, parser};
 
     const SHA1: &str = "636801770eea172d140e64b691815ff11f6b556f";
     const SHA2: &str = "736801770eea172d140e64b691815ff11f6b556f";
@@ -962,7 +962,8 @@ mod tests {
     #[test]
     fn store_loads_cache_without_runtime_file_path() {
         let temp = tempfile::TempDir::new().unwrap();
-        let store = Store::new(temp.path());
+        let build_dir = BuildDir::new(temp.path()).unwrap();
+        let store = Store::new(&build_dir);
         let spec = test_spec();
         let cache = cache_with_entry("abc123", &spec);
         let contents = toml::to_string_pretty(&cache).unwrap();
@@ -977,7 +978,8 @@ mod tests {
     async fn store_ignores_legacy_file_field_and_saves_to_current_path() {
         let current = tempfile::TempDir::new().unwrap();
         let stale = tempfile::TempDir::new().unwrap();
-        let store = Store::new(current.path());
+        let build_dir = BuildDir::new(current.path()).unwrap();
+        let store = Store::new(&build_dir);
         let stale_file = stale.path().join(consts::CACHE_FILE);
         let spec = test_spec();
         let cache = cache_with_entry("abc123", &spec);

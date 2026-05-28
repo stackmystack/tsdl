@@ -62,6 +62,7 @@ pub mod actors;
 pub mod app;
 pub mod args;
 pub mod build;
+pub mod build_dir;
 pub mod cache;
 pub mod columns;
 pub mod config;
