@@ -11,6 +11,13 @@ use tokio::{fs, process::Command};
 
 use crate::{sh::Exec, Error, Result, ResultExt};
 
+type RefResult<T> = StdResult<T, RefError>;
+
+// ============================================================
+// Enums
+// ============================================================
+
+/// Error type for git ref and SHA validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefError {
     EmptyRef,
@@ -20,318 +27,53 @@ pub enum RefError {
     InvalidShaHex { index: usize, character: char },
 }
 
-impl fmt::Display for RefError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyRef => write!(f, "git ref cannot be empty"),
-            Self::InvalidRefCharacter { index, character } => write!(
-                f,
-                "git ref contains invalid character at byte {index}: {character:?}"
-            ),
-            Self::InvalidRefSyntax { reason } => write!(f, "git ref is invalid: {reason}"),
-            Self::InvalidShaLength { actual } => {
-                write!(f, "git SHA must be exactly 40 hex characters, got {actual}")
-            }
-            Self::InvalidShaHex { index, character } => write!(
-                f,
-                "git SHA contains non-hex character at byte {index}: {character:?}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RefError {}
-
-type RefResult<T> = StdResult<T, RefError>;
-
-impl From<RefError> for Error {
-    fn from(error: RefError) -> Self {
-        Error::Message {
-            message: error.to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Ref(Arc<str>);
-
-impl Ref {
-    /// Create a validated git ref.
-    pub fn new(value: impl Into<Arc<str>>) -> RefResult<Self> {
-        let value = value.into();
-        validate_git_ref(&value)?;
-        Ok(Self(value))
-    }
-
-    /// The default ref used for unpinned parser builds.
-    #[must_use]
-    pub fn head() -> Self {
-        Self(Arc::from("HEAD"))
-    }
-
-    /// Get the exact git ref string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Get a human-oriented representation, shortening full commit SHAs.
-    #[must_use]
-    pub fn short(&self) -> &str {
-        if Sha::is_full_sha(self.as_str()) {
-            &self.0[..7]
-        } else {
-            &self.0
-        }
-    }
-
-    #[must_use]
-    pub fn is_exact_sha(&self) -> bool {
-        Sha::is_full_sha(self.as_str())
-    }
-}
-
-impl AsRef<str> for Ref {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl TryFrom<&str> for Ref {
-    type Error = RefError;
-
-    fn try_from(value: &str) -> StdResult<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<String> for Ref {
-    type Error = RefError;
-
-    fn try_from(value: String) -> StdResult<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl std::str::FromStr for Ref {
-    type Err = RefError;
-
-    fn from_str(value: &str) -> StdResult<Self, Self::Err> {
-        Self::new(value)
-    }
-}
-
-impl fmt::Display for Ref {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.short())
-    }
-}
-
-impl Serialize for Ref {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Ref {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(de::Error::custom)
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Sha(Arc<str>);
-
-impl Sha {
-    /// Create a validated full 40-character git SHA-1.
-    pub fn new(value: impl Into<Arc<str>>) -> RefResult<Self> {
-        let value = value.into();
-        validate_git_sha(&value)?;
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn short(&self) -> &str {
-        &self.0[..7]
-    }
-
-    #[must_use]
-    pub fn is_full_sha(value: &str) -> bool {
-        value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())
-    }
-}
-
-impl AsRef<str> for Sha {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl TryFrom<&str> for Sha {
-    type Error = RefError;
-
-    fn try_from(value: &str) -> StdResult<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<String> for Sha {
-    type Error = RefError;
-
-    fn try_from(value: String) -> StdResult<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl std::str::FromStr for Sha {
-    type Err = RefError;
-
-    fn from_str(value: &str) -> StdResult<Self, Self::Err> {
-        Self::new(value)
-    }
-}
-
-impl fmt::Display for Sha {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.short())
-    }
-}
-
-impl Serialize for Sha {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Sha {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(de::Error::custom)
-    }
-}
-
-impl From<Sha> for Ref {
-    fn from(sha: Sha) -> Self {
-        Self(sha.0)
-    }
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ResolvedRef {
     Tag { label: String, sha: Sha },
     Ref(Ref),
 }
 
+// ============================================================
+// Structs
+// ============================================================
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Checkout {
     pub commit: Sha,
 }
 
-impl fmt::Display for ResolvedRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tag { label, .. } => write!(f, "{label}"),
-            Self::Ref(git_ref) => write!(f, "{git_ref}"),
-        }
-    }
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Ref(Arc<str>);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Sha(Arc<str>);
+
+// ============================================================
+// Free functions
+// ============================================================
+
+pub async fn checkout(repo: &str, git_ref: &Ref, cwd: &Path) -> Result<Checkout> {
+    checkout_with_force(repo, git_ref, cwd, false).await
 }
 
-fn validate_git_ref(value: &str) -> RefResult<()> {
-    if value.is_empty() {
-        return Err(RefError::EmptyRef);
+pub async fn checkout_with_force(
+    repo: &str,
+    git_ref: &Ref,
+    cwd: &Path,
+    force: bool,
+) -> Result<Checkout> {
+    if force || !is_same_remote(cwd, repo).await {
+        clean_anyway(cwd).await?;
     }
-
-    if value == "@" {
-        return Err(RefError::InvalidRefSyntax {
-            reason: "single @ is not a ref",
-        });
+    if is_valid_git_dir(cwd).await {
+        reset_head_hard(cwd, git_ref).await?;
+    } else {
+        init_fetch_and_checkout(cwd, repo, git_ref).await?;
     }
-
-    if value.starts_with('/') || value.ends_with('/') {
-        return Err(RefError::InvalidRefSyntax {
-            reason: "refs cannot start or end with /",
-        });
-    }
-
-    if value.ends_with('.') {
-        return Err(RefError::InvalidRefSyntax {
-            reason: "refs cannot end with .",
-        });
-    }
-
-    if value.contains("..") {
-        return Err(RefError::InvalidRefSyntax {
-            reason: "refs cannot contain ..",
-        });
-    }
-
-    if value.contains("@{") {
-        return Err(RefError::InvalidRefSyntax {
-            reason: "refs cannot contain @{",
-        });
-    }
-
-    if let Some((index, character)) = value.char_indices().find(|(_, c)| {
-        c.is_ascii_control()
-            || c.is_ascii_whitespace()
-            || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
-    }) {
-        return Err(RefError::InvalidRefCharacter { index, character });
-    }
-
-    for component in value.split('/') {
-        if component.is_empty() {
-            return Err(RefError::InvalidRefSyntax {
-                reason: "refs cannot contain empty path components",
-            });
-        }
-
-        if component.starts_with('.') {
-            return Err(RefError::InvalidRefSyntax {
-                reason: "ref path components cannot start with .",
-            });
-        }
-
-        if component.strip_suffix(".lock").is_some() {
-            return Err(RefError::InvalidRefSyntax {
-                reason: "ref path components cannot end with .lock",
-            });
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_git_sha(value: &str) -> RefResult<()> {
-    if value.len() != 40 {
-        return Err(RefError::InvalidShaLength {
-            actual: value.len(),
-        });
-    }
-
-    if let Some((index, character)) = value.char_indices().find(|(_, c)| !c.is_ascii_hexdigit()) {
-        return Err(RefError::InvalidShaHex { index, character });
-    }
-
-    Ok(())
+    let commit = get_head_sha(cwd)
+        .await
+        .with_context(|| format!("Resolving checked out commit for {}", cwd.display()))?;
+    Ok(Checkout { commit })
 }
 
 // TODO: get rid of async fs completely.
@@ -362,30 +104,6 @@ pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn checkout(repo: &str, git_ref: &Ref, cwd: &Path) -> Result<Checkout> {
-    checkout_with_force(repo, git_ref, cwd, false).await
-}
-
-pub async fn checkout_with_force(
-    repo: &str,
-    git_ref: &Ref,
-    cwd: &Path,
-    force: bool,
-) -> Result<Checkout> {
-    if force || !is_same_remote(cwd, repo).await {
-        clean_anyway(cwd).await?;
-    }
-    if is_valid_git_dir(cwd).await {
-        reset_head_hard(cwd, git_ref).await?;
-    } else {
-        init_fetch_and_checkout(cwd, repo, git_ref).await?;
-    }
-    let commit = get_head_sha(cwd)
-        .await
-        .with_context(|| format!("Resolving checked out commit for {}", cwd.display()))?;
-    Ok(Checkout { commit })
-}
-
 async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> Result<()> {
     Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -401,6 +119,11 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> Result<()> {
     Ok(())
 }
 
+async fn get_head_sha(cwd: &Path) -> Result<Sha> {
+    let value = get_head_sha1(cwd).await?;
+    Sha::new(value.trim()).context("Parsing HEAD commit")
+}
+
 async fn get_head_sha1(cwd: &Path) -> Result<String> {
     String::from_utf8(
         Command::new("git")
@@ -411,11 +134,6 @@ async fn get_head_sha1(cwd: &Path) -> Result<String> {
             .stdout,
     )
     .context("rev-parse HEAD is not a valid utf-8")
-}
-
-async fn get_head_sha(cwd: &Path) -> Result<Sha> {
-    let value = get_head_sha1(cwd).await?;
-    Sha::new(value.trim()).context("Parsing HEAD commit")
 }
 
 async fn get_remote_url(cwd: &Path) -> Result<String> {
@@ -451,12 +169,12 @@ async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> Resul
     Ok(())
 }
 
-async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
-    remote == get_remote_url(cwd).await.unwrap_or_default().trim()
-}
-
 pub async fn is_checkout_usable(repo: &str, cwd: &Path) -> bool {
     is_valid_git_dir(cwd).await && is_same_remote(cwd, repo).await
+}
+
+async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
+    remote == get_remote_url(cwd).await.unwrap_or_default().trim()
 }
 
 async fn is_valid_git_dir(cwd: &Path) -> bool {
@@ -560,6 +278,305 @@ pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> Result<String> {
         String::from_utf8(sha1.stdout)
             .context("Failed to parse git rev-parse output as UTF-8")
             .map(|s| s.trim().to_string())
+    }
+}
+
+fn validate_git_ref(value: &str) -> RefResult<()> {
+    if value.is_empty() {
+        return Err(RefError::EmptyRef);
+    }
+
+    if value == "@" {
+        return Err(RefError::InvalidRefSyntax {
+            reason: "single @ is not a ref",
+        });
+    }
+
+    if value.starts_with('/') || value.ends_with('/') {
+        return Err(RefError::InvalidRefSyntax {
+            reason: "refs cannot start or end with /",
+        });
+    }
+
+    if value.ends_with('.') {
+        return Err(RefError::InvalidRefSyntax {
+            reason: "refs cannot end with .",
+        });
+    }
+
+    if value.contains("..") {
+        return Err(RefError::InvalidRefSyntax {
+            reason: "refs cannot contain ..",
+        });
+    }
+
+    if value.contains("@{") {
+        return Err(RefError::InvalidRefSyntax {
+            reason: "refs cannot contain @{",
+        });
+    }
+
+    if let Some((index, character)) = value.char_indices().find(|(_, c)| {
+        c.is_ascii_control()
+            || c.is_ascii_whitespace()
+            || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+    }) {
+        return Err(RefError::InvalidRefCharacter { index, character });
+    }
+
+    for component in value.split('/') {
+        if component.is_empty() {
+            return Err(RefError::InvalidRefSyntax {
+                reason: "refs cannot contain empty path components",
+            });
+        }
+
+        if component.starts_with('.') {
+            return Err(RefError::InvalidRefSyntax {
+                reason: "ref path components cannot start with .",
+            });
+        }
+
+        if component.strip_suffix(".lock").is_some() {
+            return Err(RefError::InvalidRefSyntax {
+                reason: "ref path components cannot end with .lock",
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_git_sha(value: &str) -> RefResult<()> {
+    if value.len() != 40 {
+        return Err(RefError::InvalidShaLength {
+            actual: value.len(),
+        });
+    }
+
+    if let Some((index, character)) = value.char_indices().find(|(_, c)| !c.is_ascii_hexdigit()) {
+        return Err(RefError::InvalidShaHex { index, character });
+    }
+
+    Ok(())
+}
+
+// ============================================================
+// Impls
+// ============================================================
+
+impl AsRef<str> for Ref {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for Sha {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for Ref {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for Sha {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
+    }
+}
+
+impl fmt::Display for Ref {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.short())
+    }
+}
+
+impl fmt::Display for RefError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyRef => write!(f, "git ref cannot be empty"),
+            Self::InvalidRefCharacter { index, character } => write!(
+                f,
+                "git ref contains invalid character at byte {index}: {character:?}"
+            ),
+            Self::InvalidRefSyntax { reason } => write!(f, "git ref is invalid: {reason}"),
+            Self::InvalidShaLength { actual } => {
+                write!(f, "git SHA must be exactly 40 hex characters, got {actual}")
+            }
+            Self::InvalidShaHex { index, character } => write!(
+                f,
+                "git SHA contains non-hex character at byte {index}: {character:?}"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for ResolvedRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tag { label, .. } => write!(f, "{label}"),
+            Self::Ref(git_ref) => write!(f, "{git_ref}"),
+        }
+    }
+}
+
+impl fmt::Display for Sha {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.short())
+    }
+}
+
+impl From<RefError> for Error {
+    fn from(error: RefError) -> Self {
+        Error::Message {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<Sha> for Ref {
+    fn from(sha: Sha) -> Self {
+        Self(sha.0)
+    }
+}
+
+impl std::str::FromStr for Ref {
+    type Err = RefError;
+
+    fn from_str(value: &str) -> StdResult<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
+impl std::str::FromStr for Sha {
+    type Err = RefError;
+
+    fn from_str(value: &str) -> StdResult<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
+impl Ref {
+    /// Create a validated git ref.
+    pub fn new(value: impl Into<Arc<str>>) -> RefResult<Self> {
+        let value = value.into();
+        validate_git_ref(&value)?;
+        Ok(Self(value))
+    }
+
+    /// The default ref used for unpinned parser builds.
+    #[must_use]
+    pub fn head() -> Self {
+        Self(Arc::from("HEAD"))
+    }
+
+    /// Get the exact git ref string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Get a human-oriented representation, shortening full commit SHAs.
+    #[must_use]
+    pub fn short(&self) -> &str {
+        if Sha::is_full_sha(self.as_str()) {
+            &self.0[..7]
+        } else {
+            &self.0
+        }
+    }
+
+    #[must_use]
+    pub fn is_exact_sha(&self) -> bool {
+        Sha::is_full_sha(self.as_str())
+    }
+}
+
+impl Serialize for Ref {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl Serialize for Sha {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl Sha {
+    /// Create a validated full 40-character git SHA-1.
+    pub fn new(value: impl Into<Arc<str>>) -> RefResult<Self> {
+        let value = value.into();
+        validate_git_sha(&value)?;
+        Ok(Sha(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn short(&self) -> &str {
+        &self.0[..7]
+    }
+
+    #[must_use]
+    pub fn is_full_sha(value: &str) -> bool {
+        value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())
+    }
+}
+
+impl std::error::Error for RefError {}
+
+impl TryFrom<&str> for Ref {
+    type Error = RefError;
+
+    fn try_from(value: &str) -> StdResult<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for Sha {
+    type Error = RefError;
+
+    fn try_from(value: &str) -> StdResult<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for Ref {
+    type Error = RefError;
+
+    fn try_from(value: String) -> StdResult<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for Sha {
+    type Error = RefError;
+
+    fn try_from(value: String) -> StdResult<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
