@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -33,7 +33,7 @@ jobs:
         run: |
           mkdir -p target
           for platform in $(cd artifacts; ls | sed 's/^tsdl\.//'); do
-            exe=$(ls artifacts/tsdl.$platform/tsdl*)
+            exe="artifacts/tsdl.$platform/tsdl"
             gzip --stdout --name $exe > target/tsdl-$platform.gz
           done
           rm -rf artifacts
