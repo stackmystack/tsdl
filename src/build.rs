@@ -17,6 +17,21 @@ use crate::{
     shutdown, Error, Result, ResultExt, SafeCanonicalize,
 };
 
+// ============================================================
+// Structs
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Context {
+    pub overwrite_output: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutputConfig {
+    pub build_dir: PathBuf,
+    pub out_dir: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
     pub build_script: Option<String>,
@@ -27,30 +42,9 @@ pub struct Spec {
     pub tree_sitter: args::TreeSitter,
 }
 
-#[derive(Debug, Clone)]
-pub struct OutputConfig {
-    pub build_dir: PathBuf,
-    pub out_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Context {
-    pub overwrite_output: bool,
-}
-
-pub fn run(app: &app::App, command: &args::BuildCommand) -> Result<()> {
-    if command.show_config {
-        crate::config::show(command)?;
-    }
-
-    let build_dir = BuildDir::new(&command.build_dir)?;
-    let lock = lock::Lock::new(&build_dir);
-    let guard = acquire_lock(&lock, Duration::from_secs(command.unlock_timeout))?;
-
-    clear(command.fresh, &build_dir, app.logging.path(), &guard)?;
-    ignite(app, command, &build_dir)?;
-    Ok(())
-}
+// ============================================================
+// Free functions
+// ============================================================
 
 fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Guard> {
     // Loop because the lock owner may exit naturally between the prompt and
@@ -88,36 +82,6 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Gua
             }
         }
     }
-}
-
-fn handle_locked_by(
-    lock: &lock::Lock,
-    owner: &lock::Owner,
-    unlock_timeout: Duration,
-) -> StdResult<lock::Guard, lock::TakeoverError> {
-    info!("Build directory is locked by another process:");
-    info!("{owner}");
-    eprintln!(
-        "If you continue, tsdl will send SIGTERM to PID {} and wait up to {} \
-         (--unlock-timeout {}) for the build lock to be released.",
-        owner.pid,
-        format_duration(unlock_timeout),
-        unlock_timeout.as_secs()
-    );
-
-    if !prompt_user("Terminate this process and continue?", false)? {
-        return Err(Error::Message {
-            message: "lock::Lock acquisition cancelled by user".into(),
-        }
-        .into());
-    }
-
-    lock.terminate_owner(owner)?;
-    info!(
-        "Sent SIGTERM to PID {}. Waiting for the build lock to be released...",
-        owner.pid
-    );
-    lock.wait_for_release(owner, unlock_timeout)
 }
 
 fn clear(
@@ -197,6 +161,36 @@ fn get_language_coords(
     }
 }
 
+fn handle_locked_by(
+    lock: &lock::Lock,
+    owner: &lock::Owner,
+    unlock_timeout: Duration,
+) -> StdResult<lock::Guard, lock::TakeoverError> {
+    info!("Build directory is locked by another process:");
+    info!("{owner}");
+    eprintln!(
+        "If you continue, tsdl will send SIGTERM to PID {} and wait up to {} \
+         (--unlock-timeout {}) for the build lock to be released.",
+        owner.pid,
+        format_duration(unlock_timeout),
+        unlock_timeout.as_secs()
+    );
+
+    if !prompt_user("Terminate this process and continue?", false)? {
+        return Err(Error::Message {
+            message: "lock::Lock acquisition cancelled by user".into(),
+        }
+        .into());
+    }
+
+    lock.terminate_owner(owner)?;
+    info!(
+        "Sent SIGTERM to PID {}. Waiting for the build lock to be released...",
+        owner.pid
+    );
+    lock.wait_for_release(owner, unlock_timeout)
+}
+
 fn ignite(app: &app::App, command: &args::BuildCommand, build_dir: &BuildDir) -> Result<()> {
     fs::create_dir_all(&command.out_dir)?;
 
@@ -238,6 +232,20 @@ fn ignite(app: &app::App, command: &args::BuildCommand, build_dir: &BuildDir) ->
     drop(guard);
 
     result
+}
+
+pub fn run(app: &app::App, command: &args::BuildCommand) -> Result<()> {
+    if command.show_config {
+        crate::config::show(command)?;
+    }
+
+    let build_dir = BuildDir::new(&command.build_dir)?;
+    let lock = lock::Lock::new(&build_dir);
+    let guard = acquire_lock(&lock, Duration::from_secs(command.unlock_timeout))?;
+
+    clear(command.fresh, &build_dir, app.logging.path(), &guard)?;
+    ignite(app, command, &build_dir)?;
+    Ok(())
 }
 
 fn unique_languages(
@@ -293,6 +301,10 @@ fn unique_languages(
 
     results
 }
+
+// ============================================================
+// Tests
+// ============================================================
 
 #[cfg(test)]
 mod tests {
