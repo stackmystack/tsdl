@@ -12,6 +12,10 @@ use tracing::{debug, info};
 
 use crate::{args, parser, shutdown, tree_sitter, Error, Result};
 
+// ============================================================
+// Traits
+// ============================================================
+
 pub trait Addr {
     type Message;
 
@@ -43,19 +47,173 @@ pub trait Addr {
     }
 }
 
+// ============================================================
+// Structs
+// ============================================================
+
 pub struct Response<K, T> {
     pub kind: K,
     pub tx: oneshot::Sender<T>,
 }
 
-impl<K: std::fmt::Debug, T: std::fmt::Debug> Response<K, T> {
-    /// # Panics
-    ///
-    /// Will panic channel is closed.
-    pub fn send(self, value: T) {
-        self.tx
-            .send(value)
-            .unwrap_or_else(|_| panic!("cannot send response: {:?}", self.kind));
+// ============================================================
+// Free functions
+// ============================================================
+
+async fn discover_grammars(
+    cache: CacheAddr,
+    display: DisplayAddr,
+    language: parser::LanguageBuild,
+    prepared_rx: &mut watch::Receiver<Option<Result<tree_sitter::PreparedCli>>>,
+) -> Result<Vec<crate::parser::GrammarBuild>> {
+    shutdown::test_delay().await;
+    shutdown::check()?;
+    debug!("[discover] lang={}", language.name);
+
+    let progress = display
+        .add_language(
+            language.spec.git_ref.requested().clone(),
+            language.name.as_arc(),
+            2,
+        )
+        .await;
+
+    // Phase 1: resolve the parser revision (cache check + possible clone).
+    // This runs concurrently with tree-sitter CLI preparation — it only
+    // touches the cache actor and git subprocesses, neither of which depend
+    // on the resolved tree-sitter version.
+    let revision = resolve_revision(&cache, &language, &progress).await?;
+
+    // Phase 2: scan for grammar.js files (git ls-files + hashing).
+    // Also concurrent with CLI preparation.
+    progress.step("scanning");
+    let grammars = match language.discover_grammars().await {
+        Ok(grammars) => grammars,
+        Err(e) => {
+            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                progress.cancel().await;
+            } else {
+                progress.err("scan failed").await;
+            }
+            return Err(e);
+        }
+    };
+    progress.fin("done").await;
+
+    // Phase 3: wait for the tree-sitter CLI to be ready so we have the
+    // resolved tree-sitter version for cache comparisons and the binary path
+    // for computing artifact paths.
+    let prepared = wait_for_prepared(prepared_rx).await?;
+    let ts_cli = prepared.path;
+    let language = language.with_tree_sitter(prepared.tree_sitter);
+
+    // Map the raw discovery data into Build structs, now with the resolved
+    // tree-sitter version available for accurate cache-key comparison.
+    let mut builds = Vec::new();
+    for (name, dir, hash) in grammars {
+        shutdown::test_delay().await;
+        shutdown::check()?;
+
+        let key = crate::cache::Key::new(&language.name, &name);
+        let artifacts = parser::GrammarBuild::required_artifacts_for(
+            &language.output.build_dir,
+            &ts_cli,
+            &language.spec,
+            &name,
+        )?;
+        let cache_decision = cache
+            .needs_rebuild(key, hash.clone(), language.spec.clone(), revision.clone())
+            .await;
+
+        // Cache actor checks in-memory metadata only.  When it reports a hit
+        // we still verify that the expected output files exist on disk.
+        let cache_decision = if cache_decision.is_hit() {
+            crate::cache::verify_artifacts(artifacts).await
+        } else {
+            cache_decision
+        };
+
+        let progress = display
+            .add_grammar(
+                language.spec.git_ref.requested().clone(),
+                language.name.as_arc(),
+                name.as_arc(),
+                4,
+            )
+            .await;
+
+        builds.push(parser::GrammarBuild {
+            context: language.context.clone(),
+            cache_decision,
+            dir,
+            hash,
+            language: language.name.clone(),
+            name,
+            output: language.output.clone(),
+            progress,
+            revision: revision.clone(),
+            spec: language.spec.clone(),
+            ts_cli: ts_cli.clone(),
+        });
+    }
+
+    Ok(builds)
+}
+
+async fn resolve_revision(
+    cache: &CacheAddr,
+    language: &parser::LanguageBuild,
+    progress: &ProgressAddr,
+) -> Result<crate::cache::Revision> {
+    if language.spec.git_ref.is_moving() {
+        info!(
+            "Resolving moving parser git ref for {}: {}",
+            language.name,
+            language.spec.git_ref.requested().as_str()
+        );
+        progress.set_outcome_built().await;
+        progress.step("cloning");
+        match language.checkout().await {
+            Ok(checkout) => {
+                info!(
+                    "Resolved parser {} git ref {} to commit {}",
+                    language.name,
+                    language.spec.git_ref.requested().as_str(),
+                    checkout.commit.as_str()
+                );
+                Ok(crate::cache::Revision::moving(checkout.commit))
+            }
+            Err(e) => {
+                if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                    progress.cancel().await;
+                } else {
+                    progress.err("clone failed").await;
+                }
+                Err(e)
+            }
+        }
+    } else {
+        let has_compatible_entries = cache
+            .has_compatible_entries(language.name.clone(), language.spec.clone())
+            .await;
+        let checkout_needed = !has_compatible_entries || !language.is_checkout_usable().await;
+
+        if checkout_needed {
+            progress.set_outcome_built().await;
+            progress.step("cloning");
+            if let Err(e) = language.checkout().await {
+                if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+                    progress.cancel().await;
+                } else {
+                    progress.err("clone failed").await;
+                }
+                return Err(e);
+            }
+        } else {
+            progress.set_outcome_cached().await;
+        }
+
+        Ok(crate::cache::Revision::stable())
     }
 }
 
@@ -217,108 +375,6 @@ async fn run_inner(
     }
 }
 
-// --- Helper Refactors (Moving logic out of Actor impls) ---
-
-async fn discover_grammars(
-    cache: CacheAddr,
-    display: DisplayAddr,
-    language: parser::LanguageBuild,
-    prepared_rx: &mut watch::Receiver<Option<Result<tree_sitter::PreparedCli>>>,
-) -> Result<Vec<crate::parser::GrammarBuild>> {
-    shutdown::test_delay().await;
-    shutdown::check()?;
-    debug!("[discover] lang={}", language.name);
-
-    let progress = display
-        .add_language(
-            language.spec.git_ref.requested().clone(),
-            language.name.as_arc(),
-            2,
-        )
-        .await;
-
-    // Phase 1: resolve the parser revision (cache check + possible clone).
-    // This runs concurrently with tree-sitter CLI preparation — it only
-    // touches the cache actor and git subprocesses, neither of which depend
-    // on the resolved tree-sitter version.
-    let revision = resolve_revision(&cache, &language, &progress).await?;
-
-    // Phase 2: scan for grammar.js files (git ls-files + hashing).
-    // Also concurrent with CLI preparation.
-    progress.step("scanning");
-    let grammars = match language.discover_grammars().await {
-        Ok(grammars) => grammars,
-        Err(e) => {
-            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                progress.cancel().await;
-            } else {
-                progress.err("scan failed").await;
-            }
-            return Err(e);
-        }
-    };
-    progress.fin("done").await;
-
-    // Phase 3: wait for the tree-sitter CLI to be ready so we have the
-    // resolved tree-sitter version for cache comparisons and the binary path
-    // for computing artifact paths.
-    let prepared = wait_for_prepared(prepared_rx).await?;
-    let ts_cli = prepared.path;
-    let language = language.with_tree_sitter(prepared.tree_sitter);
-
-    // Map the raw discovery data into Build structs, now with the resolved
-    // tree-sitter version available for accurate cache-key comparison.
-    let mut builds = Vec::new();
-    for (name, dir, hash) in grammars {
-        shutdown::test_delay().await;
-        shutdown::check()?;
-
-        let key = crate::cache::Key::new(&language.name, &name);
-        let artifacts = parser::GrammarBuild::required_artifacts_for(
-            &language.output.build_dir,
-            &ts_cli,
-            &language.spec,
-            &name,
-        )?;
-        let cache_decision = cache
-            .needs_rebuild(key, hash.clone(), language.spec.clone(), revision.clone())
-            .await;
-
-        // Cache actor checks in-memory metadata only.  When it reports a hit
-        // we still verify that the expected output files exist on disk.
-        let cache_decision = if cache_decision.is_hit() {
-            crate::cache::verify_artifacts(artifacts).await
-        } else {
-            cache_decision
-        };
-
-        let progress = display
-            .add_grammar(
-                language.spec.git_ref.requested().clone(),
-                language.name.as_arc(),
-                name.as_arc(),
-                4,
-            )
-            .await;
-
-        builds.push(parser::GrammarBuild {
-            context: language.context.clone(),
-            cache_decision,
-            dir,
-            hash,
-            language: language.name.clone(),
-            name,
-            output: language.output.clone(),
-            progress,
-            revision: revision.clone(),
-            spec: language.spec.clone(),
-            ts_cli: ts_cli.clone(),
-        });
-    }
-
-    Ok(builds)
-}
-
 /// Wait for the tree-sitter CLI preparation task to finish, returning the
 /// prepared CLI or the error that preparation failed with.
 async fn wait_for_prepared(
@@ -343,59 +399,17 @@ async fn wait_for_prepared(
     }
 }
 
-async fn resolve_revision(
-    cache: &CacheAddr,
-    language: &parser::LanguageBuild,
-    progress: &ProgressAddr,
-) -> Result<crate::cache::Revision> {
-    if language.spec.git_ref.is_moving() {
-        info!(
-            "Resolving moving parser git ref for {}: {}",
-            language.name,
-            language.spec.git_ref.requested().as_str()
-        );
-        progress.set_outcome_built().await;
-        progress.step("cloning");
-        match language.checkout().await {
-            Ok(checkout) => {
-                info!(
-                    "Resolved parser {} git ref {} to commit {}",
-                    language.name,
-                    language.spec.git_ref.requested().as_str(),
-                    checkout.commit.as_str()
-                );
-                Ok(crate::cache::Revision::moving(checkout.commit))
-            }
-            Err(e) => {
-                if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                    progress.cancel().await;
-                } else {
-                    progress.err("clone failed").await;
-                }
-                Err(e)
-            }
-        }
-    } else {
-        let has_compatible_entries = cache
-            .has_compatible_entries(language.name.clone(), language.spec.clone())
-            .await;
-        let checkout_needed = !has_compatible_entries || !language.is_checkout_usable().await;
+// ============================================================
+// Impls
+// ============================================================
 
-        if checkout_needed {
-            progress.set_outcome_built().await;
-            progress.step("cloning");
-            if let Err(e) = language.checkout().await {
-                if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                    progress.cancel().await;
-                } else {
-                    progress.err("clone failed").await;
-                }
-                return Err(e);
-            }
-        } else {
-            progress.set_outcome_cached().await;
-        }
-
-        Ok(crate::cache::Revision::stable())
+impl<K: std::fmt::Debug, T: std::fmt::Debug> Response<K, T> {
+    /// # Panics
+    ///
+    /// Will panic channel is closed.
+    pub fn send(self, value: T) {
+        self.tx
+            .send(value)
+            .unwrap_or_else(|_| panic!("cannot send response: {:?}", self.kind));
     }
 }
