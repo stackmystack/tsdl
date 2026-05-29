@@ -12,7 +12,100 @@ use crate::consts::{
     UNLOCK_TIMEOUT, VERSION,
 };
 
+// ============================================================
+// Constants
+// ============================================================
+
 const TSDL_VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/tsdl.version"));
+
+// ============================================================
+// Enums
+// ============================================================
+
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum Command {
+    /// Build one or many parsers.
+    #[command(visible_alias = "b")]
+    Build,
+
+    /// Configuration helpers.
+    #[command(visible_alias = "c")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
+    /// Update tsdl to its latest version.
+    #[command(visible_alias = "u")]
+    Selfupdate {
+      #[arg(long, short, default_value="false")]
+      force: bool,
+
+      #[arg(long, short, default_value="minor")]
+      target: String
+    },
+}
+
+#[derive(clap::Subcommand, Clone, Debug, Default)]
+pub enum ConfigCommand {
+    #[default]
+    Current,
+    Default,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize, Serialize)]
+pub enum LogColor {
+    Auto,
+    No,
+    Yes,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+#[serde(rename_all = "kebab-case")]
+pub enum ParserConfig {
+    Full {
+        #[serde(alias = "cmd", alias = "script")]
+        build_script: Option<String>,
+
+        from: Option<String>,
+
+        #[serde(rename = "ref")]
+        git_ref: String,
+    },
+    Ref(String),
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Deserialize, Serialize)]
+pub enum ProgressStyle {
+    Auto,
+    Fancy,
+    Plain,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Target {
+    #[default]
+    Native,
+    Wasm,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum VersionBump {
+    /// Update to the latest version, including breaking changes.
+    Major,
+    /// Update to the latest minor or patch version (same MAJOR).
+    #[default]
+    Minor,
+    /// Update to the latest patch version (same MAJOR.MINOR).
+    Patch,
+}
+
+// ============================================================
+// Structs
+// ============================================================
 
 #[derive(Clone, Debug, clap::Parser)]
 #[command(author = crate_authors!("\n"), version = TSDL_VERSION, about, styles=get_styles(), allow_external_subcommands = true)]
@@ -49,45 +142,155 @@ pub struct Args {
     pub verbose: Verbosity<InfoLevel>,
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize, Serialize)]
-pub enum LogColor {
-    Auto,
-    No,
-    Yes,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct BuildCommand {
+    pub build_dir: PathBuf,
+    pub force: bool,
+    pub fresh: bool,
+    #[serde(skip_serializing)]
+    pub languages: Option<Vec<String>>,
+    pub jobs: NonZeroUsize,
+    #[serde(rename = "out-dir", alias = "out")]
+    pub out_dir: PathBuf,
+    pub parsers: Option<BTreeMap<String, ParserConfig>>,
+    pub prefix: String,
+    pub show_config: bool,
+    pub target: Target,
+    pub tree_sitter: TreeSitter,
+    pub unlock_timeout: u64,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug, Deserialize, Serialize)]
-pub enum ProgressStyle {
-    Auto,
-    Fancy,
-    Plain,
+/// Fully optional overrides for every build configuration field.
+///
+/// Every field is `Option<T>` so that config sources (TOML file,
+/// environment variables, CLI flags) can be layered: missing keys
+/// remain `None` while explicitly-set fields are `Some(...)`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct OptionalBuildCommand {
+    #[serde(default)]
+    pub build_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub force: Option<bool>,
+    #[serde(default)]
+    pub fresh: Option<bool>,
+    #[serde(default, alias = "out", rename = "out-dir")]
+    pub out_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub jobs: Option<NonZeroUsize>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub show_config: Option<bool>,
+    #[serde(default)]
+    pub target: Option<Target>,
+    #[serde(default)]
+    pub tree_sitter: OptionalTreeSitter,
+    #[serde(default)]
+    pub unlock_timeout: Option<u64>,
+    #[serde(default)]
+    pub parsers: Option<BTreeMap<String, ParserConfig>>,
+    #[serde(skip_deserializing)]
+    pub languages: Option<Vec<String>>,
 }
 
-#[derive(clap::Subcommand, Clone, Debug)]
-pub enum Command {
-    /// Build one or many parsers.
-    #[command(visible_alias = "b")]
-    Build,
-
-    /// Configuration helpers.
-    #[command(visible_alias = "c")]
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommand,
-    },
-
-    /// Update tsdl to the latest compatible version.
-    #[command(visible_alias = "u")]
-    Selfupdate {
-        /// Skip the downgrade confirmation prompt.
-        #[arg(long, default_value_t = false)]
-        force: bool,
-
-        /// Version selector: "patch", "minor", "major", or a semver like "2.5.0".
-        #[arg(default_value = "minor")]
-        target: String,
-    },
+/// Fully optional overrides for [`TreeSitter`].
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct OptionalTreeSitter {
+    #[serde(default, alias = "git-ref", alias = "ref")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
 }
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TreeSitter {
+    #[serde(
+        default = "default_tree_sitter_version",
+        alias = "git-ref",
+        alias = "ref"
+    )]
+    pub version: String,
+
+    #[serde(default = "default_tree_sitter_platform")]
+    pub platform: String,
+
+    #[serde(default = "default_tree_sitter_repo")]
+    pub repo: String,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+#[must_use]
+pub fn build_matches(matches: &ArgMatches) -> Option<&ArgMatches> {
+    matches.subcommand().and_then(|(name, sub)| {
+        if matches!(name, "build" | "b") {
+            Some(sub)
+        } else {
+            None
+        }
+    })
+}
+
+#[must_use]
+pub fn default_jobs() -> NonZeroUsize {
+    NonZeroUsize::new(num_cpus::get()).unwrap_or(NonZeroUsize::MIN)
+}
+
+fn default_tree_sitter_platform() -> String {
+    PLATFORM.to_string()
+}
+
+fn default_tree_sitter_repo() -> String {
+    REPO.to_string()
+}
+
+fn default_tree_sitter_version() -> String {
+    VERSION.to_string()
+}
+
+#[must_use]
+const fn get_styles() -> clap::builder::Styles {
+    clap::builder::Styles::styled()
+        .usage(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::Yellow))),
+        )
+        .header(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::Yellow))),
+        )
+        .literal(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Blue))))
+        .invalid(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::Red))),
+        )
+        .error(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::Red))),
+        )
+        .valid(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::Blue))),
+        )
+        .placeholder(Style::new().fg_color(Some(Color::Ansi(AnsiColor::White))))
+}
+
+// ============================================================
+// Impls
+// ============================================================
 
 impl Command {
     #[must_use]
@@ -96,34 +299,39 @@ impl Command {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub enum VersionBump {
-    /// Update to the latest version, including breaking changes.
-    Major,
-    /// Update to the latest minor or patch version (same MAJOR).
-    #[default]
-    Minor,
-    /// Update to the latest patch version (same MAJOR.MINOR).
-    Patch,
-}
-
-impl fmt::Display for VersionBump {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Major => write!(f, "major"),
-            Self::Minor => write!(f, "minor"),
-            Self::Patch => write!(f, "patch"),
+impl Default for BuildCommand {
+    fn default() -> Self {
+        Self {
+            build_dir: PathBuf::from(BUILD_DIR),
+            force: FORCE,
+            fresh: FRESH,
+            languages: None,
+            jobs: default_jobs(),
+            out_dir: PathBuf::from(PARSER_OUT_DIR),
+            parsers: None,
+            prefix: String::from(PREFIX),
+            show_config: SHOW_CONFIG,
+            target: Target::default(),
+            tree_sitter: TreeSitter::default(),
+            unlock_timeout: UNLOCK_TIMEOUT,
         }
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Target {
-    #[default]
-    Native,
-    Wasm,
-    All,
+impl Default for TreeSitter {
+    fn default() -> Self {
+        Self {
+            version: VERSION.to_string(),
+            platform: PLATFORM.to_string(),
+            repo: REPO.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for ConfigCommand {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", format!("{self:?}").to_lowercase())
+    }
 }
 
 impl Target {
@@ -167,207 +375,12 @@ impl Target {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(untagged)]
-#[serde(rename_all = "kebab-case")]
-pub enum ParserConfig {
-    Full {
-        #[serde(alias = "cmd", alias = "script")]
-        build_script: Option<String>,
-
-        from: Option<String>,
-
-        #[serde(rename = "ref")]
-        git_ref: String,
-    },
-    Ref(String),
-}
-
-/// Fully optional overrides for [`TreeSitter`].
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct OptionalTreeSitter {
-    #[serde(default, alias = "git-ref", alias = "ref")]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub platform: Option<String>,
-    #[serde(default)]
-    pub repo: Option<String>,
-}
-
-/// Fully optional overrides for every build configuration field.
-///
-/// Every field is `Option<T>` so that config sources (TOML file,
-/// environment variables, CLI flags) can be layered: missing keys
-/// remain `None` while explicitly-set fields are `Some(...)`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct OptionalBuildCommand {
-    #[serde(default)]
-    pub build_dir: Option<PathBuf>,
-    #[serde(default)]
-    pub force: Option<bool>,
-    #[serde(default)]
-    pub fresh: Option<bool>,
-    #[serde(default, alias = "out", rename = "out-dir")]
-    pub out_dir: Option<PathBuf>,
-    #[serde(default)]
-    pub jobs: Option<NonZeroUsize>,
-    #[serde(default)]
-    pub prefix: Option<String>,
-    #[serde(default)]
-    pub show_config: Option<bool>,
-    #[serde(default)]
-    pub target: Option<Target>,
-    #[serde(default)]
-    pub tree_sitter: OptionalTreeSitter,
-    #[serde(default)]
-    pub unlock_timeout: Option<u64>,
-    #[serde(default)]
-    pub parsers: Option<BTreeMap<String, ParserConfig>>,
-    #[serde(skip_deserializing)]
-    pub languages: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct TreeSitter {
-    #[serde(
-        default = "default_tree_sitter_version",
-        alias = "git-ref",
-        alias = "ref"
-    )]
-    pub version: String,
-
-    #[serde(default = "default_tree_sitter_platform")]
-    pub platform: String,
-
-    #[serde(default = "default_tree_sitter_repo")]
-    pub repo: String,
-}
-
-impl Default for TreeSitter {
-    fn default() -> Self {
-        Self {
-            version: VERSION.to_string(),
-            platform: PLATFORM.to_string(),
-            repo: REPO.to_string(),
+impl fmt::Display for VersionBump {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Major => write!(f, "major"),
+            Self::Minor => write!(f, "minor"),
+            Self::Patch => write!(f, "patch"),
         }
     }
-}
-
- // #[allow(clippy::struct_excessive_bools)]
- // #[derive(clap::Args, Clone, Debug, Deserialize, Diff, PartialEq, Eq, Serialize)]
- // #[diff(attr(
- //     #[derive(Debug, PartialEq)]
- // ))]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct BuildCommand {
-    pub build_dir: PathBuf,
-    pub force: bool,
-    pub fresh: bool,
-    #[serde(skip_serializing)]
-    pub languages: Option<Vec<String>>,
-    pub jobs: NonZeroUsize,
-    #[serde(rename = "out-dir", alias = "out")]
-    pub out_dir: PathBuf,
-    pub parsers: Option<BTreeMap<String, ParserConfig>>,
-    pub prefix: String,
-    pub show_config: bool,
-    pub target: Target,
-    pub tree_sitter: TreeSitter,
-    pub unlock_timeout: u64,
-}
-
-impl Default for BuildCommand {
-    fn default() -> Self {
-        Self {
-            build_dir: PathBuf::from(BUILD_DIR),
-            force: FORCE,
-            fresh: FRESH,
-            languages: None,
-            jobs: default_jobs(),
-            out_dir: PathBuf::from(PARSER_OUT_DIR),
-            parsers: None,
-            prefix: String::from(PREFIX),
-            show_config: SHOW_CONFIG,
-            target: Target::default(),
-            tree_sitter: TreeSitter::default(),
-            unlock_timeout: UNLOCK_TIMEOUT,
-        }
-    }
-}
-
-#[must_use]
-pub fn default_jobs() -> NonZeroUsize {
-    NonZeroUsize::new(num_cpus::get()).unwrap_or(NonZeroUsize::MIN)
-}
-
-fn default_tree_sitter_version() -> String {
-    VERSION.to_string()
-}
-
-fn default_tree_sitter_platform() -> String {
-    PLATFORM.to_string()
-}
-
-fn default_tree_sitter_repo() -> String {
-    REPO.to_string()
-}
-
-#[derive(clap::Subcommand, Clone, Debug, Default)]
-pub enum ConfigCommand {
-    #[default]
-    Current,
-    Default,
-}
-
-impl fmt::Display for ConfigCommand {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", format!("{self:?}").to_lowercase())
-    }
-}
-
-#[must_use]
-pub fn build_matches(matches: &ArgMatches) -> Option<&ArgMatches> {
-    matches.subcommand().and_then(|(name, sub)| {
-        if matches!(name, "build" | "b") {
-            Some(sub)
-        } else {
-            None
-        }
-    })
-}
-
-#[must_use]
-const fn get_styles() -> clap::builder::Styles {
-    clap::builder::Styles::styled()
-        .usage(
-            Style::new()
-                .bold()
-                .fg_color(Some(Color::Ansi(AnsiColor::Yellow))),
-        )
-        .header(
-            Style::new()
-                .bold()
-                .fg_color(Some(Color::Ansi(AnsiColor::Yellow))),
-        )
-        .literal(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Blue))))
-        .invalid(
-            Style::new()
-                .bold()
-                .fg_color(Some(Color::Ansi(AnsiColor::Red))),
-        )
-        .error(
-            Style::new()
-                .bold()
-                .fg_color(Some(Color::Ansi(AnsiColor::Red))),
-        )
-        .valid(
-            Style::new()
-                .bold()
-                .fg_color(Some(Color::Ansi(AnsiColor::Blue))),
-        )
-        .placeholder(Style::new().fg_color(Some(Color::Ansi(AnsiColor::White))))
 }
