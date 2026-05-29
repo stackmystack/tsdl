@@ -80,26 +80,17 @@ pub mod shutdown;
 pub mod tree_sitter;
 pub mod walk;
 
+// ============================================================
+// Traits
+// ============================================================
+
 pub trait SafeCanonicalize {
     fn canon(&self) -> Result<PathBuf>;
 }
 
-impl SafeCanonicalize for Path {
-    fn canon(&self) -> Result<PathBuf> {
-        if self.is_absolute() {
-            Ok(self.to_path_buf())
-        } else {
-            let current_dir = env::current_dir().context("Failed to get current directory")?;
-            Ok(current_dir.join(self))
-        }
-    }
-}
-
-impl SafeCanonicalize for PathBuf {
-    fn canon(&self) -> Result<PathBuf> {
-        self.as_path().canon()
-    }
-}
+// ============================================================
+// Free functions
+// ============================================================
 
 /// Convert a path to an absolute, lexically-normalized path without requiring
 /// the final path to exist.
@@ -113,24 +104,6 @@ pub fn absolute_normalize(path: &Path) -> Result<PathBuf> {
     };
 
     Ok(normalize_components(&absolute))
-}
-
-fn normalize_components(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-
-    normalized
 }
 
 #[must_use]
@@ -168,15 +141,22 @@ pub fn format_duration(duration: Duration) -> String {
     parts.join(" ")
 }
 
-pub fn relative_to_cwd(dir: &Path) -> PathBuf {
-    let canon = dir.canon().unwrap_or_else(|_| dir.to_path_buf());
-    let cwd = env::current_dir().unwrap_or_else(|_| dir.to_path_buf());
+fn normalize_components(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
 
-    if canon != cwd && canon.starts_with(&cwd) {
-        dir.strip_prefix(cwd).map_or(canon, Path::to_path_buf)
-    } else {
-        canon
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
     }
+
+    normalized
 }
 
 /// Prompt user for confirmation with default behavior
@@ -199,4 +179,36 @@ pub fn prompt_user(question: &str, default_yes: bool) -> Result<bool> {
     }
 
     Ok(input == "y")
+}
+
+pub fn relative_to_cwd(dir: &Path) -> PathBuf {
+    let canon = dir.canon().unwrap_or_else(|_| dir.to_path_buf());
+    let cwd = env::current_dir().unwrap_or_else(|_| dir.to_path_buf());
+
+    if canon != cwd && canon.starts_with(&cwd) {
+        dir.strip_prefix(cwd).map_or(canon, Path::to_path_buf)
+    } else {
+        canon
+    }
+}
+
+// ============================================================
+// Impls
+// ============================================================
+
+impl SafeCanonicalize for Path {
+    fn canon(&self) -> Result<PathBuf> {
+        if self.is_absolute() {
+            Ok(self.to_path_buf())
+        } else {
+            let current_dir = env::current_dir().context("Failed to get current directory")?;
+            Ok(current_dir.join(self))
+        }
+    }
+}
+
+impl SafeCanonicalize for PathBuf {
+    fn canon(&self) -> Result<PathBuf> {
+        self.as_path().canon()
+    }
 }
