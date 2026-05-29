@@ -8,21 +8,9 @@ use crate::{
     build, cache, parser, Result,
 };
 
-#[derive(Debug)]
-#[allow(dead_code)]
-enum ResponseKind<'a> {
-    CacheGet {
-        name: &'a cache::Key,
-    },
-    HasCompatibleEntries {
-        language: &'a parser::LanguageName,
-    },
-    NeedsRebuild {
-        name: &'a cache::Key,
-        hash: &'a cache::GrammarHash,
-    },
-    SaveComplete,
-}
+// ============================================================
+// Enums
+// ============================================================
 
 #[derive(Debug)]
 pub enum CacheMessage {
@@ -54,11 +42,43 @@ pub enum CacheMessage {
     },
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
+enum ResponseKind<'a> {
+    CacheGet {
+        name: &'a cache::Key,
+    },
+    HasCompatibleEntries {
+        language: &'a parser::LanguageName,
+    },
+    NeedsRebuild {
+        name: &'a cache::Key,
+        hash: &'a cache::GrammarHash,
+    },
+    SaveComplete,
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+/// The Cache Actor: Manages cache state and processes messages
+pub struct CacheActor {
+    db: cache::Db,
+    store: cache::Store,
+    force: bool,
+    rx: mpsc::Receiver<CacheMessage>,
+}
+
 /// The Cache Handle: Public interface for sending cache operations
 #[derive(Debug, Clone)]
 pub struct CacheAddr {
     tx: mpsc::Sender<CacheMessage>,
 }
+
+// ============================================================
+// Impls
+// ============================================================
 
 impl Addr for CacheAddr {
     type Message = CacheMessage;
@@ -70,64 +90,6 @@ impl Addr for CacheAddr {
     fn sender(&self) -> &mpsc::Sender<Self::Message> {
         &self.tx
     }
-}
-
-impl CacheAddr {
-    #[must_use]
-    pub fn new(tx: mpsc::Sender<CacheMessage>) -> Self {
-        Self { tx }
-    }
-
-    /// Accepts any string type (String, &str, Arc<str>) with minimal cloning
-    pub async fn get(&self, name: cache::Key) -> Option<cache::Entry> {
-        self.request(|tx| CacheMessage::Get { name, tx }).await
-    }
-
-    pub async fn has_compatible_entries(
-        &self,
-        language: parser::LanguageName,
-        spec: Arc<build::Spec>,
-    ) -> bool {
-        self.request(|tx| CacheMessage::HasCompatibleEntries { language, spec, tx })
-            .await
-    }
-
-    pub async fn needs_rebuild(
-        &self,
-        name: cache::Key,
-        hash: cache::GrammarHash,
-        spec: Arc<build::Spec>,
-        revision: cache::Revision,
-    ) -> cache::Decision {
-        self.request(|tx| CacheMessage::NeedsRebuild {
-            name,
-            hash,
-            revision,
-            spec,
-            tx,
-        })
-        .await
-    }
-
-    pub async fn save(&self) -> Result<()> {
-        self.request(|tx| CacheMessage::Save { tx }).await
-    }
-
-    pub async fn update(&self, update: cache::Update) {
-        self.fire(CacheMessage::Update {
-            entry: update.entry,
-            name: update.name,
-        })
-        .await;
-    }
-}
-
-/// The Cache Actor: Manages cache state and processes messages
-pub struct CacheActor {
-    db: cache::Db,
-    store: cache::Store,
-    force: bool,
-    rx: mpsc::Receiver<CacheMessage>,
 }
 
 impl CacheActor {
@@ -209,5 +171,55 @@ impl CacheActor {
         };
         tokio::spawn(actor.run());
         CacheAddr::new(tx)
+    }
+}
+
+impl CacheAddr {
+    #[must_use]
+    pub fn new(tx: mpsc::Sender<CacheMessage>) -> Self {
+        Self { tx }
+    }
+
+    /// Accepts any string type (String, &str, Arc<str>) with minimal cloning
+    pub async fn get(&self, name: cache::Key) -> Option<cache::Entry> {
+        self.request(|tx| CacheMessage::Get { name, tx }).await
+    }
+
+    pub async fn has_compatible_entries(
+        &self,
+        language: parser::LanguageName,
+        spec: Arc<build::Spec>,
+    ) -> bool {
+        self.request(|tx| CacheMessage::HasCompatibleEntries { language, spec, tx })
+            .await
+    }
+
+    pub async fn needs_rebuild(
+        &self,
+        name: cache::Key,
+        hash: cache::GrammarHash,
+        spec: Arc<build::Spec>,
+        revision: cache::Revision,
+    ) -> cache::Decision {
+        self.request(|tx| CacheMessage::NeedsRebuild {
+            name,
+            hash,
+            revision,
+            spec,
+            tx,
+        })
+        .await
+    }
+
+    pub async fn save(&self) -> Result<()> {
+        self.request(|tx| CacheMessage::Save { tx }).await
+    }
+
+    pub async fn update(&self, update: cache::Update) {
+        self.fire(CacheMessage::Update {
+            entry: update.entry,
+            name: update.name,
+        })
+        .await;
     }
 }
