@@ -10,6 +10,59 @@ use tsdl::consts::{BUILD_DIR, CONFIG_FILE, PARSER_OUT_DIR, PLATFORM, PREFIX, VER
 use crate::cmd::Sandbox;
 
 #[rstest]
+fn cache_file_structure() {
+    let mut sandbox = Sandbox::new();
+
+    // Build two parsers
+    sandbox
+        .cmd
+        .arg("build")
+        .args(["json", "python"])
+        .assert()
+        .success();
+
+    // Read and validate cache file
+    let cache_file = sandbox.tmp.child(BUILD_DIR).child("cache.toml");
+    cache_file.assert(p::path::exists());
+
+    let cache_content = std::fs::read_to_string(cache_file.path()).unwrap();
+
+    // Verify TOML structure contains expected entries
+    assert!(
+        cache_content.contains("[parsers.\"json/json\"]"),
+        "Cache should have json entry"
+    );
+    assert!(
+        cache_content.contains("[parsers.\"python/python\"]"),
+        "Cache should have python entry"
+    );
+    assert!(
+        cache_content.contains("hash"),
+        "Cache should have hash field"
+    );
+    assert!(
+        cache_content.contains("git_ref"),
+        "Cache should have git_ref field"
+    );
+    assert!(
+        cache_content.contains("revision"),
+        "Cache should have revision identity field"
+    );
+    assert!(
+        cache_content.contains("recipe"),
+        "Cache should have build recipe field"
+    );
+    assert!(
+        cache_content.contains("outputs"),
+        "Cache should have outputs field"
+    );
+    assert!(
+        !cache_content.lines().any(|line| line.starts_with("file")),
+        "Cache should not serialize its runtime storage path"
+    );
+}
+
+#[rstest]
 fn cache_hit_skips_build() {
     let mut sandbox = Sandbox::new();
     sandbox
@@ -75,43 +128,6 @@ fn cache_miss_on_grammar_modification() {
         .success()
         .stdout(p::str::contains("json             [1/2] cloning"))
         .stdout(p::str::contains("json/json        [3/4] building"));
-}
-
-#[rstest]
-fn fresh_flag_clears_build_dir() {
-    let mut sandbox = Sandbox::new();
-
-    // First build
-    sandbox.cmd.arg("build").arg("json").assert().success();
-
-    let build_dir = sandbox.tmp.child(BUILD_DIR);
-    build_dir.assert(p::path::exists());
-
-    let cache_file = build_dir.child("cache.toml");
-    cache_file.assert(p::path::exists());
-
-    let first_binary = sandbox
-        .tmp
-        .child(PARSER_OUT_DIR)
-        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
-    let first_inode = first_binary.metadata().unwrap().ino();
-
-    // Second build with --fresh (need --force to overwrite existing binary)
-    let mut cmd = cargo_bin_cmd!();
-    cmd.current_dir(sandbox.tmp.path());
-    cmd.args(["build", "--fresh", "--force", "json"])
-        .assert()
-        .success();
-
-    // Cache file should be gone and recreated
-    cache_file.assert(p::path::exists());
-
-    let second_inode = first_binary.metadata().unwrap().ino();
-
-    assert_ne!(
-        first_inode, second_inode,
-        "Fresh build should create new binary with different inode"
-    );
 }
 
 #[rstest]
@@ -196,6 +212,43 @@ fn force_flag_reinstalls_hardlink() {
 }
 
 #[rstest]
+fn fresh_flag_clears_build_dir() {
+    let mut sandbox = Sandbox::new();
+
+    // First build
+    sandbox.cmd.arg("build").arg("json").assert().success();
+
+    let build_dir = sandbox.tmp.child(BUILD_DIR);
+    build_dir.assert(p::path::exists());
+
+    let cache_file = build_dir.child("cache.toml");
+    cache_file.assert(p::path::exists());
+
+    let first_binary = sandbox
+        .tmp
+        .child(PARSER_OUT_DIR)
+        .child(format!("{PREFIX}json.{DLL_EXTENSION}"));
+    let first_inode = first_binary.metadata().unwrap().ino();
+
+    // Second build with --fresh (need --force to overwrite existing binary)
+    let mut cmd = cargo_bin_cmd!();
+    cmd.current_dir(sandbox.tmp.path());
+    cmd.args(["build", "--fresh", "--force", "json"])
+        .assert()
+        .success();
+
+    // Cache file should be gone and recreated
+    cache_file.assert(p::path::exists());
+
+    let second_inode = first_binary.metadata().unwrap().ino();
+
+    assert_ne!(
+        first_inode, second_inode,
+        "Fresh build should create new binary with different inode"
+    );
+}
+
+#[rstest]
 #[case::json_and_python(vec!["json", "python"])]
 fn multi_parser_independent_cache(#[case] languages: Vec<&str>) {
     let mut sandbox = Sandbox::new();
@@ -224,57 +277,4 @@ fn multi_parser_independent_cache(#[case] languages: Vec<&str>) {
             format!("{lang}/{lang}")
         )));
     }
-}
-
-#[rstest]
-fn cache_file_structure() {
-    let mut sandbox = Sandbox::new();
-
-    // Build two parsers
-    sandbox
-        .cmd
-        .arg("build")
-        .args(["json", "python"])
-        .assert()
-        .success();
-
-    // Read and validate cache file
-    let cache_file = sandbox.tmp.child(BUILD_DIR).child("cache.toml");
-    cache_file.assert(p::path::exists());
-
-    let cache_content = std::fs::read_to_string(cache_file.path()).unwrap();
-
-    // Verify TOML structure contains expected entries
-    assert!(
-        cache_content.contains("[parsers.\"json/json\"]"),
-        "Cache should have json entry"
-    );
-    assert!(
-        cache_content.contains("[parsers.\"python/python\"]"),
-        "Cache should have python entry"
-    );
-    assert!(
-        cache_content.contains("hash"),
-        "Cache should have hash field"
-    );
-    assert!(
-        cache_content.contains("git_ref"),
-        "Cache should have git_ref field"
-    );
-    assert!(
-        cache_content.contains("revision"),
-        "Cache should have revision identity field"
-    );
-    assert!(
-        cache_content.contains("recipe"),
-        "Cache should have build recipe field"
-    );
-    assert!(
-        cache_content.contains("outputs"),
-        "Cache should have outputs field"
-    );
-    assert!(
-        !cache_content.lines().any(|line| line.starts_with("file")),
-        "Cache should not serialize its runtime storage path"
-    );
 }
