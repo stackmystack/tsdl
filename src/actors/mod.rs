@@ -8,12 +8,12 @@ use std::{num::NonZeroUsize, path::Path};
 
 pub use cache::{CacheActor, CacheAddr};
 pub use display::{DisplayActor, DisplayAddr, Message, ProgressAddr};
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use tracing::{debug, info};
 
-use crate::{args, parser, shutdown, tree_sitter, Error, Result};
+use crate::{Error, Result, args, parser, shutdown, tree_sitter};
 
 // ============================================================
 // Traits
@@ -366,10 +366,10 @@ async fn run_inner(
     // Drain the CLI preparation result so we never exit before the binary is
     // downloaded.
     let mut prepared_rx = prepared_rx;
-    if let Err(e) = wait_for_prepared(&mut prepared_rx).await {
-        if languages_empty {
-            errors.push(e);
-        }
+    if let Err(e) = wait_for_prepared(&mut prepared_rx).await
+        && languages_empty
+    {
+        errors.push(e);
         // else: the pipeline already consumed `prepared_rx` via each
         // `discover_grammars` call; a second read finding an error is a
         // redundant delivery — suppress it to avoid double-counting.

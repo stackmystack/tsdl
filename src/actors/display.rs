@@ -371,7 +371,7 @@ impl DisplayActor {
         {
             match grammar.state {
                 display::ItemState::Done(display::SuccessOutcome::Built) => {
-                    return Some(display::SuccessOutcome::Built)
+                    return Some(display::SuccessOutcome::Built);
                 }
                 display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,
                 display::ItemState::New
@@ -401,7 +401,7 @@ impl DisplayActor {
             match grammar.state {
                 display::ItemState::InProgress(Some(display::SuccessOutcome::Built))
                 | display::ItemState::Done(display::SuccessOutcome::Built) => {
-                    return Some(display::SuccessOutcome::Built)
+                    return Some(display::SuccessOutcome::Built);
                 }
                 display::ItemState::InProgress(Some(display::SuccessOutcome::Cached))
                 | display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,

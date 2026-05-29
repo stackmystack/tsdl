@@ -8,10 +8,10 @@ use std::{
     sync::Arc,
 };
 
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use tokio::{fs, process::Command};
 
-use crate::{sh::Exec, Error, Result, ResultExt};
+use crate::{Error, Result, ResultExt, sh::Exec};
 
 type RefResult<T> = StdResult<T, RefError>;
 

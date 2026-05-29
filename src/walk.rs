@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{cache, git, shutdown, Result};
+use crate::{Result, cache, git, shutdown};
 
 // ============================================================
 // Free functions

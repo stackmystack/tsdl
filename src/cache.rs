@@ -17,7 +17,7 @@ use sha1::{Digest, Sha1};
 use tokio::io::AsyncWrite;
 use tracing::debug;
 
-use crate::{args, build, build::BuildDir, git, parser, Error, Result, ResultExt};
+use crate::{Error, Result, ResultExt, args, build, build::BuildDir, git, parser};
 
 // ============================================================
 // Enums
@@ -330,10 +330,10 @@ impl Db {
 
     /// Insert or update a parser cache entry.
     pub fn set(&mut self, name: Key, mut entry: Entry) {
-        if let Some(existing) = self.parsers.get(&name) {
-            if existing.same_subject(&entry) {
-                entry.outputs = existing.outputs.union(entry.outputs);
-            }
+        if let Some(existing) = self.parsers.get(&name)
+            && existing.same_subject(&entry)
+        {
+            entry.outputs = existing.outputs.union(entry.outputs);
         }
 
         self.parsers.insert(name, entry);
@@ -547,7 +547,11 @@ impl fmt::Display for MissReason {
                 write!(f, "artifact is not a regular file path={}", path.display())
             }
             Self::ArtifactInaccessible { path, error } => {
-                write!(f, "artifact inaccessible path={} error={error}", path.display())
+                write!(
+                    f,
+                    "artifact inaccessible path={} error={error}",
+                    path.display()
+                )
             }
         }
     }
@@ -1029,8 +1033,10 @@ mod tests {
             entry("abc123", &cached, stable_revision()),
         );
 
-        assert!(cache
-            .has_compatible_entry_for_language(&parser::LanguageName::from("rust"), &requested));
+        assert!(
+            cache
+                .has_compatible_entry_for_language(&parser::LanguageName::from("rust"), &requested)
+        );
     }
 
     #[test]

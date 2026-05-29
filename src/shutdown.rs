@@ -130,12 +130,12 @@ fn signal_process_group(pgid: PgId, signal: Signal) {
 /// Only active in debug/test builds; a noop in release.
 #[cfg(debug_assertions)]
 pub async fn test_delay() {
-    if let Ok(ms) = std::env::var("TSDL_TEST_DELAY_MS") {
-        if let Ok(ms) = ms.parse::<u64>() {
-            let d = std::time::Duration::from_millis(ms);
-            debug!("[tsdl:test_delay] sleeping {ms}ms");
-            tokio::time::sleep(d).await;
-        }
+    if let Ok(ms) = std::env::var("TSDL_TEST_DELAY_MS")
+        && let Ok(ms) = ms.parse::<u64>()
+    {
+        let d = std::time::Duration::from_millis(ms);
+        debug!("[tsdl:test_delay] sleeping {ms}ms");
+        tokio::time::sleep(d).await;
     }
 }
 
@@ -316,7 +316,7 @@ impl Handle {
     pub fn spawn_signal_listener(&self) -> Result<tokio::task::JoinHandle<()>> {
         use std::process;
 
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut sighup = signal(SignalKind::from_raw(Signal::HUP.number))
             .context("Installing SIGHUP handler")?;

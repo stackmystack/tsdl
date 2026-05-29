@@ -18,14 +18,13 @@ use tokio::{fs, process::Command};
 use tracing::{debug, warn};
 
 use crate::args::TreeSitter;
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::{
-    actors, build, cache, error, git,
+    Error, Result, ResultExt, actors, build, cache, error, git,
     sh::{Exec, Script},
     shutdown,
     walk::collect_grammar_paths,
-    Error, Result, ResultExt,
 };
 
 // ============================================================
@@ -724,11 +723,11 @@ impl GrammarBuild {
 
         if !same_contents && !self.context.overwrite_output {
             return Err(Error::Message {
-                        message: format!(
-                            "Output already exists and differs from the built parser: {}. Use --force to replace it.",
-                            dst.display()
-                        ),
-                    });
+                message: format!(
+                    "Output already exists and differs from the built parser: {}. Use --force to replace it.",
+                    dst.display()
+                ),
+            });
         }
 
         self.replace_with_hardlink(src, dst).await?;

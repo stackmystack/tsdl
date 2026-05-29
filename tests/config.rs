@@ -21,9 +21,11 @@ struct EnvVarGuard {
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
+        // SAFETY: The caller holds ENV_LOCK, serializing all env access
+        // within these tests.
         match &self.previous {
-            Some(value) => env::set_var(self.key, value),
-            None => env::remove_var(self.key),
+            Some(value) => unsafe { env::set_var(self.key, value) },
+            None => unsafe { env::remove_var(self.key) },
         }
     }
 }
@@ -31,7 +33,9 @@ impl Drop for EnvVarGuard {
 impl EnvVarGuard {
     fn set(key: &'static str, value: &str) -> Self {
         let previous = env::var_os(key);
-        env::set_var(key, value);
+        // SAFETY: The caller holds ENV_LOCK, serializing all env access
+        // within these tests.
+        unsafe { env::set_var(key, value) };
         Self { key, previous }
     }
 }

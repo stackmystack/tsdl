@@ -52,7 +52,7 @@ async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
     let metadata = match fs::symlink_metadata(path).await {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CliCacheStatus::Missing)
+            return Ok(CliCacheStatus::Missing);
         }
         Err(err) => {
             return Err(err)
@@ -467,15 +467,15 @@ async fn verify_cli(path: &Path, tag: &str) -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    if let Some(expected) = expected_cli_version(tag) {
-        if !output.contains(expected) {
-            return Err(Error::Message {
-                message: format!(
-                    "tree-sitter CLI version output did not contain expected version {expected:?}: {}",
-                    output.trim()
-                ),
-            });
-        }
+    if let Some(expected) = expected_cli_version(tag)
+        && !output.contains(expected)
+    {
+        return Err(Error::Message {
+            message: format!(
+                "tree-sitter CLI version output did not contain expected version {expected:?}: {}",
+                output.trim()
+            ),
+        });
     }
 
     Ok(())

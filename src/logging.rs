@@ -9,9 +9,9 @@ use std::{
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_log::AsTrace;
-use tracing_subscriber::{layer::SubscriberExt, Layer};
+use tracing_subscriber::{Layer, layer::SubscriberExt};
 
-use crate::{absolute_normalize, args, consts, Error, Result, ResultExt};
+use crate::{Error, Result, ResultExt, absolute_normalize, args, consts};
 
 // ============================================================
 // Enums

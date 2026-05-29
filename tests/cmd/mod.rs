@@ -9,7 +9,7 @@ mod log;
 #[cfg(test)]
 use std::{env, fs, path::Path};
 
-use assert_cmd::{cargo::cargo_bin_cmd, Command};
+use assert_cmd::{Command, cargo::cargo_bin_cmd};
 use assert_fs::TempDir;
 
 use tsdl::{args::BuildCommand, config as tsdl_config, consts::CONFIG_FILE};

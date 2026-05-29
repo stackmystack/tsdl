@@ -3,8 +3,9 @@
 use std::{collections::BTreeMap, fmt, num::NonZeroUsize, path::PathBuf};
 
 use clap::{
+    ArgMatches,
     builder::styling::{AnsiColor, Color, Style},
-    crate_authors, ArgMatches,
+    crate_authors,
 };
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use serde::{Deserialize, Serialize};
