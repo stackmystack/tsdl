@@ -163,14 +163,23 @@ pub(crate) struct RowSpec {
     pub indent: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct BuildSummary {
+    pub building: usize,
+    pub built: usize,
+    pub cached: usize,
+    pub cancelled: usize,
+    pub failed: usize,
+}
+
 pub(crate) struct State {
-    pub mode: Mode,
-    pub repos: HashMap<ItemId, RepoEntry>,
-    pub grammars: HashMap<ItemId, GrammarEntry>,
     pub build_dir: PathBuf,
-    pub out_dir: PathBuf,
     footer_build: Line<'static>,
     footer_out: Line<'static>,
+    pub grammars: HashMap<ItemId, GrammarEntry>,
+    pub mode: Mode,
+    pub out_dir: PathBuf,
+    pub repos: HashMap<ItemId, RepoEntry>,
 }
 
 // ============================================================
@@ -450,8 +459,8 @@ impl GridCache {
         &mut self,
         item_id: ItemId,
         column: Column,
-        stale: bool,
         compute: impl FnOnce() -> Span<'static>,
+        stale: bool,
     ) -> Span<'static> {
         let key = CellKey { item_id, column };
         if stale {
@@ -594,7 +603,7 @@ impl RepoEntry {
 }
 
 impl State {
-    pub fn new(mode: Mode, build_dir: PathBuf, out_dir: PathBuf) -> Self {
+    pub fn new(build_dir: PathBuf, mode: Mode, out_dir: PathBuf) -> Self {
         let footer_build = dim_line(format!("build: {}", build_dir.display()));
         let footer_out = dim_line(format!("out:   {}", out_dir.display()));
         Self {
@@ -619,18 +628,18 @@ impl State {
     }
 
     pub fn format_footer_counts(&self) -> Line<'static> {
-        let (cached, built, building, failed, cancelled) = self.summary_counts();
+        let s = self.summary();
         let mut spans: Vec<Span<'static>> = Vec::new();
 
-        push_summary_success(&mut spans, cached, "cached", Color::Yellow, true);
-        push_summary_success(&mut spans, built, "built", Color::Blue, false);
-        if cancelled > 0 {
-            push_summary_cancelled(&mut spans, cancelled, false);
+        push_summary_success(&mut spans, s.cached, "cached", Color::Yellow, true);
+        push_summary_success(&mut spans, s.built, "built", Color::Blue, false);
+        if s.cancelled > 0 {
+            push_summary_cancelled(&mut spans, s.cancelled, false);
         }
-        if building > 0 {
-            push_summary_building(&mut spans, building);
+        if s.building > 0 {
+            push_summary_building(&mut spans, s.building);
         }
-        push_summary_failed(&mut spans, failed);
+        push_summary_failed(&mut spans, s.failed);
 
         Line::from(spans)
     }
@@ -745,7 +754,7 @@ impl State {
 
     // ── Summary counts ────────────────────────────────────────────
 
-    pub(crate) fn summary_counts(&self) -> (usize, usize, usize, usize, usize) {
+    pub(crate) fn summary(&self) -> BuildSummary {
         let mut cached = 0;
         let mut built = 0;
         let mut building = 0;
@@ -782,7 +791,13 @@ impl State {
             }
         }
 
-        (cached, built, building, failed, cancelled)
+        BuildSummary {
+            building,
+            built,
+            cached,
+            cancelled,
+            failed,
+        }
     }
 }
 

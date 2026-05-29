@@ -89,10 +89,10 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Gua
 }
 
 fn clear(
-    fresh: bool,
     build_dir: &BuildDir,
-    log_path: Option<&Path>,
     guard: &lock::Guard,
+    fresh: bool,
+    log_path: Option<&Path>,
 ) -> Result<()> {
     if fresh && build_dir.as_path().exists() {
         let protected_files = log_path
@@ -133,15 +133,15 @@ fn default_repo(language: &str) -> Result<Url> {
 fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, args::ParserConfig>>,
-) -> Result<(Option<String>, parser::Ref, Url)> {
+) -> Result<(Url, parser::Ref, Option<String>)> {
     let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
     match config {
         Some(args::ParserConfig::Ref(git_ref)) => Ok((
-            None,
+            default_repo(language)?,
             parser::Ref::parse(git_ref)
                 .with_context(|| format!("Parsing git ref {git_ref:?} for {language}"))?,
-            default_repo(language)?,
+            None,
         )),
 
         Some(args::ParserConfig::Full {
@@ -156,14 +156,14 @@ fn get_language_coords(
             };
 
             Ok((
-                build_script.clone(),
+                repo,
                 parser::Ref::parse(git_ref)
                     .with_context(|| format!("Parsing git ref {git_ref:?} for {language}"))?,
-                repo,
+                build_script.clone(),
             ))
         }
 
-        None => Ok((None, parser::Ref::head(), default_repo(language)?)),
+        None => Ok((default_repo(language)?, parser::Ref::head(), None)),
     }
 }
 
@@ -197,7 +197,7 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
-fn ignite(app: &app::App, command: &args::BuildCommand, build_dir: &BuildDir) -> Result<()> {
+fn ignite(command: &args::BuildCommand, app: &app::App, build_dir: &BuildDir) -> Result<()> {
     fs::create_dir_all(&command.out_dir)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -213,11 +213,11 @@ fn ignite(app: &app::App, command: &args::BuildCommand, build_dir: &BuildDir) ->
     let result = rt.block_on(async move {
         let shutdown = shutdown::Handle::new();
         let _signals = shutdown.spawn_signal_listener()?;
-        let cache = actors::CacheActor::spawn(db, cache_store, command.force);
+        let cache = actors::CacheActor::spawn(db, command.force, cache_store);
         let display_build_dir = build_dir.as_path().to_path_buf();
         let display_out_dir = command.out_dir.canon()?;
         let display =
-            actors::DisplayActor::spawn(app.progress_mode, display_build_dir, display_out_dir);
+            actors::DisplayActor::spawn(display_build_dir, app.progress_mode, display_out_dir);
 
         shutdown::scope(shutdown, async move {
             actors::run(
@@ -240,7 +240,7 @@ fn ignite(app: &app::App, command: &args::BuildCommand, build_dir: &BuildDir) ->
     result
 }
 
-pub fn run(app: &app::App, command: &args::BuildCommand) -> Result<()> {
+pub fn run(command: &args::BuildCommand, app: &app::App) -> Result<()> {
     if command.show_config {
         crate::config::show(command)?;
     }
@@ -249,8 +249,8 @@ pub fn run(app: &app::App, command: &args::BuildCommand) -> Result<()> {
     let lock = lock::Lock::new(&build_dir);
     let guard = acquire_lock(&lock, Duration::from_secs(command.unlock_timeout))?;
 
-    clear(command.fresh, &build_dir, app.logging.path(), &guard)?;
-    ignite(app, command, &build_dir)?;
+    clear(&build_dir, &guard, command.fresh, app.logging.path())?;
+    ignite(command, app, &build_dir)?;
     Ok(())
 }
 
@@ -273,18 +273,10 @@ fn unique_languages(
 
     for language in unique {
         let result = match get_language_coords(&language, defined_parsers) {
-            Ok((build_script, git_ref, repo)) => Ok(parser::LanguageBuild::new(
+            Ok((repo, git_ref, build_script)) => Ok(parser::LanguageBuild::new(
                 Context {
                     overwrite_output: command.force,
                 },
-                Arc::new(Spec {
-                    build_script,
-                    git_ref,
-                    repo,
-                    tree_sitter: command.tree_sitter.clone(),
-                    prefix: command.prefix.clone(),
-                    target: command.target,
-                }),
                 parser::LanguageName::from(language.clone()),
                 OutputConfig {
                     build_dir: build_dir
@@ -296,6 +288,14 @@ fn unique_languages(
                         .canon()
                         .expect("Out dir canonicalization failed"),
                 },
+                Arc::new(Spec {
+                    build_script,
+                    git_ref,
+                    repo,
+                    tree_sitter: command.tree_sitter.clone(),
+                    prefix: command.prefix.clone(),
+                    target: command.target,
+                }),
             )),
             Err(err) => Err(Error::Language {
                 name: language,

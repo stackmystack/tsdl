@@ -308,10 +308,10 @@ impl Db {
         &self,
         name: &Key,
         hash: &GrammarHash,
-        spec: &build::Spec,
         revision: &Revision,
+        spec: &build::Spec,
     ) -> bool {
-        self.rebuild_decision(name, hash, spec, revision)
+        self.rebuild_decision(name, hash, revision, spec)
             .needs_rebuild()
     }
 
@@ -320,12 +320,12 @@ impl Db {
         &self,
         name: &Key,
         hash: &GrammarHash,
-        spec: &build::Spec,
         revision: &Revision,
+        spec: &build::Spec,
     ) -> Decision {
         let decision = match self.get(name) {
             None => Decision::miss(MissReason::MissingEntry),
-            Some(entry) => entry.rebuild_decision(hash, spec, revision),
+            Some(entry) => entry.rebuild_decision(hash, revision, spec),
         };
 
         debug!("Cache decision for {name}: {decision}");
@@ -385,8 +385,8 @@ impl Entry {
     pub fn rebuild_decision(
         &self,
         hash: &GrammarHash,
-        spec: &build::Spec,
         revision: &Revision,
+        spec: &build::Spec,
     ) -> Decision {
         let mut reasons = Vec::new();
         let cached = &self.recipe;
@@ -810,7 +810,7 @@ mod tests {
         let spec = test_spec();
 
         assert_miss(
-            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &stable_revision()),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &stable_revision(), &spec),
             &[MissReason::MissingEntry],
         );
     }
@@ -821,7 +821,7 @@ mod tests {
         let cache = cache_with_entry("abc123", &spec);
 
         assert_miss(
-            cache.rebuild_decision(&key(), &grammar_hash("def456"), &spec, &stable_revision()),
+            cache.rebuild_decision(&key(), &grammar_hash("def456"), &stable_revision(), &spec),
             &[MissReason::HashChanged {
                 cached: grammar_hash("abc123"),
                 current: grammar_hash("def456"),
@@ -840,8 +840,8 @@ mod tests {
             cache.rebuild_decision(
                 &key(),
                 &grammar_hash("abc123"),
-                &requested,
                 &stable_revision(),
+                &requested,
             ),
             &[MissReason::RefChanged {
                 cached: parser::Ref::parse("v1.0.0").unwrap(),
@@ -861,8 +861,8 @@ mod tests {
             cache.rebuild_decision(
                 &key(),
                 &grammar_hash("abc123"),
-                &requested,
                 &stable_revision(),
+                &requested,
             ),
             &[MissReason::OutputsMissing {
                 available: args::Target::Native,
@@ -884,8 +884,8 @@ mod tests {
                 cache.rebuild_decision(
                     &key(),
                     &grammar_hash("abc123"),
-                    &requested,
                     &stable_revision(),
+                    &requested,
                 ),
                 Decision::Hit
             );
@@ -898,10 +898,10 @@ mod tests {
         let cache = cache_with_entry("abc123", &spec);
 
         assert_eq!(
-            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &stable_revision()),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &stable_revision(), &spec),
             Decision::Hit
         );
-        assert!(!cache.needs_rebuild(&key(), &grammar_hash("abc123"), &spec, &stable_revision()));
+        assert!(!cache.needs_rebuild(&key(), &grammar_hash("abc123"), &stable_revision(), &spec));
     }
 
     #[test]
@@ -912,7 +912,7 @@ mod tests {
         let cache = cache_with_entry_and_revision("abc123", &spec, cached_revision.clone());
 
         assert_miss(
-            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &current_revision),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &current_revision, &spec),
             &[MissReason::RevisionChanged {
                 cached: cached_revision,
                 current: current_revision,
@@ -927,7 +927,7 @@ mod tests {
         let cache = cache_with_entry_and_revision("abc123", &spec, revision.clone());
 
         assert_eq!(
-            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &spec, &revision),
+            cache.rebuild_decision(&key(), &grammar_hash("abc123"), &revision, &spec),
             Decision::Hit
         );
     }
@@ -945,8 +945,8 @@ mod tests {
             cache.rebuild_decision(
                 &key(),
                 &grammar_hash("def456"),
-                &requested,
                 &stable_revision(),
+                &requested,
             ),
             &[
                 MissReason::HashChanged {

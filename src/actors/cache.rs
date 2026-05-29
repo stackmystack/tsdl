@@ -106,7 +106,7 @@ impl CacheActor {
                     let decision = if self.force {
                         cache::Decision::miss(cache::MissReason::CacheIgnored)
                     } else {
-                        self.db.rebuild_decision(&name, &hash, &spec, &revision)
+                        self.db.rebuild_decision(&name, &hash, &revision, &spec)
                     };
                     if decision.needs_rebuild() {
                         info!("Cache miss for {name}: {}", decision.short_message());
@@ -161,7 +161,7 @@ impl CacheActor {
     }
 
     #[must_use]
-    pub fn spawn(db: cache::Db, store: cache::Store, force: bool) -> CacheAddr {
+    pub fn spawn(db: cache::Db, force: bool, store: cache::Store) -> CacheAddr {
         let (tx, rx) = mpsc::channel(64);
         let actor = Self {
             db,
@@ -198,8 +198,8 @@ impl CacheAddr {
         &self,
         name: cache::Key,
         hash: cache::GrammarHash,
-        spec: Arc<build::Spec>,
         revision: cache::Revision,
+        spec: Arc<build::Spec>,
     ) -> cache::Decision {
         self.request(|tx| CacheMessage::NeedsRebuild {
             name,

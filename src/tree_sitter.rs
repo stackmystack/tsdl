@@ -286,8 +286,8 @@ pub async fn prepare(
 
     let progress = display
         .add_language(
-            display_tree_sitter_ref(&tree_sitter.version)?,
             "tree-sitter-cli",
+            display_tree_sitter_ref(&tree_sitter.version)?,
             2,
         )
         .await;

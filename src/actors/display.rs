@@ -87,9 +87,9 @@ pub struct DisplayActor {
 /// Handle for updating a specific progress bar (repo or grammar).
 #[derive(Debug, Clone)]
 pub struct DisplayAddr {
-    tx: mpsc::Sender<Message>,
     #[allow(dead_code)]
     mode: display::Mode,
+    tx: mpsc::Sender<Message>,
 }
 
 struct PlainLine {
@@ -656,37 +656,47 @@ impl DisplayActor {
 
             // TIME: stale when dirty OR clock is still running
             let time_stale = is_dirty || info.state().is_live();
-            let time = self
-                .grid
-                .cell(item_id, display::Column::Time, time_stale, || {
-                    display::compute_time_cell(&info, &layout)
-                });
+            let time = self.grid.cell(
+                item_id,
+                display::Column::Time,
+                || display::compute_time_cell(&info, &layout),
+                time_stale,
+            );
 
-            let gref = self.grid.cell(item_id, display::Column::Ref, is_dirty, || {
-                display::compute_ref_cell(&info, &layout)
-            });
+            let gref = self.grid.cell(
+                item_id,
+                display::Column::Ref,
+                || display::compute_ref_cell(&info, &layout),
+                is_dirty,
+            );
 
-            let step = self
-                .grid
-                .cell(item_id, display::Column::Step, is_dirty, || {
-                    display::compute_step_cell(&info, &layout)
-                });
+            let step = self.grid.cell(
+                item_id,
+                display::Column::Step,
+                || display::compute_step_cell(&info, &layout),
+                is_dirty,
+            );
 
-            let icon = self
-                .grid
-                .cell(item_id, display::Column::Icon, is_dirty, || {
-                    display::compute_icon_cell(&info)
-                });
+            let icon = self.grid.cell(
+                item_id,
+                display::Column::Icon,
+                || display::compute_icon_cell(&info),
+                is_dirty,
+            );
 
-            let name = self
-                .grid
-                .cell(item_id, display::Column::Name, is_dirty, || {
-                    display::compute_name_cell(&spec.display_name, spec.indent, &info, &layout)
-                });
+            let name = self.grid.cell(
+                item_id,
+                display::Column::Name,
+                || display::compute_name_cell(&spec.display_name, spec.indent, &info, &layout),
+                is_dirty,
+            );
 
-            let msg = self.grid.cell(item_id, display::Column::Msg, is_dirty, || {
-                display::compute_msg_cell(&info, &layout, term_w)
-            });
+            let msg = self.grid.cell(
+                item_id,
+                display::Column::Msg,
+                || display::compute_msg_cell(&info, &layout, term_w),
+                is_dirty,
+            );
 
             lines.push(Line::from(vec![
                 time,
@@ -763,9 +773,12 @@ impl DisplayActor {
     }
 
     fn print_plain_summary(&self) {
-        let (cached, built, _building, failed, cancelled) = self.state.summary_counts();
+        let s = self.state.summary();
         println!();
-        println!("✓ {cached} cached  ✓ {built} built  ✗ {cancelled} cancelled  ✗ {failed} failed");
+        println!(
+            "✓ {} cached  ✓ {} built  ✗ {} cancelled  ✗ {} failed",
+            s.cached, s.built, s.cancelled, s.failed
+        );
     }
 
     fn register_grammar(
@@ -991,10 +1004,10 @@ impl DisplayActor {
     }
 
     #[must_use]
-    pub fn spawn(mode: display::Mode, build_dir: PathBuf, out_dir: PathBuf) -> DisplayAddr {
+    pub fn spawn(build_dir: PathBuf, mode: display::Mode, out_dir: PathBuf) -> DisplayAddr {
         let (tx, rx) = mpsc::channel(256);
         let actor = Self {
-            state: display::State::new(mode, build_dir, out_dir),
+            state: display::State::new(build_dir, mode, out_dir),
             next_id: display::ItemId::new(NonZeroU64::MIN),
             plain_name_width: 16,
             plain_progress_started: false,
@@ -1010,7 +1023,7 @@ impl DisplayActor {
             actor.run().await;
         });
 
-        DisplayAddr::new(tx, mode)
+        DisplayAddr::new(mode, tx)
     }
 
     fn sync_parent_repo(&mut self, repo_id: display::ItemId) {
@@ -1079,8 +1092,8 @@ impl DisplayActor {
 impl DisplayAddr {
     pub async fn add_language<S: Into<Arc<str>>>(
         &self,
-        git_ref: git::Ref,
         name: S,
+        git_ref: git::Ref,
         num_tasks: usize,
     ) -> ProgressAddr {
         self.request(|tx| Message::RegisterLanguage {
@@ -1094,9 +1107,9 @@ impl DisplayAddr {
 
     pub async fn add_grammar<S: Into<Arc<str>>>(
         &self,
-        git_ref: git::Ref,
         language: S,
         name: S,
+        git_ref: git::Ref,
         num_tasks: usize,
     ) -> ProgressAddr {
         self.request(|tx| Message::RegisterGrammar {
@@ -1110,11 +1123,11 @@ impl DisplayAddr {
     }
 
     #[must_use]
-    pub fn new(tx: mpsc::Sender<Message>, mode: display::Mode) -> Self {
-        Self { tx, mode }
+    pub fn new(mode: display::Mode, tx: mpsc::Sender<Message>) -> Self {
+        Self { mode, tx }
     }
 
-    pub async fn reference<S: Into<Arc<str>>>(&self, git_ref: git::Ref, name: S) {
+    pub async fn reference<S: Into<Arc<str>>>(&self, name: S, git_ref: git::Ref) {
         self.fire(Message::RegisterReference {
             git_ref,
             name: name.into(),
@@ -1192,8 +1205,8 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         DisplayActor {
             state: display::State::new(
-                display::Mode::Fancy,
                 PathBuf::from("build"),
+                display::Mode::Fancy,
                 PathBuf::from("out"),
             ),
             next_id: display::ItemId::new(NonZeroU64::MIN),
@@ -1297,7 +1310,16 @@ mod tests {
         let failed = actor.register_repo("failed".into(), git::Ref::head(), 1);
         actor.apply_update(failed.id, UpdateKind::Err, Arc::from("failed"));
 
-        assert_eq!(actor.state.summary_counts(), (1, 1, 1, 1, 0));
+        assert_eq!(
+            actor.state.summary(),
+            display::BuildSummary {
+                building: 1,
+                built: 1,
+                cached: 1,
+                cancelled: 0,
+                failed: 1,
+            }
+        );
     }
 
     #[test]
@@ -1312,7 +1334,16 @@ mod tests {
         actor.apply_update(grammar.id, UpdateKind::SetOutcomeCached, Arc::from(""));
         actor.apply_update(grammar.id, UpdateKind::Cached, Arc::from("done"));
 
-        assert_eq!(actor.state.summary_counts(), (1, 0, 0, 0, 0));
+        assert_eq!(
+            actor.state.summary(),
+            display::BuildSummary {
+                building: 0,
+                built: 0,
+                cached: 1,
+                cancelled: 0,
+                failed: 0,
+            }
+        );
     }
 
     #[test]
@@ -1337,7 +1368,16 @@ mod tests {
         assert_eq!(repo_entry.msg.as_ref(), "cancelled");
         assert!(repo_entry.frozen_elapsed.is_some());
 
-        assert_eq!(actor.state.summary_counts(), (0, 0, 0, 0, 1));
+        assert_eq!(
+            actor.state.summary(),
+            display::BuildSummary {
+                building: 0,
+                built: 0,
+                cached: 0,
+                cancelled: 1,
+                failed: 0,
+            }
+        );
     }
 
     #[test]
@@ -1394,7 +1434,16 @@ mod tests {
         assert_eq!(repo_entry.msg.as_ref(), "failed");
         assert!(repo_entry.frozen_elapsed.is_some());
 
-        assert_eq!(actor.state.summary_counts(), (0, 0, 0, 1, 1));
+        assert_eq!(
+            actor.state.summary(),
+            display::BuildSummary {
+                building: 0,
+                built: 0,
+                cached: 0,
+                cancelled: 1,
+                failed: 1,
+            }
+        );
     }
 
     #[test]
@@ -1426,7 +1475,16 @@ mod tests {
         assert_eq!(repo_entry.state, display::ItemState::Cancelled);
         assert_eq!(repo_entry.msg.as_ref(), "cancelled");
 
-        assert_eq!(actor.state.summary_counts(), (0, 0, 0, 0, 1));
+        assert_eq!(
+            actor.state.summary(),
+            display::BuildSummary {
+                building: 0,
+                built: 0,
+                cached: 0,
+                cancelled: 1,
+                failed: 0,
+            }
+        );
     }
 
     #[test]
