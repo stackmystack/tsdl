@@ -83,16 +83,6 @@ pub enum Revision {
 // Structs
 // ============================================================
 
-/// Build inputs that affect parser output, excluding the requested output set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BuildRecipe {
-    pub build_script: Option<String>,
-    pub git_ref: parser::Ref,
-    pub prefix: String,
-    pub repo: url::Url,
-    pub tree_sitter: args::TreeSitter,
-}
-
 /// The logical build cache contents.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
@@ -108,8 +98,8 @@ pub struct Entry {
     /// Resolved parser revision used by the cache. Moving refs include the
     /// checked-out commit.
     pub revision: Revision,
-    /// Build inputs that affect parser output, excluding the requested output set.
-    pub recipe: BuildRecipe,
+    /// Build specification used to produce this entry.
+    pub spec: Arc<build::Spec>,
     /// Parser outputs known to be available for this entry.
     pub outputs: args::Target,
 }
@@ -256,19 +246,6 @@ impl AsyncWrite for HashWriter<'_> {
     }
 }
 
-impl BuildRecipe {
-    #[must_use]
-    pub fn from_spec(spec: &build::Spec) -> Self {
-        Self {
-            build_script: spec.build_script.clone(),
-            git_ref: spec.git_ref.clone(),
-            prefix: spec.prefix.clone(),
-            repo: spec.repo.clone(),
-            tree_sitter: spec.tree_sitter.clone(),
-        }
-    }
-}
-
 impl Db {
     /// Clear all entries.
     pub fn clear(&mut self) {
@@ -297,8 +274,8 @@ impl Db {
         let prefix = Key::language_prefix(language);
         self.parsers.iter().any(|(key, entry)| {
             key.as_str().starts_with(&prefix)
-                && entry.recipe.repo == spec.repo
-                && entry.recipe.git_ref == spec.git_ref
+                && entry.spec.repo == spec.repo
+                && entry.spec.git_ref == spec.git_ref
         })
     }
 
@@ -389,7 +366,6 @@ impl Entry {
         spec: &build::Spec,
     ) -> Decision {
         let mut reasons = Vec::new();
-        let cached = &self.recipe;
 
         if &self.hash != hash {
             reasons.push(MissReason::HashChanged {
@@ -398,17 +374,17 @@ impl Entry {
             });
         }
 
-        if cached.repo != spec.repo {
+        if self.spec.repo != spec.repo {
             reasons.push(MissReason::RepoChanged {
-                cached: cached.repo.to_string(),
+                cached: self.spec.repo.to_string(),
                 current: spec.repo.to_string(),
             });
         }
 
-        let git_ref_changed = cached.git_ref != spec.git_ref;
+        let git_ref_changed = self.spec.git_ref != spec.git_ref;
         if git_ref_changed {
             reasons.push(MissReason::RefChanged {
-                cached: cached.git_ref.clone(),
+                cached: self.spec.git_ref.clone(),
                 current: spec.git_ref.clone(),
             });
         }
@@ -420,20 +396,20 @@ impl Entry {
             });
         }
 
-        if cached.tree_sitter != spec.tree_sitter {
+        if self.spec.tree_sitter != spec.tree_sitter {
             reasons.push(MissReason::TreeSitterChanged {
-                cached: cached.tree_sitter.clone(),
+                cached: self.spec.tree_sitter.clone(),
                 current: spec.tree_sitter.clone(),
             });
         }
 
-        if cached.build_script != spec.build_script {
+        if self.spec.build_script != spec.build_script {
             reasons.push(MissReason::BuildScriptChanged);
         }
 
-        if cached.prefix != spec.prefix {
+        if self.spec.prefix != spec.prefix {
             reasons.push(MissReason::PrefixChanged {
-                cached: cached.prefix.clone(),
+                cached: self.spec.prefix.clone(),
                 current: spec.prefix.clone(),
             });
         }
@@ -450,7 +426,13 @@ impl Entry {
 
     #[must_use]
     pub fn same_subject(&self, other: &Self) -> bool {
-        self.hash == other.hash && self.revision == other.revision && self.recipe == other.recipe
+        self.hash == other.hash
+            && self.revision == other.revision
+            && self.spec.build_script == other.spec.build_script
+            && self.spec.git_ref == other.spec.git_ref
+            && self.spec.prefix == other.spec.prefix
+            && self.spec.repo == other.spec.repo
+            && self.spec.tree_sitter == other.spec.tree_sitter
     }
 }
 
@@ -782,7 +764,7 @@ mod tests {
         Entry {
             hash: grammar_hash(hash),
             revision,
-            recipe: BuildRecipe::from_spec(spec),
+            spec: Arc::new(spec.clone()),
             outputs: spec.target,
         }
     }
@@ -992,7 +974,7 @@ mod tests {
 
         let stored = cache.get(&key()).unwrap();
         assert_eq!(stored.outputs, args::Target::Wasm);
-        assert_eq!(stored.recipe.prefix, "other-");
+        assert_eq!(stored.spec.prefix, "other-");
     }
 
     #[test]

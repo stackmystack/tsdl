@@ -389,7 +389,7 @@ impl GrammarBuild {
             entry: cache::Entry {
                 hash: self.hash.clone(),
                 revision: self.revision.clone(),
-                recipe: cache::BuildRecipe::from_spec(self.spec.as_ref()),
+                spec: self.spec.clone(),
                 outputs: self.spec.target,
             },
         };

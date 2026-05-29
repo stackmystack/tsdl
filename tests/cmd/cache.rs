@@ -49,8 +49,8 @@ fn cache_file_structure() {
         "Cache should have revision identity field"
     );
     assert!(
-        cache_content.contains("recipe"),
-        "Cache should have build recipe field"
+        cache_content.contains("spec"),
+        "Cache should have build spec field"
     );
     assert!(
         cache_content.contains("outputs"),
