@@ -11,6 +11,19 @@ use tracing_subscriber::{layer::SubscriberExt, Layer};
 
 use crate::{absolute_normalize, args, consts, Error, Result, ResultExt};
 
+// ============================================================
+// Enums
+// ============================================================
+
+pub enum Implicit<'a> {
+    BuildDir { dir: &'a Path },
+    None,
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
 #[allow(dead_code)]
 pub struct Guard(WorkerGuard);
 
@@ -19,21 +32,31 @@ pub struct Policy<'a> {
     pub implicit: Implicit<'a>,
 }
 
-pub enum Implicit<'a> {
-    BuildDir { dir: &'a Path },
-    None,
-}
-
 pub struct Session {
     path: Option<PathBuf>,
     _guard: Option<Guard>,
 }
 
-impl Session {
-    #[must_use]
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
-    }
+// ============================================================
+// Free functions
+// ============================================================
+
+fn file_layer(
+    writer: tracing_appender::non_blocking::NonBlocking,
+    color: bool,
+    filter: LevelFilter,
+) -> Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> {
+    tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(color)
+        .with_file(true)
+        .with_level(true)
+        .with_line_number(true)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_writer(writer)
+        .with_filter(filter)
+        .boxed()
 }
 
 pub fn init(
@@ -85,6 +108,25 @@ fn init_tracing(
     tracing::subscriber::set_global_default(subscriber).unwrap();
 }
 
+fn open_log_file(log: &Path) -> Result<File> {
+    let parent = log.parent().unwrap_or(Path::new("."));
+    if !parent.exists() {
+        fs::create_dir_all(parent).context("Preparing log directory")?;
+    }
+    File::create(log).context("Creating log file")
+}
+
+fn resolve_log_path(policy: Policy<'_>) -> Result<Option<PathBuf>> {
+    match (policy.explicit, policy.implicit) {
+        (Some(log), Implicit::BuildDir { dir }) => validate_log_path(dir, log).map(Some),
+        (Some(log), Implicit::None) => validate_standalone_log_path(log).map(Some),
+        (None, Implicit::BuildDir { dir }) => {
+            validate_log_path(dir, &dir.join(consts::LOG_FILE)).map(Some)
+        }
+        (None, Implicit::None) => Ok(None),
+    }
+}
+
 fn stderr_layer(
     color: bool,
     filter: LevelFilter,
@@ -101,50 +143,6 @@ fn stderr_layer(
         .without_time()
         .with_filter(filter)
         .boxed()
-}
-
-fn file_layer(
-    writer: tracing_appender::non_blocking::NonBlocking,
-    color: bool,
-    filter: LevelFilter,
-) -> Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> {
-    tracing_subscriber::fmt::layer()
-        .compact()
-        .with_ansi(color)
-        .with_file(true)
-        .with_level(true)
-        .with_line_number(true)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_writer(writer)
-        .with_filter(filter)
-        .boxed()
-}
-
-fn resolve_log_path(policy: Policy<'_>) -> Result<Option<PathBuf>> {
-    match (policy.explicit, policy.implicit) {
-        (Some(log), Implicit::BuildDir { dir }) => validate_log_path(dir, log).map(Some),
-        (Some(log), Implicit::None) => validate_standalone_log_path(log).map(Some),
-        (None, Implicit::BuildDir { dir }) => {
-            validate_log_path(dir, &dir.join(consts::LOG_FILE)).map(Some)
-        }
-        (None, Implicit::None) => Ok(None),
-    }
-}
-
-fn validate_standalone_log_path(log: &Path) -> Result<PathBuf> {
-    let log = absolute_normalize(log)?;
-
-    if log.is_dir() {
-        return Err(Error::Message {
-            message: format!(
-                "--log must be a file path, not a directory: {}",
-                log.display()
-            ),
-        });
-    }
-
-    Ok(log)
 }
 
 fn validate_log_path(build_dir: &Path, log: &Path) -> Result<PathBuf> {
@@ -208,10 +206,28 @@ fn validate_log_path(build_dir: &Path, log: &Path) -> Result<PathBuf> {
     Ok(log)
 }
 
-fn open_log_file(log: &Path) -> Result<File> {
-    let parent = log.parent().unwrap_or(Path::new("."));
-    if !parent.exists() {
-        fs::create_dir_all(parent).context("Preparing log directory")?;
+fn validate_standalone_log_path(log: &Path) -> Result<PathBuf> {
+    let log = absolute_normalize(log)?;
+
+    if log.is_dir() {
+        return Err(Error::Message {
+            message: format!(
+                "--log must be a file path, not a directory: {}",
+                log.display()
+            ),
+        });
     }
-    File::create(log).context("Creating log file")
+
+    Ok(log)
+}
+
+// ============================================================
+// Impls
+// ============================================================
+
+impl Session {
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
 }
