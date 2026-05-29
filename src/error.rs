@@ -8,29 +8,9 @@ use crate::shutdown::Signal;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug)]
-pub struct Cause(Box<Error>);
-
-impl Cause {
-    #[must_use]
-    pub fn new(source: impl Into<Error>) -> Self {
-        Self(Box::new(source.into()))
-    }
-
-    #[must_use]
-    pub fn as_error(&self) -> &Error {
-        &self.0
-    }
-}
-
-impl<E> From<E> for Cause
-where
-    E: Into<Error>,
-{
-    fn from(source: E) -> Self {
-        Self::new(source)
-    }
-}
+// ============================================================
+// Traits
+// ============================================================
 
 pub trait ResultExt<T> {
     fn context(self, message: impl Into<String>) -> Result<T>;
@@ -38,38 +18,9 @@ pub trait ResultExt<T> {
     fn with_context(self, message: impl FnOnce() -> String) -> Result<T>;
 }
 
-impl<T, E> ResultExt<T> for std::result::Result<T, E>
-where
-    E: Into<Error>,
-{
-    fn context(self, message: impl Into<String>) -> Result<T> {
-        self.map_err(|source| Error::Context {
-            message: message.into(),
-            source: Cause::new(source),
-        })
-    }
-
-    fn with_context(self, message: impl FnOnce() -> String) -> Result<T> {
-        self.map_err(|source| Error::Context {
-            message: message(),
-            source: Cause::new(source),
-        })
-    }
-}
-
-#[derive(Debug, Display)]
-pub enum ParserOp {
-    #[display("Could not build in {}", dir.display())]
-    Build { dir: PathBuf },
-    #[display("Could not clone to {}", dir.display())]
-    Clone { dir: PathBuf },
-    #[display("Could not discover grammars in {}", dir.display())]
-    Discover { dir: PathBuf },
-    #[display("Could not copy {} to {}", src.display(), dst.display())]
-    Copy { src: PathBuf, dst: PathBuf },
-    #[display("Could not generate in {}", dir.display())]
-    Generate { dir: PathBuf },
-}
+// ============================================================
+// Enums
+// ============================================================
 
 /// Main error type for tsdl operations
 #[derive(Debug)]
@@ -111,6 +62,43 @@ pub enum Error {
         kind: ParserOp,
         source: Cause,
     },
+}
+
+#[derive(Debug, Display)]
+pub enum ParserOp {
+    #[display("Could not build in {}", dir.display())]
+    Build { dir: PathBuf },
+    #[display("Could not clone to {}", dir.display())]
+    Clone { dir: PathBuf },
+    #[display("Could not discover grammars in {}", dir.display())]
+    Discover { dir: PathBuf },
+    #[display("Could not copy {} to {}", src.display(), dst.display())]
+    Copy { src: PathBuf, dst: PathBuf },
+    #[display("Could not generate in {}", dir.display())]
+    Generate { dir: PathBuf },
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+#[derive(Debug)]
+pub struct Cause(Box<Error>);
+
+// ============================================================
+// Free functions
+// ============================================================
+
+fn format_build_errors(w: &mut impl fmt::Write, errors: &[Error], indent: usize) -> fmt::Result {
+    let prefix = " ".repeat(indent);
+    write!(w, "{prefix}Could not build all parsers.")?;
+
+    for error in errors {
+        write!(w, "\n\n")?;
+        error.format(w, indent + 2)?;
+    }
+
+    Ok(())
 }
 
 fn format_command(
@@ -186,16 +174,20 @@ fn format_language_collection(
     Ok(())
 }
 
-fn format_build_errors(w: &mut impl fmt::Write, errors: &[Error], indent: usize) -> fmt::Result {
-    let prefix = " ".repeat(indent);
-    write!(w, "{prefix}Could not build all parsers.")?;
+// ============================================================
+// Impls
+// ============================================================
 
-    for error in errors {
-        write!(w, "\n\n")?;
-        error.format(w, indent + 2)?;
+impl Cause {
+    #[must_use]
+    pub fn new(source: impl Into<Error>) -> Self {
+        Self(Box::new(source.into()))
     }
 
-    Ok(())
+    #[must_use]
+    pub fn as_error(&self) -> &Error {
+        &self.0
+    }
 }
 
 impl fmt::Display for Error {
@@ -217,92 +209,6 @@ impl std::error::Error for Error {
             | Error::Language { source, .. }
             | Error::Step { source, .. } => Some(source.as_error()),
             Error::Io { source } => Some(source),
-        }
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(source: std::io::Error) -> Self {
-        Error::Io { source }
-    }
-}
-
-impl From<std::fmt::Error> for Error {
-    fn from(error: std::fmt::Error) -> Self {
-        Error::Message {
-            message: format!("formatting error: {error}"),
-        }
-    }
-}
-
-impl From<std::string::FromUtf8Error> for Error {
-    fn from(error: std::string::FromUtf8Error) -> Self {
-        Error::Message {
-            message: format!("UTF-8 conversion error: {error}"),
-        }
-    }
-}
-
-impl From<reqwest::Error> for Error {
-    fn from(error: reqwest::Error) -> Self {
-        Error::Message {
-            message: format!("HTTP request error: {error}"),
-        }
-    }
-}
-
-impl From<url::ParseError> for Error {
-    fn from(error: url::ParseError) -> Self {
-        Error::Message {
-            message: format!("URL parse error: {error}"),
-        }
-    }
-}
-
-impl From<toml::ser::Error> for Error {
-    fn from(error: toml::ser::Error) -> Self {
-        Error::Message {
-            message: format!("TOML serialization error: {error}"),
-        }
-    }
-}
-
-impl From<toml::de::Error> for Error {
-    fn from(error: toml::de::Error) -> Self {
-        Error::Message {
-            message: format!("TOML deserialization error: {error}"),
-        }
-    }
-}
-
-impl From<semver::Error> for Error {
-    fn from(error: semver::Error) -> Self {
-        Error::Message {
-            message: format!("Semver error: {error}"),
-        }
-    }
-}
-
-impl From<self_update::errors::Error> for Error {
-    fn from(error: self_update::errors::Error) -> Self {
-        Error::Message {
-            message: format!("Self-update error: {error}"),
-        }
-    }
-}
-
-impl From<reqwest::header::InvalidHeaderValue> for Error {
-    fn from(error: reqwest::header::InvalidHeaderValue) -> Self {
-        Error::Message {
-            message: format!("Invalid header value: {error}"),
-        }
-    }
-}
-
-impl From<tokio::task::JoinError> for Error {
-    fn from(error: tokio::task::JoinError) -> Self {
-        Error::Message {
-            message: format!("Task join error: {error}"),
         }
     }
 }
@@ -358,6 +264,120 @@ impl Error {
                 )
             }
         }
+    }
+}
+
+impl<E> From<E> for Cause
+where
+    E: Into<Error>,
+{
+    fn from(source: E) -> Self {
+        Self::new(source)
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        Error::Message {
+            message: format!("HTTP request error: {error}"),
+        }
+    }
+}
+
+impl From<reqwest::header::InvalidHeaderValue> for Error {
+    fn from(error: reqwest::header::InvalidHeaderValue) -> Self {
+        Error::Message {
+            message: format!("Invalid header value: {error}"),
+        }
+    }
+}
+
+impl From<self_update::errors::Error> for Error {
+    fn from(error: self_update::errors::Error) -> Self {
+        Error::Message {
+            message: format!("Self-update error: {error}"),
+        }
+    }
+}
+
+impl From<semver::Error> for Error {
+    fn from(error: semver::Error) -> Self {
+        Error::Message {
+            message: format!("Semver error: {error}"),
+        }
+    }
+}
+
+impl From<std::fmt::Error> for Error {
+    fn from(error: std::fmt::Error) -> Self {
+        Error::Message {
+            message: format!("formatting error: {error}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(source: std::io::Error) -> Self {
+        Error::Io { source }
+    }
+}
+
+impl From<std::string::FromUtf8Error> for Error {
+    fn from(error: std::string::FromUtf8Error) -> Self {
+        Error::Message {
+            message: format!("UTF-8 conversion error: {error}"),
+        }
+    }
+}
+
+impl From<tokio::task::JoinError> for Error {
+    fn from(error: tokio::task::JoinError) -> Self {
+        Error::Message {
+            message: format!("Task join error: {error}"),
+        }
+    }
+}
+
+impl From<toml::de::Error> for Error {
+    fn from(error: toml::de::Error) -> Self {
+        Error::Message {
+            message: format!("TOML deserialization error: {error}"),
+        }
+    }
+}
+
+impl From<toml::ser::Error> for Error {
+    fn from(error: toml::ser::Error) -> Self {
+        Error::Message {
+            message: format!("TOML serialization error: {error}"),
+        }
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(error: url::ParseError) -> Self {
+        Error::Message {
+            message: format!("URL parse error: {error}"),
+        }
+    }
+}
+
+impl<T, E> ResultExt<T> for std::result::Result<T, E>
+where
+    E: Into<Error>,
+{
+    fn context(self, message: impl Into<String>) -> Result<T> {
+        self.map_err(|source| Error::Context {
+            message: message.into(),
+            source: Cause::new(source),
+        })
+    }
+
+    fn with_context(self, message: impl FnOnce() -> String) -> Result<T> {
+        self.map_err(|source| Error::Context {
+            message: message(),
+            source: Cause::new(source),
+        })
     }
 }
 
