@@ -52,14 +52,14 @@ pub struct Sha(Arc<str>);
 // Free functions
 // ============================================================
 
-pub async fn checkout(repo: &str, git_ref: &Ref, cwd: &Path) -> Result<Checkout> {
-    checkout_with_force(repo, git_ref, cwd, false).await
+pub async fn checkout(repo: &str, cwd: &Path, git_ref: &Ref) -> Result<Checkout> {
+    checkout_with_force(repo, cwd, git_ref, false).await
 }
 
 pub async fn checkout_with_force(
     repo: &str,
-    git_ref: &Ref,
     cwd: &Path,
+    git_ref: &Ref,
     force: bool,
 ) -> Result<Checkout> {
     if force || !is_same_remote(cwd, repo).await {

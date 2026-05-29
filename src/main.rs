@@ -28,7 +28,7 @@ fn main() -> ExitCode {
 fn run(app: &app::App) -> Result<()> {
     match &app.command {
         app::ResolvedCommand::Build(build) => {
-            let (result, duration) = time(|| tsdl::build::run(app, &build.command));
+            let (result, duration) = time(|| tsdl::build::run(&build.command, app));
             match &result {
                 Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
                 Err(Error::Interrupted { signal }) => println!(

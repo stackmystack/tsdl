@@ -72,8 +72,8 @@ async fn discover_grammars(
 
     let progress = display
         .add_language(
-            language.spec.git_ref.requested().clone(),
             language.name.as_arc(),
+            language.spec.git_ref.requested().clone(),
             2,
         )
         .await;
@@ -110,19 +110,19 @@ async fn discover_grammars(
     // Map the raw discovery data into Build structs, now with the resolved
     // tree-sitter version available for accurate cache-key comparison.
     let mut builds = Vec::new();
-    for (name, dir, hash) in grammars {
+    for (name, hash, dir) in grammars {
         shutdown::test_delay().await;
         shutdown::check()?;
 
         let key = crate::cache::Key::new(&language.name, &name);
         let artifacts = parser::GrammarBuild::required_artifacts_for(
-            &language.output.build_dir,
-            &ts_cli,
-            &language.spec,
             &name,
+            &language.output.build_dir,
+            &language.spec,
+            &ts_cli,
         )?;
         let cache_decision = cache
-            .needs_rebuild(key, hash.clone(), language.spec.clone(), revision.clone())
+            .needs_rebuild(key, hash.clone(), revision.clone(), language.spec.clone())
             .await;
 
         // Cache actor checks in-memory metadata only.  When it reports a hit
@@ -135,9 +135,9 @@ async fn discover_grammars(
 
         let progress = display
             .add_grammar(
-                language.spec.git_ref.requested().clone(),
                 language.name.as_arc(),
                 name.as_arc(),
+                language.spec.git_ref.requested().clone(),
                 4,
             )
             .await;
@@ -237,12 +237,12 @@ pub async fn run(
         }
     };
 
-    display.reference(tree_sitter_ref, "tree-sitter-cli").await;
+    display.reference("tree-sitter-cli", tree_sitter_ref).await;
     for language in &languages {
         display
             .reference(
-                language.spec.git_ref.requested().clone(),
                 language.name.as_arc(),
+                language.spec.git_ref.requested().clone(),
             )
             .await;
     }

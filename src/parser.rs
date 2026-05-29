@@ -74,9 +74,9 @@ pub struct GrammarName(Arc<str>);
 #[derive(Clone, Debug)]
 pub struct LanguageBuild {
     pub context: build::Context,
-    pub spec: Arc<build::Spec>,
     pub name: LanguageName,
     pub output: build::OutputConfig,
+    pub spec: Arc<build::Spec>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -102,15 +102,15 @@ fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
 }
 
 fn artifact_path_for(
-    build_dir: &Path,
-    ts_cli: &Path,
-    spec: &build::Spec,
     grammar_name: &GrammarName,
+    build_dir: &Path,
     kind: ArtifactKind,
+    spec: &build::Spec,
+    ts_cli: &Path,
 ) -> Result<PathBuf> {
     Ok(build_dir
         .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
-        .join(parser_name_and_ext(&spec.prefix, grammar_name, kind)))
+        .join(parser_name_and_ext(grammar_name, kind, &spec.prefix)))
 }
 
 async fn ensure_parent_dir(path: &Path) -> Result<()> {
@@ -171,7 +171,7 @@ fn normalize_source_ref(value: &str) -> String {
     }
 }
 
-fn parser_name_and_ext(prefix: &str, grammar_name: &GrammarName, kind: ArtifactKind) -> String {
+fn parser_name_and_ext(grammar_name: &GrammarName, kind: ArtifactKind, prefix: &str) -> String {
     format!("{prefix}{grammar_name}.{}", kind.extension())
 }
 
@@ -180,10 +180,10 @@ fn same_file_identity(a: &Metadata, b: &Metadata) -> bool {
 }
 
 async fn same_regular_file_contents(
-    src: &Path,
-    src_metadata: &Metadata,
     dst: &Path,
     dst_metadata: &Metadata,
+    src: &Path,
+    src_metadata: &Metadata,
 ) -> Result<bool> {
     if src_metadata.len() != dst_metadata.len() {
         return Ok(false);
@@ -609,16 +609,16 @@ impl GrammarBuild {
             }
         };
 
-        self.install_over_existing(&src, &src_metadata, &dst, &dst_link_metadata)
+        self.install_over_existing(&src, &dst, &dst_link_metadata, &src_metadata)
             .await
     }
 
     async fn install_over_existing(
         &self,
         src: &Path,
-        src_metadata: &Metadata,
         dst: &Path,
         dst_link_metadata: &Metadata,
+        src_metadata: &Metadata,
     ) -> Result<()> {
         let dst_file_type = dst_link_metadata.file_type();
 
@@ -664,7 +664,7 @@ impl GrammarBuild {
         }
 
         let same_contents =
-            same_regular_file_contents(src, src_metadata, dst, &dst_metadata).await?;
+            same_regular_file_contents(dst, &dst_metadata, src, src_metadata).await?;
 
         if !same_contents && !self.context.overwrite_output {
             return Err(Error::Message {
@@ -711,30 +711,30 @@ impl GrammarBuild {
     }
 
     pub fn required_artifacts_for(
-        build_dir: &Path,
-        ts_cli: &Path,
-        spec: &build::Spec,
         grammar_name: &GrammarName,
+        build_dir: &Path,
+        spec: &build::Spec,
+        ts_cli: &Path,
     ) -> Result<Vec<PathBuf>> {
         let mut artifacts = Vec::new();
 
         if spec.target.native() {
             artifacts.push(artifact_path_for(
-                build_dir,
-                ts_cli,
-                spec,
                 grammar_name,
+                build_dir,
                 ArtifactKind::Native,
+                spec,
+                ts_cli,
             )?);
         }
 
         if spec.target.wasm() {
             artifacts.push(artifact_path_for(
-                build_dir,
-                ts_cli,
-                spec,
                 grammar_name,
+                build_dir,
                 ArtifactKind::Wasm,
+                spec,
+                ts_cli,
             )?);
         }
 
@@ -743,11 +743,11 @@ impl GrammarBuild {
 
     fn artifact_path(&self, kind: ArtifactKind) -> Result<PathBuf> {
         artifact_path_for(
-            &self.output.build_dir,
-            &self.ts_cli,
-            &self.spec,
             &self.name,
+            &self.output.build_dir,
             kind,
+            &self.spec,
+            &self.ts_cli,
         )
     }
 
@@ -795,7 +795,7 @@ impl GrammarBuild {
     }
 
     fn parser_name_and_ext(&self, kind: ArtifactKind) -> String {
-        parser_name_and_ext(&self.spec.prefix, &self.name, kind)
+        parser_name_and_ext(&self.name, kind, &self.spec.prefix)
     }
 }
 
@@ -815,21 +815,21 @@ impl LanguageBuild {
     #[must_use]
     pub fn new(
         context: build::Context,
-        spec: Arc<build::Spec>,
         name: LanguageName,
         output: build::OutputConfig,
+        spec: Arc<build::Spec>,
     ) -> Self {
         Self {
             context,
-            spec,
             name,
             output,
+            spec,
         }
     }
 
     pub async fn discover_grammars(
         &self,
-    ) -> Result<Vec<(GrammarName, PathBuf, cache::GrammarHash)>> {
+    ) -> Result<Vec<(GrammarName, cache::GrammarHash, PathBuf)>> {
         let file_results = collect_grammar_paths(&self.output.build_dir).await?;
         let mut grammars = Vec::new();
 
@@ -841,7 +841,7 @@ impl LanguageBuild {
                 ),
             })?;
             let grammar_name = extract_grammar_name(grammar_dir)?;
-            grammars.push((grammar_name, grammar_dir.to_path_buf(), hash));
+            grammars.push((grammar_name, hash, grammar_dir.to_path_buf()));
         }
 
         if grammars.is_empty() {
@@ -876,8 +876,8 @@ impl LanguageBuild {
     pub async fn checkout(&self) -> Result<git::Checkout> {
         git::checkout(
             self.spec.repo.as_str(),
-            self.spec.git_ref.requested(),
             &self.output.build_dir,
+            self.spec.git_ref.requested(),
         )
         .await
         .map_err(|err| Error::Step {
@@ -1003,6 +1003,8 @@ mod tests {
             build::Context {
                 overwrite_output: false,
             },
+            LanguageName::from("empty"),
+            build::OutputConfig { build_dir, out_dir },
             Arc::new(build::Spec {
                 build_script: None,
                 git_ref: Ref::parse("v1.0.0").unwrap(),
@@ -1011,8 +1013,6 @@ mod tests {
                 target: Target::Native,
                 tree_sitter: TreeSitter::default(),
             }),
-            LanguageName::from("empty"),
-            build::OutputConfig { build_dir, out_dir },
         )
     }
 
@@ -1036,9 +1036,9 @@ mod tests {
         out_dir: PathBuf,
         overwrite_output: bool,
     ) -> (GrammarBuild, DisplayAddr) {
-        let display = DisplayActor::spawn(Mode::Plain, grammar_dir.clone(), out_dir.clone());
+        let display = DisplayActor::spawn(grammar_dir.clone(), Mode::Plain, out_dir.clone());
         let progress = display
-            .add_grammar(git::Ref::head(), "rust", "rust", 1)
+            .add_grammar("rust", "rust", git::Ref::head(), 1)
             .await;
         let source_ref = Ref::parse("v1.0.0").unwrap();
         let build = GrammarBuild {
@@ -1158,16 +1158,16 @@ mod tests {
 
     #[test]
     fn test_parser_name_and_ext() {
-        let name = parser_name_and_ext("", &GrammarName::from("typescript"), ArtifactKind::Native);
+        let name = parser_name_and_ext(&GrammarName::from("typescript"), ArtifactKind::Native, "");
         assert_eq!(name, format!("typescript.{DLL_EXTENSION}"));
     }
 
     #[test]
     fn test_parser_name_with_prefix() {
         let name = parser_name_and_ext(
-            "lib",
             &GrammarName::from("typescript"),
             ArtifactKind::Native,
+            "lib",
         );
         assert_eq!(name, format!("libtypescript.{DLL_EXTENSION}"));
     }

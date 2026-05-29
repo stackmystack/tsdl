@@ -35,15 +35,15 @@ pub struct Options<'a> {
 
 fn compute_column_widths(
     item_widths: &[usize],
+    cols: usize,
     layout: Layout,
     rows: usize,
-    cols: usize,
 ) -> Vec<usize> {
     let mut widths = vec![0; cols];
 
     for (x, column_width) in widths.iter_mut().enumerate() {
         for y in 0..rows {
-            let item_index = linear_index(layout, rows, cols, x, y);
+            let item_index = linear_index(cols, layout, rows, x, y);
             if let Some(width) = item_widths.get(item_index) {
                 *column_width = (*column_width).max(*width);
             }
@@ -138,7 +138,7 @@ fn format_table<S: AsRef<str>>(
 
     for y in 0..rows {
         for x in 0..cols {
-            let item_index = linear_index(options.layout, rows, cols, x, y);
+            let item_index = linear_index(cols, options.layout, rows, x, y);
             if item_index >= items.len() {
                 break;
             }
@@ -181,7 +181,7 @@ const fn is_last_cell_in_row(
     }
 }
 
-const fn linear_index(layout: Layout, rows: usize, cols: usize, x: usize, y: usize) -> usize {
+const fn linear_index(cols: usize, layout: Layout, rows: usize, x: usize, y: usize) -> usize {
     match layout {
         Layout::Column => x * rows + y,
         Layout::Row => y * cols + x,
@@ -212,7 +212,7 @@ fn shrink_columns(
             .max(1)
             .min(item_widths.len());
 
-        let candidate_widths = compute_column_widths(item_widths, options.layout, rows, cols);
+        let candidate_widths = compute_column_widths(item_widths, cols, options.layout, rows);
         let total_width = indent_width
             + candidate_widths.iter().sum::<usize>()
             + options.padding.saturating_mul(cols);
@@ -227,7 +227,7 @@ fn shrink_columns(
     DenseLayout {
         rows,
         cols,
-        widths: compute_column_widths(item_widths, options.layout, rows, cols),
+        widths: compute_column_widths(item_widths, cols, options.layout, rows),
     }
 }
 
