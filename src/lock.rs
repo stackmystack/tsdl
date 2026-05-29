@@ -19,6 +19,81 @@ use crate::{
     absolute_normalize, build::BuildDir, consts, format_duration, Error, Result, ResultExt,
 };
 
+// ============================================================
+// Enums
+// ============================================================
+
+/// Last observed state while waiting for a lock takeover to complete.
+#[derive(Debug, Clone)]
+pub enum Observation {
+    /// The lock is still held by an identifiable owner.
+    LockedBy(Box<Owner>),
+    /// The lock is still held, but owner metadata could not be resolved.
+    Unknown { pid: Option<Pid>, reason: String },
+}
+
+/// Result of checking lock status.
+#[derive(Debug)]
+pub enum Status {
+    /// Lock acquired successfully.
+    Acquired(Guard),
+    /// Acquired lock is cyclic (same process).
+    Cyclic,
+    /// Lock is held by a different process.
+    LockedBy(Owner),
+    /// Lock is held, but the owner could not be identified.
+    Unknown { pid: Option<Pid>, reason: String },
+}
+
+/// Error returned while terminating a lock owner or waiting for its lock to release.
+#[derive(Debug)]
+pub enum TakeoverError {
+    /// The previously observed owner exited before it could be signalled.
+    OwnerDisappeared { previous: Box<Owner> },
+    /// The lock owner changed while takeover was in progress.
+    OwnerChanged {
+        previous: Box<Owner>,
+        current: Box<Owner>,
+    },
+    /// Lock status became cyclic while waiting.
+    Cyclic,
+    /// The lock remained held by an unidentifiable owner.
+    Unknown { pid: Option<Pid>, reason: String },
+    /// Sending SIGTERM to the owner failed.
+    SignalFailed { owner: Box<Owner> },
+    /// SIGTERM is unavailable on this platform.
+    SignalUnsupported { owner: Box<Owner> },
+    /// The timeout elapsed before the lock could be acquired.
+    Timeout {
+        previous: Box<Owner>,
+        timeout: Duration,
+        last_observation: Box<Observation>,
+    },
+    /// An underlying tsdl error occurred while taking over the lock.
+    Source(Error),
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+/// A guard that holds an exclusive OS lock on the build directory lock file.
+///
+/// The lock is released when this guard is dropped. The lock file itself is
+/// intentionally left on disk because OS locks are tied to open file handles,
+/// not to path existence.
+#[derive(Debug)]
+pub struct Guard {
+    file: File,
+    lock_path: PathBuf,
+}
+
+/// Manages lock configuration and acquisition.
+pub struct Lock {
+    current_pid: Pid,
+    lock_path: PathBuf,
+}
+
 /// Information about the process currently holding the build lock.
 #[derive(Debug, Clone)]
 pub struct Owner {
@@ -30,6 +105,55 @@ pub struct Owner {
     pub status: String,
     pub run_time: u64,
     pub start_time: u64,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+fn command_line(cmd: &[std::ffi::OsString]) -> Option<String> {
+    if cmd.is_empty() {
+        return None;
+    }
+
+    Some(
+        cmd.iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn is_lock_contention(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock
+}
+
+fn same_owner(current: &Owner, previous: &Owner) -> bool {
+    current.pid == previous.pid && current.start_time == previous.start_time
+}
+
+// ============================================================
+// Impls
+// ============================================================
+
+impl fmt::Display for Observation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LockedBy(owner) => {
+                write!(f, "lock is held by PID {} ({})", owner.pid, owner.name)
+            }
+            Self::Unknown { pid, reason } => {
+                if let Some(pid) = pid {
+                    write!(
+                        f,
+                        "lock is held by PID {pid}, but owner is unknown: {reason}"
+                    )
+                } else {
+                    write!(f, "lock is held by an unknown owner: {reason}")
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Display for Owner {
@@ -61,87 +185,6 @@ impl fmt::Display for Owner {
             format_duration(Duration::from_secs(self.run_time))
         )?;
         write!(f, "  status:   {}", self.status)
-    }
-}
-
-/// Result of checking lock status.
-#[derive(Debug)]
-pub enum Status {
-    /// Lock acquired successfully.
-    Acquired(Guard),
-    /// Acquired lock is cyclic (same process).
-    Cyclic,
-    /// Lock is held by a different process.
-    LockedBy(Owner),
-    /// Lock is held, but the owner could not be identified.
-    Unknown { pid: Option<Pid>, reason: String },
-}
-
-/// Last observed state while waiting for a lock takeover to complete.
-#[derive(Debug, Clone)]
-pub enum Observation {
-    /// The lock is still held by an identifiable owner.
-    LockedBy(Box<Owner>),
-    /// The lock is still held, but owner metadata could not be resolved.
-    Unknown { pid: Option<Pid>, reason: String },
-}
-
-impl fmt::Display for Observation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::LockedBy(owner) => {
-                write!(f, "lock is held by PID {} ({})", owner.pid, owner.name)
-            }
-            Self::Unknown { pid, reason } => {
-                if let Some(pid) = pid {
-                    write!(
-                        f,
-                        "lock is held by PID {pid}, but owner is unknown: {reason}"
-                    )
-                } else {
-                    write!(f, "lock is held by an unknown owner: {reason}")
-                }
-            }
-        }
-    }
-}
-
-/// Error returned while terminating a lock owner or waiting for its lock to release.
-#[derive(Debug)]
-pub enum TakeoverError {
-    /// The previously observed owner exited before it could be signalled.
-    OwnerDisappeared { previous: Box<Owner> },
-    /// The lock owner changed while takeover was in progress.
-    OwnerChanged {
-        previous: Box<Owner>,
-        current: Box<Owner>,
-    },
-    /// Lock status became cyclic while waiting.
-    Cyclic,
-    /// The lock remained held by an unidentifiable owner.
-    Unknown { pid: Option<Pid>, reason: String },
-    /// Sending SIGTERM to the owner failed.
-    SignalFailed { owner: Box<Owner> },
-    /// SIGTERM is unavailable on this platform.
-    SignalUnsupported { owner: Box<Owner> },
-    /// The timeout elapsed before the lock could be acquired.
-    Timeout {
-        previous: Box<Owner>,
-        timeout: Duration,
-        last_observation: Box<Observation>,
-    },
-    /// An underlying tsdl error occurred while taking over the lock.
-    Source(Error),
-}
-
-impl TakeoverError {
-    /// Whether the caller should re-check lock status and retry the outer takeover loop.
-    #[must_use]
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::OwnerDisappeared { .. } | Self::OwnerChanged { .. }
-        )
     }
 }
 
@@ -191,7 +234,11 @@ impl fmt::Display for TakeoverError {
     }
 }
 
-impl std::error::Error for TakeoverError {}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
 
 impl From<Error> for TakeoverError {
     fn from(err: Error) -> Self {
@@ -204,23 +251,6 @@ impl From<TakeoverError> for Error {
         Error::Message {
             message: err.to_string(),
         }
-    }
-}
-
-/// A guard that holds an exclusive OS lock on the build directory lock file.
-///
-/// The lock is released when this guard is dropped. The lock file itself is
-/// intentionally left on disk because OS locks are tied to open file handles,
-/// not to path existence.
-#[derive(Debug)]
-pub struct Guard {
-    file: File,
-    lock_path: PathBuf,
-}
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
     }
 }
 
@@ -285,12 +315,6 @@ impl Guard {
         info!("Cleaned {}", build_dir.display());
         Ok(())
     }
-}
-
-/// Manages lock configuration and acquisition.
-pub struct Lock {
-    current_pid: Pid,
-    lock_path: PathBuf,
 }
 
 impl Lock {
@@ -529,26 +553,20 @@ impl Lock {
     }
 }
 
-fn command_line(cmd: &[std::ffi::OsString]) -> Option<String> {
-    if cmd.is_empty() {
-        return None;
+impl std::error::Error for TakeoverError {}
+
+impl TakeoverError {
+    /// Whether the caller should re-check lock status and retry the outer takeover loop.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::OwnerDisappeared { .. } | Self::OwnerChanged { .. }
+        )
     }
-
-    Some(
-        cmd.iter()
-            .map(|arg| arg.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
 }
 
-fn same_owner(current: &Owner, previous: &Owner) -> bool {
-    current.pid == previous.pid && current.start_time == previous.start_time
-}
-
-fn is_lock_contention(err: &io::Error) -> bool {
-    err.kind() == io::ErrorKind::WouldBlock
-}
+// ── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
