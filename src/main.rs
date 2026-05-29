@@ -2,7 +2,7 @@ use std::{process::ExitCode, time::Instant};
 
 use console::style;
 use tracing::{error, info};
-use tsdl::{app, error::Error, Result};
+use tsdl::{Error, Result, app};
 
 fn main() -> ExitCode {
     set_panic_hook();
@@ -49,7 +49,7 @@ pub fn set_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
         #[cfg(not(debug_assertions))]
         {
-            use human_panic::{handle_dump, print_msg, Metadata};
+            use human_panic::{Metadata, handle_dump, print_msg};
             let meta = Metadata::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
                 .authors(env!("CARGO_PKG_AUTHORS").replace(':', ", "))
                 .homepage(env!("CARGO_PKG_HOMEPAGE"));

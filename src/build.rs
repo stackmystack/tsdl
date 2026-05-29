@@ -16,8 +16,8 @@ use tracing::info;
 use url::Url;
 
 use crate::{
-    absolute_normalize, actors, app, args, cache, consts, format_duration, lock, parser,
-    prompt_user, shutdown, Error, Result, ResultExt, SafeCanonicalize,
+    Error, Result, ResultExt, SafeCanonicalize, absolute_normalize, actors, app, args, cache,
+    consts, format_duration, lock, parser, prompt_user, shutdown,
 };
 
 // ============================================================
@@ -93,9 +93,13 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Gua
 
             lock::Status::Unknown { pid, reason } => {
                 if let Some(pid) = pid {
-                    info!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}");
+                    info!(
+                        "Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}"
+                    );
                 } else {
-                    info!("Build directory is locked, but tsdl could not identify the owner: {reason}");
+                    info!(
+                        "Build directory is locked, but tsdl could not identify the owner: {reason}"
+                    );
                 }
                 return Err(Error::Message {
                     message: format!("Could not identify build lock owner: {reason}"),

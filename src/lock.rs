@@ -18,7 +18,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, Update
 use tracing::info;
 
 use crate::{
-    absolute_normalize, build::BuildDir, consts, format_duration, Error, Result, ResultExt,
+    Error, Result, ResultExt, absolute_normalize, build::BuildDir, consts, format_duration,
 };
 
 // ============================================================
@@ -284,10 +284,10 @@ impl Guard {
 
         for protected in protected_files {
             let protected_abs = absolute_normalize(protected)?;
-            if protected_abs.parent() == Some(build_dir_abs.as_path()) {
-                if let Some(name) = protected_abs.file_name() {
-                    protected_names.insert(name.to_os_string());
-                }
+            if protected_abs.parent() == Some(build_dir_abs.as_path())
+                && let Some(name) = protected_abs.file_name()
+            {
+                protected_names.insert(name.to_os_string());
             }
         }
 

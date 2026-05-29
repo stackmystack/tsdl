@@ -49,6 +49,10 @@ informative and more coherent.
   tsdl build --target native  # cache misses
   ```
 
+### Maintenance
+
+- Bumped to rust 2024
+
 ## [2.0.0] - 2026-02-20
 
 This is a major rewrite, moving to a single-threaded async runtime, with actors.

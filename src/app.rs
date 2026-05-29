@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use clap::ArgMatches;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
-use crate::{args, config, display, logging, Result, ResultExt};
+use crate::{Result, ResultExt, args, config, display, logging};
 
 // ============================================================
 // Enums

@@ -9,11 +9,11 @@ use std::{
     result::Result as StdResult,
 };
 
-use clap::{parser::ValueSource, ArgMatches, Args, CommandFactory, FromArgMatches};
+use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, parser::ValueSource};
 use serde::Serialize;
 use tracing::debug;
 
-use crate::{args, columns, Result, ResultExt};
+use crate::{Result, ResultExt, args, columns};
 
 // ============================================================
 // Constants
@@ -356,11 +356,7 @@ fn merge_provenance(file: &BuildProvenance, cli: &BuildProvenance) -> BuildProve
 
 /// Pick the CLI source if set, otherwise fall back to file source.
 fn merge_source(file: Source, cli: Source) -> Source {
-    if cli == Source::default() {
-        file
-    } else {
-        cli
-    }
+    if cli == Source::default() { file } else { cli }
 }
 
 /// Convert CLI `BuildArgs` into `OptionalBuildCommand` + `BuildProvenance`.
@@ -395,18 +391,18 @@ fn overrides_from_build_args(
         &mut p.fresh,
     );
 
-    if !cli.languages.is_empty() {
-        if let Some(source) = source_for(matches, ARG_LANGUAGES) {
-            o.languages = Some(cli.languages);
-            p.languages = source;
-        }
+    if !cli.languages.is_empty()
+        && let Some(source) = source_for(matches, ARG_LANGUAGES)
+    {
+        o.languages = Some(cli.languages);
+        p.languages = source;
     }
 
-    if let Some(n) = cli.jobs.and_then(NonZeroUsize::new) {
-        if let Some(source) = source_for(matches, ARG_JOBS) {
-            o.jobs = Some(n);
-            p.jobs = source;
-        }
+    if let Some(n) = cli.jobs.and_then(NonZeroUsize::new)
+        && let Some(source) = source_for(matches, ARG_JOBS)
+    {
+        o.jobs = Some(n);
+        p.jobs = source;
     }
 
     set_simple(
@@ -545,11 +541,11 @@ fn resolve_bool(
         return;
     }
 
-    if let Some(source) = source_for(matches, pos_id) {
-        if let Some(val) = positive {
-            *field = Some(val);
-            *provenance = source;
-        }
+    if let Some(source) = source_for(matches, pos_id)
+        && let Some(val) = positive
+    {
+        *field = Some(val);
+        *provenance = source;
     }
 }
 
@@ -570,11 +566,11 @@ fn set_simple<T>(
     field: &mut Option<T>,
     provenance: &mut Source,
 ) {
-    if let Some(source) = source_for(matches, id) {
-        if let Some(val) = value {
-            *field = Some(val);
-            *provenance = source;
-        }
+    if let Some(source) = source_for(matches, id)
+        && let Some(val) = value
+    {
+        *field = Some(val);
+        *provenance = source;
     }
 }
 

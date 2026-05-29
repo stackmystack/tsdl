@@ -7,8 +7,9 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 use crate::{
+    Result,
     actors::{Addr, Response},
-    build, cache, parser, Result,
+    build, cache, parser,
 };
 
 // ============================================================

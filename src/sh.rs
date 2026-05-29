@@ -7,8 +7,8 @@ use tokio::{process::Command, time};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    shutdown::{self, PgId},
     Error, Result, ResultExt,
+    shutdown::{self, PgId},
 };
 
 // ============================================================
