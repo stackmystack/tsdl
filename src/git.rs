@@ -442,18 +442,22 @@ impl fmt::Display for RefError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyRef => write!(f, "git ref cannot be empty"),
-            Self::InvalidRefCharacter { index, character } => write!(
-                f,
-                "git ref contains invalid character at byte {index}: {character:?}"
-            ),
+            Self::InvalidRefCharacter { index, character } => {
+                write!(
+                    f,
+                    "git ref contains invalid character at byte {index}: {character:?}"
+                )
+            }
             Self::InvalidRefSyntax { reason } => write!(f, "git ref is invalid: {reason}"),
             Self::InvalidShaLength { actual } => {
                 write!(f, "git SHA must be exactly 40 hex characters, got {actual}")
             }
-            Self::InvalidShaHex { index, character } => write!(
-                f,
-                "git SHA contains non-hex character at byte {index}: {character:?}"
-            ),
+            Self::InvalidShaHex { index, character } => {
+                write!(
+                    f,
+                    "git SHA contains non-hex character at byte {index}: {character:?}"
+                )
+            }
         }
     }
 }
@@ -636,7 +640,7 @@ mod tests {
             Ref::new("feature branch"),
             Err(RefError::InvalidRefCharacter {
                 index: 7,
-                character: ' ',
+                character: ' '
             })
         );
     }
@@ -646,7 +650,7 @@ mod tests {
         assert_eq!(
             Ref::new("feature..branch"),
             Err(RefError::InvalidRefSyntax {
-                reason: "refs cannot contain ..",
+                reason: "refs cannot contain .."
             })
         );
         assert_eq!(
@@ -688,7 +692,7 @@ mod tests {
             Sha::new("636801770eea172d140e64b691815ff11f6b556x"),
             Err(RefError::InvalidShaHex {
                 index: 39,
-                character: 'x',
+                character: 'x'
             })
         );
     }

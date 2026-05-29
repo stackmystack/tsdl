@@ -214,15 +214,19 @@ impl fmt::Display for TakeoverError {
                     write!(f, "Could not identify build lock owner: {reason}")
                 }
             }
-            Self::SignalFailed { owner } => write!(
-                f,
-                "Failed to send SIGTERM to lock owner PID {} ({})",
-                owner.pid, owner.name
-            ),
-            Self::SignalUnsupported { .. } => write!(
-                f,
-                "SIGTERM is not supported on this platform; cannot terminate lock owner"
-            ),
+            Self::SignalFailed { owner } => {
+                write!(
+                    f,
+                    "Failed to send SIGTERM to lock owner PID {} ({})",
+                    owner.pid, owner.name
+                )
+            }
+            Self::SignalUnsupported { .. } => {
+                write!(
+                    f,
+                    "SIGTERM is not supported on this platform; cannot terminate lock owner"
+                )
+            }
             Self::Timeout {
                 previous,
                 timeout,
