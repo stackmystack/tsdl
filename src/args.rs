@@ -82,10 +82,18 @@ pub enum Command {
         command: ConfigCommand,
     },
 
-    /// Update tsdl to its latest version.
+    /// Update tsdl to the latest compatible version.
     #[serde(skip_serializing, skip_deserializing)]
     #[command(visible_alias = "u")]
-    Selfupdate,
+    Selfupdate {
+        /// Skip the downgrade confirmation prompt.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+
+        /// Version selector: "patch", "minor", "major", or a semver like "2.5.0".
+        #[arg(default_value = "minor")]
+        target: String,
+    },
 }
 
 impl Command {
@@ -138,6 +146,27 @@ impl Target {
     #[must_use]
     pub fn wasm(&self) -> bool {
         matches!(self, Self::All | Self::Wasm)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum VersionBump {
+    /// Update to the latest version, including breaking changes.
+    Major,
+    /// Update to the latest minor or patch version (same MAJOR).
+    #[default]
+    Minor,
+    /// Update to the latest patch version (same MAJOR.MINOR).
+    Patch,
+}
+
+impl fmt::Display for VersionBump {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Major => write!(f, "major"),
+            Self::Minor => write!(f, "minor"),
+            Self::Patch => write!(f, "patch"),
+        }
     }
 }
 

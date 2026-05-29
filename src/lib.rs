@@ -75,6 +75,7 @@ pub mod logging;
 pub mod parser;
 #[macro_use]
 pub mod sh;
+pub mod selfupdate;
 pub mod tree_sitter;
 pub mod walk;
 
