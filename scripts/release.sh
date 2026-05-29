@@ -1,31 +1,71 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-set -ex
-
-version=${1:-"$(git cliff --bumped-version)"}
+version=${1:?"Usage: $0 vX.Y.Z"}
+date=$(date +%Y-%m-%d)
+version_bare=${version#v}
 
 echo "Preparing $version..."
-# lint and test first
+
+# Lint and test first.
 just lint
 just test
-# update the version
+
+# Update Cargo.toml version.
 msg="# managed by release.sh"
-sed -E "s/^version = .*[[:space:]]+$msg$/version = \"${version#v}\" $msg/" Cargo.toml > Cargo.toml.tmp
+sed -E "s/^version = .*[[:space:]]+$msg$/version = \"${version_bare}\" $msg/" \
+    Cargo.toml > Cargo.toml.tmp
 mv Cargo.toml.tmp Cargo.toml
-# update the changelog
-git cliff --unreleased --tag "$version" --prepend CHANGELOG.md
-git add -A && git commit -m "chore(release): $version"
+
+# Move [Unreleased] content under a new version heading in CHANGELOG.md.
+# If [Unreleased] is empty, no section is created.
+awk -v ver="$version_bare" -v date="$date" '
+/^## \[Unreleased\]/ {
+    header = $0
+    in_unreleased = 1
+    next
+}
+in_unreleased && /^## \[/ {
+    print header
+    print ""
+    if (content != "") {
+        printf "## [%s] - %s\n\n", ver, date
+        printf "%s", content
+    }
+    in_unreleased = 0
+    print
+    next
+}
+in_unreleased {
+    if (!started && $0 ~ /^[[:space:]]*$/) next
+    started = 1
+    content = content $0 "\n"
+    next
+}
+{ print }
+END {
+    if (in_unreleased) {
+        print header
+        print ""
+        if (content != "") {
+            printf "## [%s] - %s\n\n", ver, date
+            printf "%s", content
+        }
+    }
+}
+' CHANGELOG.md > CHANGELOG.md.tmp
+mv CHANGELOG.md.tmp CHANGELOG.md
+
+# Commit.
+git add -A
+git commit -m "chore(release): $version"
+
+# Extract the new section for the tag message.
+tag_body=$(scripts/changelog.sh "$version_bare")
+
+git tag -a "$version" -m "Release $version" -m "$tag_body"
+
 git show
-# generate a changelog for the tag message
-export GIT_CLIFF_TEMPLATE="\
-	{% for group, commits in commits | group_by(attribute=\"group\") %}
-	{{ group | upper_first }}\
-	{% for commit in commits %}
-		- {% if commit.breaking %}(breaking) {% endif %}{{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end=\"\") }})\
-	{% endfor %}
-	{% endfor %}"
-changelog=$(git cliff --unreleased --strip all)
-# create a tag
-git tag -a "$version" -m "Release $version" -m "$changelog"
+
 echo "Done!"
-echo "Now push the commit (git push origin master) and the tag (git push origin refs/tags/$version)."
+echo "Now push the commit and tag."

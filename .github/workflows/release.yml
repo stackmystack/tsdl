@@ -39,11 +39,8 @@ jobs:
           rm -rf artifacts
           ls -l target/
 
-      - name: Install git-cliff
-        uses: taiki-e/install-action@git-cliff
-
       - name: Generate changelog
-        run: git-cliff -vv --latest --strip header --output CHANGES.md
+        run: scripts/changelog.sh "${GITHUB_REF_NAME#v}" > CHANGES.md
 
       - name: Create release
         uses: softprops/action-gh-release@v2
