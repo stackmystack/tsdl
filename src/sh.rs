@@ -9,6 +9,10 @@ use crate::{
     Error, Result, ResultExt,
 };
 
+// ============================================================
+// Traits
+// ============================================================
+
 pub trait Exec {
     fn display(&self) -> Result<String>;
     fn display_full(&self) -> Result<String>;
@@ -18,6 +22,10 @@ pub trait Exec {
 pub trait Script {
     fn from_str(script: &str) -> Command;
 }
+
+// ============================================================
+// Free functions
+// ============================================================
 
 fn signal_display(number: i32) -> Option<String> {
     let ptr = unsafe { libc::strsignal(number) };
@@ -31,6 +39,10 @@ fn signal_display(number: i32) -> Option<String> {
         )
     }
 }
+
+// ============================================================
+// Impls
+// ============================================================
 
 impl Exec for Command {
     fn display(&self) -> Result<String> {
