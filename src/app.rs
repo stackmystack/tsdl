@@ -5,11 +5,9 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 
 use crate::{args, config, display, logging, Result, ResultExt};
 
-/// Resolved build state for commands that actually need build configuration.
-pub struct ResolvedBuild {
-    pub command: args::BuildCommand,
-    pub provenance: config::BuildProvenance,
-}
+// ============================================================
+// Enums
+// ============================================================
 
 /// The selected command after resolving only the configuration it needs.
 pub enum ResolvedCommand {
@@ -19,18 +17,9 @@ pub enum ResolvedCommand {
     Selfupdate { force: bool, target: String },
 }
 
-impl ResolvedCommand {
-    fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
-        let implicit = match self {
-            Self::Build(build) => logging::Implicit::BuildDir {
-                dir: &build.command.build_dir,
-            },
-            _ => logging::Implicit::None
-        };
-
-        logging::Policy { explicit, implicit }
-    }
-}
+// ============================================================
+// Structs
+// ============================================================
 
 /// Resolved application state, ready to run.
 pub struct App {
@@ -39,6 +28,50 @@ pub struct App {
     pub logging: logging::Session,
     pub progress_mode: display::Mode,
     pub verbose: Verbosity<InfoLevel>,
+}
+
+/// Resolved build state for commands that actually need build configuration.
+pub struct ResolvedBuild {
+    pub command: args::BuildCommand,
+    pub provenance: config::BuildProvenance,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+fn resolve_build(
+    config_path: &Path,
+    matches: Option<&ArgMatches>,
+    purpose: &str,
+) -> Result<ResolvedBuild> {
+    let (command, provenance) = config::current_with_provenance(config_path, matches)
+        .with_context(|| format!("Resolving build configuration for {purpose}"))?;
+
+    Ok(ResolvedBuild {
+        command,
+        provenance,
+    })
+}
+
+ fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
+     match &args.command {
+         args::Command::Build => {
+             resolve_build(&args.config, args::build_matches(matches), "`build`")
+                 .map(ResolvedCommand::Build)
+         }
+
+         args::Command::Config {
+             command: args::ConfigCommand::Current,
+         } => resolve_build(&args.config, None, "`config current`")
+             .map(ResolvedCommand::ConfigCurrent),
+
+         args::Command::Config {
+             command: args::ConfigCommand::Default,
+         } => Ok(ResolvedCommand::ConfigDefault),
+
+         args::Command::Selfupdate { force, target } => Ok(ResolvedCommand::Selfupdate { force: *force, target: target.clone() }),
+    }
 }
 
 pub fn setup() -> Result<App> {
@@ -61,39 +94,23 @@ pub fn setup() -> Result<App> {
     })
 }
 
-fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
-    match &args.command {
-        args::Command::Build => {
-            resolve_build(&args.config, args::build_matches(matches), "`build`")
-                .map(ResolvedCommand::Build)
-        }
+// ============================================================
+// Impls
+// ============================================================
 
-        args::Command::Config {
-            command: args::ConfigCommand::Current,
-        } => resolve_build(&args.config, None, "`config current`")
-            .map(ResolvedCommand::ConfigCurrent),
 
-        args::Command::Config {
-            command: args::ConfigCommand::Default,
-        } => Ok(ResolvedCommand::ConfigDefault),
+ impl ResolvedCommand {
+     fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
+         let implicit = match self {
+             Self::Build(build) => logging::Implicit::BuildDir {
+                 dir: &build.command.build_dir,
+             },
+             _ => logging::Implicit::None
+         };
 
-        args::Command::Selfupdate { force, target } => Ok(ResolvedCommand::Selfupdate { force: *force, target: target.clone() }),
-    }
-}
-
-fn resolve_build(
-    config_path: &Path,
-    matches: Option<&ArgMatches>,
-    purpose: &str,
-) -> Result<ResolvedBuild> {
-    let (command, provenance) = config::current_with_provenance(config_path, matches)
-        .with_context(|| format!("Resolving build configuration for {purpose}"))?;
-
-    Ok(ResolvedBuild {
-        command,
-        provenance,
-    })
-}
+         logging::Policy { explicit, implicit }
+     }
+ }
 
 #[cfg(test)]
 mod tests {
