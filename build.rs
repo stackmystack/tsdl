@@ -6,23 +6,23 @@ use std::{env, fs};
 
 /// Maps targets to Tree Sitter platform strings.
 const TARGETS: &[(&str, &str)] = &[
-    ("linux-arm", "arm-unknown-linux-gnueabi"),
-    ("linux-arm64", "aarch64-unknown-linux-gnu"),
-    ("linux-x64", "x86_64-unknown-linux-gnu"),
-    ("linux-x86", "i686-unknown-linux-gnu"),
-    ("macos-arm64", "aarch64-apple-darwin"),
-    ("macos-x64", "x86_64-apple-darwin"),
+  ("linux-arm", "arm-unknown-linux-gnueabi"),
+  ("linux-arm64", "aarch64-unknown-linux-gnu"),
+  ("linux-x64", "x86_64-unknown-linux-gnu"),
+  ("linux-x86", "i686-unknown-linux-gnu"),
+  ("macos-arm64", "aarch64-apple-darwin"),
+  ("macos-x64", "x86_64-apple-darwin"),
 ];
 
 const fn platform_for_target(target: &str) -> &str {
-    let mut i = 0;
-    while i < TARGETS.len() {
-        if const_str::equal!(TARGETS[i].1, target) {
-            return TARGETS[i].0;
-        }
-        i += 1;
+  let mut i = 0;
+  while i < TARGETS.len() {
+    if const_str::equal!(TARGETS[i].1, target) {
+      return TARGETS[i].0;
     }
-    target
+    i += 1;
+  }
+  target
 }
 
 /// Generates a Rust file with `pub const` definitions.
@@ -69,91 +69,91 @@ macro_rules! generate_consts {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=Cargo.toml");
+  println!("cargo:rerun-if-changed=build.rs");
+  println!("cargo:rerun-if-changed=Cargo.toml");
 
-    let out_dir = env::var_os("OUT_DIR").unwrap();
-    let build_target = env::var("TARGET").unwrap();
+  let out_dir = env::var_os("OUT_DIR").unwrap();
+  let build_target = env::var("TARGET").unwrap();
 
-    // 1. Get Metadata
-    let metadata = MetadataCommand::new().exec().unwrap();
-    let meta = metadata
-        .root_package()
-        .unwrap()
-        .metadata
-        .as_object()
-        .unwrap();
-
-    // 2. Prep dynamic values
-    let tsdl_bin_build_dir = PathBuf::from(file!())
-        .parent()
-        .unwrap()
-        .join("src")
-        .canonicalize()
-        .unwrap()
-        .join(""); // Ensure trailing slash logic if needed, or handle in string
-
-    // Note: User original code added a trailing slash via format string,
-    // we convert to string here for the macro.
-    let tsdl_bin_str = format!("{}/", tsdl_bin_build_dir.to_str().unwrap());
-
-    let ts_platform = platform_for_target(&build_target);
-
-    // 3. Generate TSDL Consts
-    let tsdl = meta.get("tsdl").expect("missing [metadata.tsdl]");
-    generate_consts!(
-        Path::new(&out_dir).join("tsdl_consts.rs"),
-        BIN_BUILD_DIR : str  = expr(tsdl_bin_str),
-        BUILD_DIR     : str  = json(tsdl, "build-dir"),
-        CACHE_FILE    : str  = json(tsdl, "cache-file"),
-        CONFIG_FILE   : str  = json(tsdl, "config-file"),
-        FORCE         : bool = json(tsdl, "force"),
-        FRESH         : bool = json(tsdl, "fresh"),
-        FROM          : str  = json(tsdl, "from"),
-        LOCK_FILE     : str  = json(tsdl, "lock-file"),
-        LOG_FILE      : str  = json(tsdl, "log-file"),
-        PARSER_OUT_DIR : str  = json(tsdl, "out-dir"),
-        UNLOCK_TIMEOUT: u64  = json(tsdl, "unlock-timeout"),
-        PREFIX        : str  = json(tsdl, "prefix"),
-        REF           : str  = json(tsdl, "ref"),
-        SHOW_CONFIG   : bool = json(tsdl, "show-config"),
-    );
-
-    // 4. Generate Tree Sitter Consts
-    let tree_sitter = meta
-        .get("tree-sitter")
-        .expect("missing [metadata.tree-sitter]");
-    generate_consts!(
-        Path::new(&out_dir).join("tree_sitter_consts.rs"),
-        PLATFORM : str = expr(ts_platform),
-        REPO     : str = json(tree_sitter, "repo"),
-        VERSION  : str = json(tree_sitter, "version"),
-    );
-
-    // 5. Generate Version/SHA
-    let sha1 = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| format!(" ({})", s.trim()))
-        .unwrap_or_default();
-
-    fs::write(
-        Path::new(&out_dir).join("tsdl.version"),
-        format!("{}{}", env!("CARGO_PKG_VERSION"), sha1),
-    )
+  // 1. Get Metadata
+  let metadata = MetadataCommand::new().exec().unwrap();
+  let meta = metadata
+    .root_package()
+    .unwrap()
+    .metadata
+    .as_object()
     .unwrap();
 
-    // 6. FIXME: Control tests on CI (for some reason, wasm is not passing)
-    let is_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
-    let is_linux = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
-    let in_github = std::env::var("GITHUB_ACTIONS").is_ok();
+  // 2. Prep dynamic values
+  let tsdl_bin_build_dir = PathBuf::from(file!())
+    .parent()
+    .unwrap()
+    .join("src")
+    .canonicalize()
+    .unwrap()
+    .join(""); // Ensure trailing slash logic if needed, or handle in string
 
-    if is_macos || (is_linux && !in_github) {
-        println!("cargo:rustc-cfg=enable_wasm_cases");
-    }
+  // Note: User original code added a trailing slash via format string,
+  // we convert to string here for the macro.
+  let tsdl_bin_str = format!("{}/", tsdl_bin_build_dir.to_str().unwrap());
 
-    // Register the cfg so check-cfg is happy
-    println!("cargo:rustc-check-cfg=cfg(enable_wasm_cases)");
+  let ts_platform = platform_for_target(&build_target);
+
+  // 3. Generate TSDL Consts
+  let tsdl = meta.get("tsdl").expect("missing [metadata.tsdl]");
+  generate_consts!(
+      Path::new(&out_dir).join("tsdl_consts.rs"),
+      BIN_BUILD_DIR : str  = expr(tsdl_bin_str),
+      BUILD_DIR     : str  = json(tsdl, "build-dir"),
+      CACHE_FILE    : str  = json(tsdl, "cache-file"),
+      CONFIG_FILE   : str  = json(tsdl, "config-file"),
+      FORCE         : bool = json(tsdl, "force"),
+      FRESH         : bool = json(tsdl, "fresh"),
+      FROM          : str  = json(tsdl, "from"),
+      LOCK_FILE     : str  = json(tsdl, "lock-file"),
+      LOG_FILE      : str  = json(tsdl, "log-file"),
+      PARSER_OUT_DIR : str  = json(tsdl, "out-dir"),
+      UNLOCK_TIMEOUT: u64  = json(tsdl, "unlock-timeout"),
+      PREFIX        : str  = json(tsdl, "prefix"),
+      REF           : str  = json(tsdl, "ref"),
+      SHOW_CONFIG   : bool = json(tsdl, "show-config"),
+  );
+
+  // 4. Generate Tree Sitter Consts
+  let tree_sitter = meta
+    .get("tree-sitter")
+    .expect("missing [metadata.tree-sitter]");
+  generate_consts!(
+      Path::new(&out_dir).join("tree_sitter_consts.rs"),
+      PLATFORM : str = expr(ts_platform),
+      REPO     : str = json(tree_sitter, "repo"),
+      VERSION  : str = json(tree_sitter, "version"),
+  );
+
+  // 5. Generate Version/SHA
+  let sha1 = Command::new("git")
+    .args(["rev-parse", "HEAD"])
+    .output()
+    .ok()
+    .and_then(|o| String::from_utf8(o.stdout).ok())
+    .map(|s| format!(" ({})", s.trim()))
+    .unwrap_or_default();
+
+  fs::write(
+    Path::new(&out_dir).join("tsdl.version"),
+    format!("{}{}", env!("CARGO_PKG_VERSION"), sha1),
+  )
+  .unwrap();
+
+  // 6. FIXME: Control tests on CI (for some reason, wasm is not passing)
+  let is_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+  let is_linux = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
+  let in_github = std::env::var("GITHUB_ACTIONS").is_ok();
+
+  if is_macos || (is_linux && !in_github) {
+    println!("cargo:rustc-cfg=enable_wasm_cases");
+  }
+
+  // Register the cfg so check-cfg is happy
+  println!("cargo:rustc-check-cfg=cfg(enable_wasm_cases)");
 }

@@ -50,10 +50,10 @@
 //! example configuration.
 
 use std::{
-    env,
-    io::{self, Write},
-    path::{Component, Path, PathBuf},
-    time::Duration,
+  env,
+  io::{self, Write},
+  path::{Component, Path, PathBuf},
+  time::Duration,
 };
 
 extern crate log;
@@ -85,7 +85,7 @@ pub mod walk;
 // ============================================================
 
 pub trait SafeCanonicalize {
-    fn canon(&self) -> Result<PathBuf>;
+  fn canon(&self) -> Result<PathBuf>;
 }
 
 // ============================================================
@@ -95,104 +95,104 @@ pub trait SafeCanonicalize {
 /// Convert a path to an absolute, lexically-normalized path without requiring
 /// the final path to exist.
 pub fn absolute_normalize(path: &Path) -> Result<PathBuf> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        env::current_dir()
-            .context("Failed to get current directory")?
-            .join(path)
-    };
+  let absolute = if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    env::current_dir()
+      .context("Failed to get current directory")?
+      .join(path)
+  };
 
-    Ok(normalize_components(&absolute))
+  Ok(normalize_components(&absolute))
 }
 
 /// Convert a duration to a human-readable string (e.g. "0.50s", "1mn 30s").
 #[must_use]
 pub fn format_duration(duration: Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let millis = duration.subsec_millis();
+  let total_seconds = duration.as_secs();
+  let millis = duration.subsec_millis();
 
-    // Base case: sub-minute gets full precision
-    if total_seconds < 60 {
-        return format!("{total_seconds}.{millis:02}s");
+  // Base case: sub-minute gets full precision
+  if total_seconds < 60 {
+    return format!("{total_seconds}.{millis:02}s");
+  }
+
+  let seconds = total_seconds % 60;
+  let minutes = (total_seconds / 60) % 60;
+  let hours = total_seconds / 3600;
+
+  let mut parts = Vec::new();
+
+  if hours > 0 {
+    parts.push(format!("{hours}h"));
+  }
+
+  if minutes > 0 {
+    parts.push(format!("{minutes}mn"));
+  }
+
+  if seconds > 0 || millis > 0 {
+    if millis > 0 {
+      parts.push(format!("{seconds}.{millis:03}s"));
+    } else {
+      parts.push(format!("{seconds}s"));
     }
+  }
 
-    let seconds = total_seconds % 60;
-    let minutes = (total_seconds / 60) % 60;
-    let hours = total_seconds / 3600;
-
-    let mut parts = Vec::new();
-
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
-    }
-
-    if minutes > 0 {
-        parts.push(format!("{minutes}mn"));
-    }
-
-    if seconds > 0 || millis > 0 {
-        if millis > 0 {
-            parts.push(format!("{seconds}.{millis:03}s"));
-        } else {
-            parts.push(format!("{seconds}s"));
-        }
-    }
-
-    parts.join(" ")
+  parts.join(" ")
 }
 
 /// Resolve `.` and `..` components without requiring the path to exist.
 fn normalize_components(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
+  let mut normalized = PathBuf::new();
 
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
+  for component in path.components() {
+    match component {
+      Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+      Component::RootDir => normalized.push(component.as_os_str()),
+      Component::CurDir => {}
+      Component::ParentDir => {
+        normalized.pop();
+      }
+      Component::Normal(part) => normalized.push(part),
     }
+  }
 
-    normalized
+  normalized
 }
 
 /// Prompt user for confirmation with default behavior
 pub fn prompt_user(question: &str, default_yes: bool) -> Result<bool> {
-    let options = if default_yes { "[Y/n]" } else { "[y/N]" };
+  let options = if default_yes { "[Y/n]" } else { "[y/N]" };
 
-    eprint!("{question} {options}: ");
+  eprint!("{question} {options}: ");
 
-    let _ = io::stderr().flush();
-    let mut input = String::new();
+  let _ = io::stderr().flush();
+  let mut input = String::new();
 
-    io::stdin()
-        .read_line(&mut input)
-        .context("Reading user input")?;
+  io::stdin()
+    .read_line(&mut input)
+    .context("Reading user input")?;
 
-    let input = input.trim().to_lowercase();
+  let input = input.trim().to_lowercase();
 
-    if input.is_empty() {
-        return Ok(default_yes);
-    }
+  if input.is_empty() {
+    return Ok(default_yes);
+  }
 
-    Ok(input == "y")
+  Ok(input == "y")
 }
 
 /// Strip the current working directory prefix from a path when possible.
 pub fn relative_to_cwd(dir: &Path) -> PathBuf {
-    let canon = dir.canon().unwrap_or_else(|_| dir.to_path_buf());
-    let cwd = env::current_dir().unwrap_or_else(|_| dir.to_path_buf());
+  let canon = dir.canon().unwrap_or_else(|_| dir.to_path_buf());
+  let cwd = env::current_dir().unwrap_or_else(|_| dir.to_path_buf());
 
-    if canon != cwd && canon.starts_with(&cwd) {
-        dir.strip_prefix(cwd).map_or(canon, Path::to_path_buf)
-    } else {
-        canon
-    }
+  if canon != cwd && canon.starts_with(&cwd) {
+    dir.strip_prefix(cwd).map_or(canon, Path::to_path_buf)
+  } else {
+    canon
+  }
 }
 
 // ============================================================
@@ -200,18 +200,18 @@ pub fn relative_to_cwd(dir: &Path) -> PathBuf {
 // ============================================================
 
 impl SafeCanonicalize for Path {
-    fn canon(&self) -> Result<PathBuf> {
-        if self.is_absolute() {
-            Ok(self.to_path_buf())
-        } else {
-            let current_dir = env::current_dir().context("Failed to get current directory")?;
-            Ok(current_dir.join(self))
-        }
+  fn canon(&self) -> Result<PathBuf> {
+    if self.is_absolute() {
+      Ok(self.to_path_buf())
+    } else {
+      let current_dir = env::current_dir().context("Failed to get current directory")?;
+      Ok(current_dir.join(self))
     }
+  }
 }
 
 impl SafeCanonicalize for PathBuf {
-    fn canon(&self) -> Result<PathBuf> {
-        self.as_path().canon()
-    }
+  fn canon(&self) -> Result<PathBuf> {
+    self.as_path().canon()
+  }
 }

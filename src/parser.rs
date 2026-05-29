@@ -2,16 +2,16 @@
 //! build, install.
 
 use std::{
-    env::consts::DLL_EXTENSION,
-    fmt,
-    fs::Metadata,
-    io,
-    os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
-    process,
-    result::Result as StdResult,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+  env::consts::DLL_EXTENSION,
+  fmt,
+  fs::Metadata,
+  io,
+  os::unix::fs::MetadataExt,
+  path::{Path, PathBuf},
+  process,
+  result::Result as StdResult,
+  sync::Arc,
+  time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio::{fs, process::Command};
@@ -21,10 +21,10 @@ use crate::args::TreeSitter;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::{
-    Error, Result, ResultExt, actors, build, cache, error, git,
-    sh::{Exec, Script},
-    shutdown,
-    walk::collect_grammar_paths,
+  Error, Result, ResultExt, actors, build, cache, error, git,
+  sh::{Exec, Script},
+  shutdown,
+  walk::collect_grammar_paths,
 };
 
 // ============================================================
@@ -39,18 +39,18 @@ pub const WASM_EXTENSION: &str = "wasm";
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum ArtifactKind {
-    Native,
-    Wasm,
+  Native,
+  Wasm,
 }
 
 /// A parser git ref: either a stable tag/commit or a moving branch whose
 /// checked-out commit gets resolved and pinned at clone time.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum Ref {
-    /// Stable ref (tag or commit SHA): revision is always `Stable`.
-    Stable(git::Ref),
-    /// Moving ref (branch): revision changes on each build.
-    Moving(git::Ref),
+  /// Stable ref (tag or commit SHA): revision is always `Stable`.
+  Stable(git::Ref),
+  /// Moving ref (branch): revision changes on each build.
+  Moving(git::Ref),
 }
 
 // ============================================================
@@ -60,28 +60,28 @@ pub enum Ref {
 /// A grammar ready to be built, combining definition and cache state
 #[derive(Clone, Debug)]
 pub struct GrammarBuild {
-    /// Overwrite and other per-build flags.
-    pub context: build::Context,
-    /// Cache lookup result for this grammar.
-    pub cache_decision: cache::Decision,
-    /// Directory containing the checked-out grammar source.
-    pub dir: PathBuf,
-    /// SHA-1 hash of the grammar.js source.
-    pub hash: cache::GrammarHash,
-    /// Parent language name (for cache keys and error reporting).
-    pub language: LanguageName,
-    /// Grammar name within the parser repo.
-    pub name: GrammarName,
-    /// Build and output directory paths.
-    pub output: build::OutputConfig,
-    /// Handle for updating the progress display.
-    pub progress: actors::ProgressAddr,
-    /// Resolved parser revision (commit SHA for moving refs).
-    pub revision: cache::Revision,
-    /// Full build spec (source, ref, tree-sitter version, etc.).
-    pub spec: Arc<build::Spec>,
-    /// Path to the tree-sitter CLI binary.
-    pub ts_cli: PathBuf,
+  /// Overwrite and other per-build flags.
+  pub context: build::Context,
+  /// Cache lookup result for this grammar.
+  pub cache_decision: cache::Decision,
+  /// Directory containing the checked-out grammar source.
+  pub dir: PathBuf,
+  /// SHA-1 hash of the grammar.js source.
+  pub hash: cache::GrammarHash,
+  /// Parent language name (for cache keys and error reporting).
+  pub language: LanguageName,
+  /// Grammar name within the parser repo.
+  pub name: GrammarName,
+  /// Build and output directory paths.
+  pub output: build::OutputConfig,
+  /// Handle for updating the progress display.
+  pub progress: actors::ProgressAddr,
+  /// Resolved parser revision (commit SHA for moving refs).
+  pub revision: cache::Revision,
+  /// Full build spec (source, ref, tree-sitter version, etc.).
+  pub spec: Arc<build::Spec>,
+  /// Path to the tree-sitter CLI binary.
+  pub ts_cli: PathBuf,
 }
 
 /// A validated grammar name string, used for cache keys and display.
@@ -93,14 +93,14 @@ pub struct GrammarName(Arc<str>);
 /// paths, and a resolved build spec.
 #[derive(Clone, Debug)]
 pub struct LanguageBuild {
-    /// Overwrite and other per-build flags.
-    pub context: build::Context,
-    /// Language name.
-    pub name: LanguageName,
-    /// Build and output directory paths.
-    pub output: build::OutputConfig,
-    /// Full build spec (source, ref, tree-sitter version, etc.).
-    pub spec: Arc<build::Spec>,
+  /// Overwrite and other per-build flags.
+  pub context: build::Context,
+  /// Language name.
+  pub name: LanguageName,
+  /// Build and output directory paths.
+  pub output: build::OutputConfig,
+  /// Full build spec (source, ref, tree-sitter version, etc.).
+  pub spec: Arc<build::Spec>,
 }
 
 /// A validated language name string, used for cache keys, display, and error
@@ -115,177 +115,180 @@ pub struct LanguageName(Arc<str>);
 
 /// Derive an artifact subdirectory name from the tree-sitter CLI filename.
 fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
-    let file_name = ts_cli
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| Error::Message {
-            message: format!(
-                "Could not derive artifact id from tree-sitter CLI path {}",
-                ts_cli.display()
-            ),
-        })?;
-    let id = file_name.strip_prefix("tree-sitter-").unwrap_or(file_name);
-    Ok(format!("tsdl-{}", sanitize_path_component(id)))
+  let file_name = ts_cli
+    .file_name()
+    .and_then(|name| name.to_str())
+    .ok_or_else(|| Error::Message {
+      message: format!(
+        "Could not derive artifact id from tree-sitter CLI path {}",
+        ts_cli.display()
+      ),
+    })?;
+  let id = file_name.strip_prefix("tree-sitter-").unwrap_or(file_name);
+  Ok(format!("tsdl-{}", sanitize_path_component(id)))
 }
 
 /// Compute the path to a built artifact for a grammar.
 fn artifact_path_for(
-    grammar_name: &GrammarName,
-    build_dir: &Path,
-    kind: ArtifactKind,
-    spec: &build::Spec,
-    ts_cli: &Path,
+  grammar_name: &GrammarName,
+  build_dir: &Path,
+  kind: ArtifactKind,
+  spec: &build::Spec,
+  ts_cli: &Path,
 ) -> Result<PathBuf> {
-    Ok(build_dir
-        .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
-        .join(parser_name_and_ext(grammar_name, kind, &spec.prefix)))
+  Ok(
+    build_dir
+      .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
+      .join(parser_name_and_ext(grammar_name, kind, &spec.prefix)),
+  )
 }
 
 /// Create the parent directory for a path if it doesn't exist.
 async fn ensure_parent_dir(path: &Path) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| Error::Message {
-        message: format!(
-            "Could not determine parent directory for {}",
-            path.display()
-        ),
-    })?;
+  let parent = path.parent().ok_or_else(|| Error::Message {
+    message: format!(
+      "Could not determine parent directory for {}",
+      path.display()
+    ),
+  })?;
 
-    fs::create_dir_all(parent)
-        .await
-        .with_context(|| format!("Creating {}", parent.display()))
+  fs::create_dir_all(parent)
+    .await
+    .with_context(|| format!("Creating {}", parent.display()))
 }
 
 /// Get the last path component as a string.
 fn extract_dir_name(dir: &Path) -> Result<String> {
-    dir.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| Error::Message {
-            message: format!("Could not get dir name for {}", dir.display()),
-        })
+  dir
+    .file_name()
+    .map(|n| n.to_string_lossy().to_string())
+    .ok_or_else(|| Error::Message {
+      message: format!("Could not get dir name for {}", dir.display()),
+    })
 }
 
 /// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
 fn extract_grammar_name(dir: &Path) -> Result<GrammarName> {
-    let dir_name = extract_dir_name(dir)?;
-    let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
-    Ok(GrammarName::from(name))
+  let dir_name = extract_dir_name(dir)?;
+  let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
+  Ok(GrammarName::from(name))
 }
 
 /// Check whether a string looks like a dotted-numeric version (e.g. "0.21.0").
 fn is_dotted_numeric_version(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .split('.')
-            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+  !value.is_empty()
+    && value
+      .split('.')
+      .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
 }
 
 /// Determine whether a source ref is "stable" (tag, SHA, version number).
 fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
-    git_ref.is_exact_sha()
-        || is_dotted_numeric_version(input)
-        || is_v_dotted_numeric_version(input)
-        || git_ref.as_str().starts_with("refs/tags/")
+  git_ref.is_exact_sha()
+    || is_dotted_numeric_version(input)
+    || is_v_dotted_numeric_version(input)
+    || git_ref.as_str().starts_with("refs/tags/")
 }
 
 /// Check if a string matches "v" + dotted numeric version.
 fn is_v_dotted_numeric_version(value: &str) -> bool {
-    value
-        .strip_prefix('v')
-        .is_some_and(is_dotted_numeric_version)
+  value
+    .strip_prefix('v')
+    .is_some_and(is_dotted_numeric_version)
 }
 
 /// Normalize a user-provided source ref: adds "v" prefix to bare version numbers.
 fn normalize_source_ref(value: &str) -> String {
-    if git::Sha::is_full_sha(value) || value.starts_with('v') {
-        value.to_string()
-    } else if is_dotted_numeric_version(value) {
-        format!("v{value}")
-    } else {
-        value.to_string()
-    }
+  if git::Sha::is_full_sha(value) || value.starts_with('v') {
+    value.to_string()
+  } else if is_dotted_numeric_version(value) {
+    format!("v{value}")
+  } else {
+    value.to_string()
+  }
 }
 
 /// Build the output filename for a grammar artifact.
 fn parser_name_and_ext(grammar_name: &GrammarName, kind: ArtifactKind, prefix: &str) -> String {
-    format!("{prefix}{grammar_name}.{}", kind.extension())
+  format!("{prefix}{grammar_name}.{}", kind.extension())
 }
 
 /// Check whether two metadata structs refer to the same file (same device + inode).
 fn same_file_identity(a: &Metadata, b: &Metadata) -> bool {
-    a.dev() == b.dev() && a.ino() == b.ino()
+  a.dev() == b.dev() && a.ino() == b.ino()
 }
 
 /// Check if two files have identical contents (via SHA-1 hash).
 async fn same_regular_file_contents(
-    dst: &Path,
-    dst_metadata: &Metadata,
-    src: &Path,
-    src_metadata: &Metadata,
+  dst: &Path,
+  dst_metadata: &Metadata,
+  src: &Path,
+  src_metadata: &Metadata,
 ) -> Result<bool> {
-    if src_metadata.len() != dst_metadata.len() {
-        return Ok(false);
-    }
+  if src_metadata.len() != dst_metadata.len() {
+    return Ok(false);
+  }
 
-    let src_hash = cache::hash_file(src).await?;
-    let dst_hash = cache::hash_file(dst).await?;
-    Ok(src_hash == dst_hash)
+  let src_hash = cache::hash_file(src).await?;
+  let dst_hash = cache::hash_file(dst).await?;
+  Ok(src_hash == dst_hash)
 }
 
 /// Sanitise a string for use as a filesystem path component.
 fn sanitize_path_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
+  let sanitized = value
+    .chars()
+    .map(|ch| {
+      if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+        ch
+      } else {
+        '-'
+      }
+    })
+    .collect::<String>();
 
-    if sanitized.is_empty() {
-        "unknown".to_string()
-    } else {
-        sanitized
-    }
+  if sanitized.is_empty() {
+    "unknown".to_string()
+  } else {
+    sanitized
+  }
 }
 
 /// Create a temporary path next to the destination for atomic install.
 fn temp_install_path(dst: &Path) -> Result<PathBuf> {
-    let file_name = dst.file_name().ok_or_else(|| Error::Message {
-        message: format!(
-            "Could not create temporary install path for {}",
-            dst.display()
-        ),
-    })?;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::Message {
-            message: format!(
-                "System clock is before UNIX epoch while creating temporary install path: {e}"
-            ),
-        })?
-        .as_nanos();
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(".tsdl-{}-{nanos}", process::id()));
+  let file_name = dst.file_name().ok_or_else(|| Error::Message {
+    message: format!(
+      "Could not create temporary install path for {}",
+      dst.display()
+    ),
+  })?;
+  let nanos = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map_err(|e| Error::Message {
+      message: format!(
+        "System clock is before UNIX epoch while creating temporary install path: {e}"
+      ),
+    })?
+    .as_nanos();
+  let mut tmp_name = file_name.to_os_string();
+  tmp_name.push(format!(".tsdl-{}-{nanos}", process::id()));
 
-    Ok(dst.with_file_name(tmp_name))
+  Ok(dst.with_file_name(tmp_name))
 }
 
 /// Check that a path exists and is a regular file.
 async fn verify_artifact(path: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)
-        .await
-        .with_context(|| format!("Reading built artifact {}", path.display()))?;
+  let metadata = fs::metadata(path)
+    .await
+    .with_context(|| format!("Reading built artifact {}", path.display()))?;
 
-    if metadata.is_file() {
-        Ok(())
-    } else {
-        Err(Error::Message {
-            message: format!("Built artifact is not a regular file: {}", path.display()),
-        })
-    }
+  if metadata.is_file() {
+    Ok(())
+  } else {
+    Err(Error::Message {
+      message: format!("Built artifact is not a regular file: {}", path.display()),
+    })
+  }
 }
 
 // ============================================================
@@ -293,1090 +296,1091 @@ async fn verify_artifact(path: &Path) -> Result<()> {
 // ============================================================
 
 impl ArtifactKind {
-    /// Get the file extension for this artifact kind (e.g. "so", "dylib", "wasm").
-    #[must_use]
-    fn extension(self) -> &'static str {
-        match self {
-            Self::Native => DLL_EXTENSION,
-            Self::Wasm => WASM_EXTENSION,
-        }
+  /// Get the file extension for this artifact kind (e.g. "so", "dylib", "wasm").
+  #[must_use]
+  fn extension(self) -> &'static str {
+    match self {
+      Self::Native => DLL_EXTENSION,
+      Self::Wasm => WASM_EXTENSION,
     }
+  }
 
-    /// Check whether this is a wasm target.
-    #[must_use]
-    const fn is_wasm(self) -> bool {
-        matches!(self, Self::Wasm)
-    }
+  /// Check whether this is a wasm target.
+  #[must_use]
+  const fn is_wasm(self) -> bool {
+    matches!(self, Self::Wasm)
+  }
 }
 
 impl<'de> Deserialize<'de> for Ref {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(de::Error::custom)
-    }
+  fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let value = String::deserialize(deserializer)?;
+    Self::parse(&value).map_err(de::Error::custom)
+  }
 }
 
 impl fmt::Display for GrammarName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.0)
+  }
 }
 
 impl fmt::Display for LanguageName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.0)
+  }
 }
 
 impl fmt::Display for Ref {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.requested())
-    }
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.requested())
+  }
 }
 
 impl From<&str> for GrammarName {
-    fn from(value: &str) -> Self {
-        Self(Arc::from(value))
-    }
+  fn from(value: &str) -> Self {
+    Self(Arc::from(value))
+  }
 }
 
 impl From<&str> for LanguageName {
-    fn from(value: &str) -> Self {
-        Self(Arc::from(value))
-    }
+  fn from(value: &str) -> Self {
+    Self(Arc::from(value))
+  }
 }
 
 impl From<Arc<str>> for GrammarName {
-    fn from(value: Arc<str>) -> Self {
-        Self(value)
-    }
+  fn from(value: Arc<str>) -> Self {
+    Self(value)
+  }
 }
 
 impl From<Arc<str>> for LanguageName {
-    fn from(value: Arc<str>) -> Self {
-        Self(value)
-    }
+  fn from(value: Arc<str>) -> Self {
+    Self(value)
+  }
 }
 
 impl From<String> for GrammarName {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
+  fn from(value: String) -> Self {
+    Self(value.into())
+  }
 }
 
 impl From<String> for LanguageName {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
+  fn from(value: String) -> Self {
+    Self(value.into())
+  }
 }
 
 impl GrammarBuild {
-    /// Build this grammar, returning a cache update if it was built.
-    /// Uses the language's progress handle for progress reporting.
-    pub async fn build(&self) -> Result<Option<cache::Update>> {
-        shutdown::test_delay().await;
-        shutdown::check()?;
-        debug!(
-            "[grammar:build] start: lang={} grammar={}",
-            self.language, self.name
-        );
+  /// Build this grammar, returning a cache update if it was built.
+  /// Uses the language's progress handle for progress reporting.
+  pub async fn build(&self) -> Result<Option<cache::Update>> {
+    shutdown::test_delay().await;
+    shutdown::check()?;
+    debug!(
+      "[grammar:build] start: lang={} grammar={}",
+      self.language, self.name
+    );
 
-        self.progress.step("checking cache");
-        let key = cache::Key::new(&self.language, &self.name);
+    self.progress.step("checking cache");
+    let key = cache::Key::new(&self.language, &self.name);
 
-        // Cache decisions are computed centrally by the cache actor, including
-        // verification that all required managed artifacts exist.
-        debug!("[grammar:cache] {key}: {}", self.cache_decision);
+    // Cache decisions are computed centrally by the cache actor, including
+    // verification that all required managed artifacts exist.
+    debug!("[grammar:cache] {key}: {}", self.cache_decision);
 
-        if self.cache_decision.is_hit() {
-            self.progress.set_outcome_cached().await;
-            // Install the binary from the build directory
-            if let Err(e) = self.install().await {
-                self.progress.err("install failed").await;
-                return Err(e);
-            }
+    if self.cache_decision.is_hit() {
+      self.progress.set_outcome_cached().await;
+      // Install the binary from the build directory
+      if let Err(e) = self.install().await {
+        self.progress.err("install failed").await;
+        return Err(e);
+      }
 
-            self.progress.cached("done").await;
-            return Ok(None);
-        }
-
-        self.progress.set_outcome_built().await;
-        self.progress.msg(self.cache_decision.short_message());
-
-        // Use the grammar directory path provided
-        if !self.dir.exists() {
-            let err = Error::Message {
-                message: format!("Grammar directory not found: {}", self.dir.display()),
-            };
-            self.progress.err("missing grammar directory").await;
-            return Err(err);
-        }
-
-        // Build the grammar
-        if let Err(e) = self.build_grammar().await {
-            if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-                self.progress.cancel().await;
-            } else {
-                self.progress.err("build failed").await;
-            }
-            return Err(e);
-        }
-
-        // Return cache update for this grammar
-        let update = cache::Update {
-            name: key,
-            entry: cache::Entry {
-                hash: self.hash.clone(),
-                revision: self.revision.clone(),
-                spec: self.spec.clone(),
-                outputs: self.spec.target,
-            },
-        };
-
-        self.progress.fin("done").await;
-
-        Ok(Some(update))
+      self.progress.cached("done").await;
+      return Ok(None);
     }
 
-    /// Build the tree-sitter CLI command line for a given target.
-    fn builtin_build_command(&self, kind: ArtifactKind, output_path: &Path) -> Command {
-        let mut cmd = Command::new(self.ts_cli.as_os_str());
-        cmd.arg("build");
+    self.progress.set_outcome_built().await;
+    self.progress.msg(self.cache_decision.short_message());
 
-        if kind.is_wasm() {
-            cmd.arg("--wasm");
-        }
-
-        cmd.arg("--output").arg(output_path);
-        cmd
+    // Use the grammar directory path provided
+    if !self.dir.exists() {
+      let err = Error::Message {
+        message: format!("Grammar directory not found: {}", self.dir.display()),
+      };
+      self.progress.err("missing grammar directory").await;
+      return Err(err);
     }
 
-    /// Run the full build pipeline for this grammar (generate, build, install).
-    async fn build_grammar(&self) -> Result<()> {
-        shutdown::test_delay().await;
-        shutdown::check()?;
-
-        // Generate parser if no custom build script
-        self.progress.step("generating");
-        if self.spec.build_script.is_none() {
-            self.generate().await?;
-        } else {
-            warn!("Custom build scripts not supported for generate step (TypeScript limitation)");
-        }
-
-        // Build native and/or wasm targets
-        self.progress.step("building");
-        self.build_targets().await?;
-
-        // Install built parsers
-        self.progress.step("installing");
-        self.install().await?;
-
-        Ok(())
+    // Build the grammar
+    if let Err(e) = self.build_grammar().await {
+      if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+        self.progress.cancel().await;
+      } else {
+        self.progress.err("build failed").await;
+      }
+      return Err(e);
     }
 
-    /// Build a single target (native or wasm) and return the artifact path.
-    async fn build_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
-        shutdown::test_delay().await;
-        shutdown::check()?;
-        let ext = kind.extension();
-        debug!(
-            "[grammar:build_target] lang={} grammar={} ext={ext}",
-            self.language, self.name
-        );
+    // Return cache update for this grammar
+    let update = cache::Update {
+      name: key,
+      entry: cache::Entry {
+        hash: self.hash.clone(),
+        revision: self.revision.clone(),
+        spec: self.spec.clone(),
+        outputs: self.spec.target,
+      },
+    };
 
-        if let Some(script) = &self.spec.build_script {
-            return self.build_custom_target(kind, script).await;
-        }
+    self.progress.fin("done").await;
 
-        self.build_builtin_target(kind).await
+    Ok(Some(update))
+  }
+
+  /// Build the tree-sitter CLI command line for a given target.
+  fn builtin_build_command(&self, kind: ArtifactKind, output_path: &Path) -> Command {
+    let mut cmd = Command::new(self.ts_cli.as_os_str());
+    cmd.arg("build");
+
+    if kind.is_wasm() {
+      cmd.arg("--wasm");
     }
 
-    /// Build a target using the built-in tree-sitter CLI.
-    async fn build_builtin_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
-        let artifact = self.artifact_path(kind)?;
-        ensure_parent_dir(&artifact).await?;
+    cmd.arg("--output").arg(output_path);
+    cmd
+  }
 
-        let mut cmd = self.builtin_build_command(kind, &artifact);
-        cmd.current_dir(self.dir.as_path())
-            .exec()
-            .await
-            .map_err(|err| self.build_step_error(err))?;
+  /// Run the full build pipeline for this grammar (generate, build, install).
+  async fn build_grammar(&self) -> Result<()> {
+    shutdown::test_delay().await;
+    shutdown::check()?;
 
-        verify_artifact(&artifact).await?;
-        Ok(artifact)
+    // Generate parser if no custom build script
+    self.progress.step("generating");
+    if self.spec.build_script.is_none() {
+      self.generate().await?;
+    } else {
+      warn!("Custom build scripts not supported for generate step (TypeScript limitation)");
     }
 
-    /// Build a target using a custom build script.
-    async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> Result<PathBuf> {
-        let mut cmd = Command::from_str(script);
-        cmd.current_dir(self.dir.as_path())
-            .exec()
-            .await
-            .map_err(|err| self.build_step_error(err))?;
+    // Build native and/or wasm targets
+    self.progress.step("building");
+    self.build_targets().await?;
 
-        let discovered = self.brute_force_discover(kind).await?;
-        let artifact = self.artifact_path(kind)?;
-        self.stage_artifact(&discovered, &artifact).await?;
-        verify_artifact(&artifact).await?;
-        Ok(artifact)
+    // Install built parsers
+    self.progress.step("installing");
+    self.install().await?;
+
+    Ok(())
+  }
+
+  /// Build a single target (native or wasm) and return the artifact path.
+  async fn build_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
+    shutdown::test_delay().await;
+    shutdown::check()?;
+    let ext = kind.extension();
+    debug!(
+      "[grammar:build_target] lang={} grammar={} ext={ext}",
+      self.language, self.name
+    );
+
+    if let Some(script) = &self.spec.build_script {
+      return self.build_custom_target(kind, script).await;
     }
 
-    /// Create a Step error indicating a build failure.
-    fn build_step_error(&self, err: Error) -> Error {
-        Error::Step {
-            name: self.language.as_arc(),
-            kind: error::ParserOp::Build {
-                dir: self.dir.clone(),
-            },
-            source: err.into(),
-        }
+    self.build_builtin_target(kind).await
+  }
+
+  /// Build a target using the built-in tree-sitter CLI.
+  async fn build_builtin_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
+    let artifact = self.artifact_path(kind)?;
+    ensure_parent_dir(&artifact).await?;
+
+    let mut cmd = self.builtin_build_command(kind, &artifact);
+    cmd
+      .current_dir(self.dir.as_path())
+      .exec()
+      .await
+      .map_err(|err| self.build_step_error(err))?;
+
+    verify_artifact(&artifact).await?;
+    Ok(artifact)
+  }
+
+  /// Build a target using a custom build script.
+  async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> Result<PathBuf> {
+    let mut cmd = Command::from_str(script);
+    cmd
+      .current_dir(self.dir.as_path())
+      .exec()
+      .await
+      .map_err(|err| self.build_step_error(err))?;
+
+    let discovered = self.brute_force_discover(kind).await?;
+    let artifact = self.artifact_path(kind)?;
+    self.stage_artifact(&discovered, &artifact).await?;
+    verify_artifact(&artifact).await?;
+    Ok(artifact)
+  }
+
+  /// Create a Step error indicating a build failure.
+  fn build_step_error(&self, err: Error) -> Error {
+    Error::Step {
+      name: self.language.as_arc(),
+      kind: error::ParserOp::Build {
+        dir: self.dir.clone(),
+      },
+      source: err.into(),
+    }
+  }
+
+  /// Build every target (native and/or wasm) requested by the spec.
+  async fn build_targets(&self) -> Result<()> {
+    if self.spec.target.native() {
+      self.build_target(ArtifactKind::Native).await?;
     }
 
-    /// Build every target (native and/or wasm) requested by the spec.
-    async fn build_targets(&self) -> Result<()> {
-        if self.spec.target.native() {
-            self.build_target(ArtifactKind::Native).await?;
-        }
-
-        if self.spec.target.wasm() {
-            self.build_target(ArtifactKind::Wasm).await?;
-        }
-
-        Ok(())
+    if self.spec.target.wasm() {
+      self.build_target(ArtifactKind::Wasm).await?;
     }
 
-    /// Create a hardlink from src to dst.
-    async fn create_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
-        fs::hard_link(src, dst).await.with_context(|| {
-            format!(
-                "Could not hardlink {} to {}. build-dir and out-dir must be on the same filesystem",
-                src.display(),
-                dst.display()
-            )
-        })
+    Ok(())
+  }
+
+  /// Create a hardlink from src to dst.
+  async fn create_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
+    fs::hard_link(src, dst).await.with_context(|| {
+      format!(
+        "Could not hardlink {} to {}. build-dir and out-dir must be on the same filesystem",
+        src.display(),
+        dst.display()
+      )
+    })
+  }
+
+  /// Brute-force discover a built artifact by searching the grammar directory.
+  async fn brute_force_discover(&self, kind: ArtifactKind) -> Result<PathBuf> {
+    let ext = kind.extension();
+    let expected_name = self.parser_name_and_ext(kind);
+    let mut files = fs::read_dir(self.dir.as_path())
+      .await
+      .with_context(|| format!("Failed to read directory {}", self.dir.display()))?;
+
+    let mut exact_match = None;
+    let mut candidates = Vec::new();
+
+    loop {
+      let Some(entry) = files
+        .next_entry()
+        .await
+        .with_context(|| format!("Failed to read directory entry in {}", self.dir.display()))?
+      else {
+        break;
+      };
+
+      let path = entry.path();
+      let file_type = entry
+        .file_type()
+        .await
+        .with_context(|| format!("Failed to read file type for {}", path.display()))?;
+
+      if !file_type.is_file() {
+        continue;
+      }
+
+      let file_name = entry.file_name();
+      let name = file_name.to_string_lossy();
+
+      if name == expected_name {
+        exact_match = Some(path);
+        break;
+      }
+
+      if Path::new(&file_name).extension().and_then(|e| e.to_str()) == Some(ext) {
+        candidates.push(path);
+      }
     }
 
-    /// Brute-force discover a built artifact by searching the grammar directory.
-    async fn brute_force_discover(&self, kind: ArtifactKind) -> Result<PathBuf> {
-        let ext = kind.extension();
-        let expected_name = self.parser_name_and_ext(kind);
-        let mut files = fs::read_dir(self.dir.as_path())
-            .await
-            .with_context(|| format!("Failed to read directory {}", self.dir.display()))?;
+    match (exact_match, candidates.len()) {
+      (Some(path), _) => Ok(path),
+      (None, 0) => Err(self.missing_parser_error(ext)),
+      (None, 1) => Ok(candidates.into_iter().next().unwrap()),
+      (None, _) => Err(self.multiple_parsers_error(ext, &candidates)),
+    }
+  }
 
-        let mut exact_match = None;
-        let mut candidates = Vec::new();
+  /// Run tree-sitter generate in the grammar directory.
+  async fn generate(&self) -> Result<()> {
+    Command::new(self.ts_cli.as_os_str())
+      .current_dir(self.dir.as_path())
+      .arg("generate")
+      .exec()
+      .await
+      .map(|_| ())
+      .map_err(|err| Error::Step {
+        name: self.language.as_arc(),
+        kind: error::ParserOp::Generate {
+          dir: self.dir.clone(),
+        },
+        source: err.into(),
+      })
+  }
 
-        loop {
-            let Some(entry) = files.next_entry().await.with_context(|| {
-                format!("Failed to read directory entry in {}", self.dir.display())
-            })?
-            else {
-                break;
-            };
-
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .await
-                .with_context(|| format!("Failed to read file type for {}", path.display()))?;
-
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-
-            if name == expected_name {
-                exact_match = Some(path);
-                break;
-            }
-
-            if Path::new(&file_name).extension().and_then(|e| e.to_str()) == Some(ext) {
-                candidates.push(path);
-            }
-        }
-
-        match (exact_match, candidates.len()) {
-            (Some(path), _) => Ok(path),
-            (None, 0) => Err(self.missing_parser_error(ext)),
-            (None, 1) => Ok(candidates.into_iter().next().unwrap()),
-            (None, _) => Err(self.multiple_parsers_error(ext, &candidates)),
-        }
+  /// Install built binary artifacts to the output directory.
+  async fn install(&self) -> Result<()> {
+    // Find and install parser binary for each extension
+    if self.spec.target.native() {
+      self.install_binary(ArtifactKind::Native).await?;
     }
 
-    /// Run tree-sitter generate in the grammar directory.
-    async fn generate(&self) -> Result<()> {
-        Command::new(self.ts_cli.as_os_str())
-            .current_dir(self.dir.as_path())
-            .arg("generate")
-            .exec()
-            .await
-            .map(|_| ())
-            .map_err(|err| Error::Step {
-                name: self.language.as_arc(),
-                kind: error::ParserOp::Generate {
-                    dir: self.dir.clone(),
-                },
-                source: err.into(),
-            })
+    if self.spec.target.wasm() {
+      self.install_binary(ArtifactKind::Wasm).await?;
     }
 
-    /// Install built binary artifacts to the output directory.
-    async fn install(&self) -> Result<()> {
-        // Find and install parser binary for each extension
-        if self.spec.target.native() {
-            self.install_binary(ArtifactKind::Native).await?;
-        }
+    Ok(())
+  }
 
-        if self.spec.target.wasm() {
-            self.install_binary(ArtifactKind::Wasm).await?;
-        }
+  /// Install a single binary artifact to the output directory.
+  async fn install_binary(&self, kind: ArtifactKind) -> Result<()> {
+    let src = self.artifact_path(kind)?;
+    let dst = self.output.out_dir.join(self.parser_name_and_ext(kind));
+    let src_metadata = fs::metadata(&src)
+      .await
+      .with_context(|| format!("Reading {}", src.display()))?;
 
-        Ok(())
+    let dst_link_metadata = match fs::symlink_metadata(&dst).await {
+      Ok(metadata) => metadata,
+      Err(err) if err.kind() == io::ErrorKind::NotFound => {
+        self.create_hardlink(&src, &dst).await?;
+        return Ok(());
+      }
+      Err(err) => {
+        return Err(Error::Context {
+          message: format!("Reading {}", dst.display()),
+          source: err.into(),
+        });
+      }
+    };
+
+    self
+      .install_over_existing(&src, &dst, &dst_link_metadata, &src_metadata)
+      .await
+  }
+
+  /// Handle the case where a destination output file already exists.
+  async fn install_over_existing(
+    &self,
+    src: &Path,
+    dst: &Path,
+    dst_link_metadata: &Metadata,
+    src_metadata: &Metadata,
+  ) -> Result<()> {
+    let dst_file_type = dst_link_metadata.file_type();
+
+    if dst_file_type.is_dir() {
+      return Err(Error::Message {
+        message: format!(
+          "Output path is a directory and cannot be replaced: {}",
+          dst.display()
+        ),
+      });
     }
 
-    /// Install a single binary artifact to the output directory.
-    async fn install_binary(&self, kind: ArtifactKind) -> Result<()> {
-        let src = self.artifact_path(kind)?;
-        let dst = self.output.out_dir.join(self.parser_name_and_ext(kind));
-        let src_metadata = fs::metadata(&src)
-            .await
-            .with_context(|| format!("Reading {}", src.display()))?;
+    if dst_file_type.is_symlink() {
+      if !self.context.overwrite_output {
+        return Err(Error::Message {
+          message: format!(
+            "Output path is a symlink and will not be replaced without --force: {}",
+            dst.display()
+          ),
+        });
+      }
 
-        let dst_link_metadata = match fs::symlink_metadata(&dst).await {
-            Ok(metadata) => metadata,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                self.create_hardlink(&src, &dst).await?;
-                return Ok(());
-            }
-            Err(err) => {
-                return Err(Error::Context {
-                    message: format!("Reading {}", dst.display()),
-                    source: err.into(),
-                });
-            }
-        };
-
-        self.install_over_existing(&src, &dst, &dst_link_metadata, &src_metadata)
-            .await
+      self.replace_with_hardlink(src, dst).await?;
+      self.progress.msg("Reinstalled");
+      return Ok(());
     }
 
-    /// Handle the case where a destination output file already exists.
-    async fn install_over_existing(
-        &self,
-        src: &Path,
-        dst: &Path,
-        dst_link_metadata: &Metadata,
-        src_metadata: &Metadata,
-    ) -> Result<()> {
-        let dst_file_type = dst_link_metadata.file_type();
-
-        if dst_file_type.is_dir() {
-            return Err(Error::Message {
-                message: format!(
-                    "Output path is a directory and cannot be replaced: {}",
-                    dst.display()
-                ),
-            });
-        }
-
-        if dst_file_type.is_symlink() {
-            if !self.context.overwrite_output {
-                return Err(Error::Message {
-                    message: format!(
-                        "Output path is a symlink and will not be replaced without --force: {}",
-                        dst.display()
-                    ),
-                });
-            }
-
-            self.replace_with_hardlink(src, dst).await?;
-            self.progress.msg("Reinstalled");
-            return Ok(());
-        }
-
-        if !dst_file_type.is_file() {
-            return Err(Error::Message {
-                message: format!(
-                    "Output path is not a regular file and cannot be replaced: {}",
-                    dst.display()
-                ),
-            });
-        }
-
-        let dst_metadata = fs::metadata(dst)
-            .await
-            .with_context(|| format!("Reading {}", dst.display()))?;
-
-        if same_file_identity(src_metadata, &dst_metadata) {
-            return Ok(());
-        }
-
-        let same_contents =
-            same_regular_file_contents(dst, &dst_metadata, src, src_metadata).await?;
-
-        if !same_contents && !self.context.overwrite_output {
-            return Err(Error::Message {
-                message: format!(
-                    "Output already exists and differs from the built parser: {}. Use --force to replace it.",
-                    dst.display()
-                ),
-            });
-        }
-
-        self.replace_with_hardlink(src, dst).await?;
-        self.progress.msg("reinstalled");
-        Ok(())
+    if !dst_file_type.is_file() {
+      return Err(Error::Message {
+        message: format!(
+          "Output path is not a regular file and cannot be replaced: {}",
+          dst.display()
+        ),
+      });
     }
 
-    /// Copy a custom-built artifact to its canonical build-dir location.
-    async fn stage_artifact(&self, src: &Path, dst: &Path) -> Result<()> {
-        ensure_parent_dir(dst).await?;
-        let src_metadata = fs::metadata(src)
-            .await
-            .with_context(|| format!("Reading {}", src.display()))?;
+    let dst_metadata = fs::metadata(dst)
+      .await
+      .with_context(|| format!("Reading {}", dst.display()))?;
 
-        if !src_metadata.is_file() {
-            return Err(Error::Message {
-                message: format!(
-                    "Discovered parser artifact is not a regular file: {}",
-                    src.display()
-                ),
-            });
-        }
-
-        match fs::metadata(dst).await {
-            Ok(dst_metadata) if same_file_identity(&src_metadata, &dst_metadata) => return Ok(()),
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(Error::Context {
-                    message: format!("Reading {}", dst.display()),
-                    source: err.into(),
-                });
-            }
-        }
-
-        self.replace_with_hardlink(src, dst).await
+    if same_file_identity(src_metadata, &dst_metadata) {
+      return Ok(());
     }
 
-    /// Return the list of artifact paths that must exist on disk for a cache hit.
-    pub fn required_artifacts_for(
-        grammar_name: &GrammarName,
-        build_dir: &Path,
-        spec: &build::Spec,
-        ts_cli: &Path,
-    ) -> Result<Vec<PathBuf>> {
-        let mut artifacts = Vec::new();
+    let same_contents = same_regular_file_contents(dst, &dst_metadata, src, src_metadata).await?;
 
-        if spec.target.native() {
-            artifacts.push(artifact_path_for(
-                grammar_name,
-                build_dir,
-                ArtifactKind::Native,
-                spec,
-                ts_cli,
-            )?);
-        }
-
-        if spec.target.wasm() {
-            artifacts.push(artifact_path_for(
-                grammar_name,
-                build_dir,
-                ArtifactKind::Wasm,
-                spec,
-                ts_cli,
-            )?);
-        }
-
-        Ok(artifacts)
+    if !same_contents && !self.context.overwrite_output {
+      return Err(Error::Message {
+        message: format!(
+          "Output already exists and differs from the built parser: {}. Use --force to replace it.",
+          dst.display()
+        ),
+      });
     }
 
-    /// Compute the artifact path for a given target kind.
-    fn artifact_path(&self, kind: ArtifactKind) -> Result<PathBuf> {
-        artifact_path_for(
-            &self.name,
-            &self.output.build_dir,
-            kind,
-            &self.spec,
-            &self.ts_cli,
-        )
+    self.replace_with_hardlink(src, dst).await?;
+    self.progress.msg("reinstalled");
+    Ok(())
+  }
+
+  /// Copy a custom-built artifact to its canonical build-dir location.
+  async fn stage_artifact(&self, src: &Path, dst: &Path) -> Result<()> {
+    ensure_parent_dir(dst).await?;
+    let src_metadata = fs::metadata(src)
+      .await
+      .with_context(|| format!("Reading {}", src.display()))?;
+
+    if !src_metadata.is_file() {
+      return Err(Error::Message {
+        message: format!(
+          "Discovered parser artifact is not a regular file: {}",
+          src.display()
+        ),
+      });
     }
 
-    /// Atomically replace dst with a hardlink to src (via a temp file + rename).
-    async fn replace_with_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
-        let tmp = temp_install_path(dst)?;
-        self.create_hardlink(src, &tmp).await?;
-
-        if let Err(err) = fs::rename(&tmp, dst).await {
-            let _ = fs::remove_file(&tmp).await;
-            return Err(Error::Context {
-                message: format!("Installing {} to {}", src.display(), dst.display()),
-                source: err.into(),
-            });
-        }
-
-        Ok(())
+    match fs::metadata(dst).await {
+      Ok(dst_metadata) if same_file_identity(&src_metadata, &dst_metadata) => return Ok(()),
+      Ok(_) => {}
+      Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+      Err(err) => {
+        return Err(Error::Context {
+          message: format!("Reading {}", dst.display()),
+          source: err.into(),
+        });
+      }
     }
 
-    /// Create an error reporting a missing parser binary.
-    fn missing_parser_error(&self, ext: &str) -> Error {
-        Error::Step {
-            name: self.language.as_arc(),
-            kind: error::ParserOp::Copy {
-                src: self.output.out_dir.clone(),
-                dst: self.output.build_dir.clone(),
-            },
-            source: Error::Message {
-                message: format!("Couldn't find any {ext} file"),
-            }
-            .into(),
-        }
+    self.replace_with_hardlink(src, dst).await
+  }
+
+  /// Return the list of artifact paths that must exist on disk for a cache hit.
+  pub fn required_artifacts_for(
+    grammar_name: &GrammarName,
+    build_dir: &Path,
+    spec: &build::Spec,
+    ts_cli: &Path,
+  ) -> Result<Vec<PathBuf>> {
+    let mut artifacts = Vec::new();
+
+    if spec.target.native() {
+      artifacts.push(artifact_path_for(
+        grammar_name,
+        build_dir,
+        ArtifactKind::Native,
+        spec,
+        ts_cli,
+      )?);
     }
 
-    /// Create an error reporting multiple candidate parser binaries.
-    fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> Error {
-        Error::Step {
-            name: self.language.as_arc(),
-            kind: error::ParserOp::Copy {
-                src: self.output.out_dir.clone(),
-                dst: self.output.build_dir.clone(),
-            },
-            source: Error::Message {
-                message: format!("Found multiple {ext} files: {candidates:?}"),
-            }
-            .into(),
-        }
+    if spec.target.wasm() {
+      artifacts.push(artifact_path_for(
+        grammar_name,
+        build_dir,
+        ArtifactKind::Wasm,
+        spec,
+        ts_cli,
+      )?);
     }
 
-    /// Build the output filename for a grammar artifact (with prefix).
-    fn parser_name_and_ext(&self, kind: ArtifactKind) -> String {
-        parser_name_and_ext(&self.name, kind, &self.spec.prefix)
+    Ok(artifacts)
+  }
+
+  /// Compute the artifact path for a given target kind.
+  fn artifact_path(&self, kind: ArtifactKind) -> Result<PathBuf> {
+    artifact_path_for(
+      &self.name,
+      &self.output.build_dir,
+      kind,
+      &self.spec,
+      &self.ts_cli,
+    )
+  }
+
+  /// Atomically replace dst with a hardlink to src (via a temp file + rename).
+  async fn replace_with_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
+    let tmp = temp_install_path(dst)?;
+    self.create_hardlink(src, &tmp).await?;
+
+    if let Err(err) = fs::rename(&tmp, dst).await {
+      let _ = fs::remove_file(&tmp).await;
+      return Err(Error::Context {
+        message: format!("Installing {} to {}", src.display(), dst.display()),
+        source: err.into(),
+      });
     }
+
+    Ok(())
+  }
+
+  /// Create an error reporting a missing parser binary.
+  fn missing_parser_error(&self, ext: &str) -> Error {
+    Error::Step {
+      name: self.language.as_arc(),
+      kind: error::ParserOp::Copy {
+        src: self.output.out_dir.clone(),
+        dst: self.output.build_dir.clone(),
+      },
+      source: Error::Message {
+        message: format!("Couldn't find any {ext} file"),
+      }
+      .into(),
+    }
+  }
+
+  /// Create an error reporting multiple candidate parser binaries.
+  fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> Error {
+    Error::Step {
+      name: self.language.as_arc(),
+      kind: error::ParserOp::Copy {
+        src: self.output.out_dir.clone(),
+        dst: self.output.build_dir.clone(),
+      },
+      source: Error::Message {
+        message: format!("Found multiple {ext} files: {candidates:?}"),
+      }
+      .into(),
+    }
+  }
+
+  /// Build the output filename for a grammar artifact (with prefix).
+  fn parser_name_and_ext(&self, kind: ArtifactKind) -> String {
+    parser_name_and_ext(&self.name, kind, &self.spec.prefix)
+  }
 }
 
 impl GrammarName {
-    /// Return the grammar name as a string slice.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+  /// Return the grammar name as a string slice.
+  #[must_use]
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
 
-    /// Return the grammar name as a cloned `Arc<str>`.
-    #[must_use]
-    pub fn as_arc(&self) -> Arc<str> {
-        self.0.clone()
-    }
+  /// Return the grammar name as a cloned `Arc<str>`.
+  #[must_use]
+  pub fn as_arc(&self) -> Arc<str> {
+    self.0.clone()
+  }
 }
 
 impl LanguageBuild {
-    /// Create a new `LanguageBuild`.
-    #[must_use]
-    pub fn new(
-        context: build::Context,
-        name: LanguageName,
-        output: build::OutputConfig,
-        spec: Arc<build::Spec>,
-    ) -> Self {
-        Self {
-            context,
-            name,
-            output,
-            spec,
+  /// Create a new `LanguageBuild`.
+  #[must_use]
+  pub fn new(
+    context: build::Context,
+    name: LanguageName,
+    output: build::OutputConfig,
+    spec: Arc<build::Spec>,
+  ) -> Self {
+    Self {
+      context,
+      name,
+      output,
+      spec,
+    }
+  }
+
+  /// Scan the checkout directory for grammar.js files and return their
+  /// names, hashes, and parent directories.
+  pub async fn discover_grammars(&self) -> Result<Vec<(GrammarName, cache::GrammarHash, PathBuf)>> {
+    let file_results = collect_grammar_paths(&self.output.build_dir).await?;
+    let mut grammars = Vec::new();
+
+    for (grammar_path, hash) in file_results {
+      let grammar_dir = grammar_path.parent().ok_or_else(|| Error::Message {
+        message: format!(
+          "Could not get parent directory for {}",
+          grammar_path.display()
+        ),
+      })?;
+      let grammar_name = extract_grammar_name(grammar_dir)?;
+      grammars.push((grammar_name, hash, grammar_dir.to_path_buf()));
+    }
+
+    if grammars.is_empty() {
+      return Err(Error::Step {
+        name: self.name.as_arc(),
+        kind: error::ParserOp::Discover {
+          dir: self.output.build_dir.clone(),
+        },
+        source: Error::Message {
+          message: format!(
+            "No grammar.js files found for parser {} (repo: {}, ref: {})",
+            self.name,
+            self.spec.repo,
+            self.spec.git_ref.requested().as_str()
+          ),
         }
+        .into(),
+      });
     }
 
-    /// Scan the checkout directory for grammar.js files and return their
-    /// names, hashes, and parent directories.
-    pub async fn discover_grammars(
-        &self,
-    ) -> Result<Vec<(GrammarName, cache::GrammarHash, PathBuf)>> {
-        let file_results = collect_grammar_paths(&self.output.build_dir).await?;
-        let mut grammars = Vec::new();
+    Ok(grammars)
+  }
 
-        for (grammar_path, hash) in file_results {
-            let grammar_dir = grammar_path.parent().ok_or_else(|| Error::Message {
-                message: format!(
-                    "Could not get parent directory for {}",
-                    grammar_path.display()
-                ),
-            })?;
-            let grammar_name = extract_grammar_name(grammar_dir)?;
-            grammars.push((grammar_name, hash, grammar_dir.to_path_buf()));
-        }
+  /// Return a new `LanguageBuild` with the tree-sitter version replaced
+  /// (once the CLI has been resolved).
+  #[must_use]
+  pub fn with_tree_sitter(mut self, tree_sitter: TreeSitter) -> Self {
+    let mut spec = self.spec.as_ref().clone();
+    spec.tree_sitter = tree_sitter;
+    self.spec = Arc::new(spec);
+    self
+  }
 
-        if grammars.is_empty() {
-            return Err(Error::Step {
-                name: self.name.as_arc(),
-                kind: error::ParserOp::Discover {
-                    dir: self.output.build_dir.clone(),
-                },
-                source: Error::Message {
-                    message: format!(
-                        "No grammar.js files found for parser {} (repo: {}, ref: {})",
-                        self.name,
-                        self.spec.repo,
-                        self.spec.git_ref.requested().as_str()
-                    ),
-                }
-                .into(),
-            });
-        }
+  /// Clone/checkout the parser repository at the configured ref.
+  pub async fn checkout(&self) -> Result<git::Checkout> {
+    git::checkout(
+      self.spec.repo.as_str(),
+      &self.output.build_dir,
+      self.spec.git_ref.requested(),
+    )
+    .await
+    .map_err(|err| Error::Step {
+      name: self.name.as_arc(),
+      kind: error::ParserOp::Clone {
+        dir: self.output.build_dir.clone(),
+      },
+      source: err.into(),
+    })
+  }
 
-        Ok(grammars)
-    }
-
-    /// Return a new `LanguageBuild` with the tree-sitter version replaced
-    /// (once the CLI has been resolved).
-    #[must_use]
-    pub fn with_tree_sitter(mut self, tree_sitter: TreeSitter) -> Self {
-        let mut spec = self.spec.as_ref().clone();
-        spec.tree_sitter = tree_sitter;
-        self.spec = Arc::new(spec);
-        self
-    }
-
-    /// Clone/checkout the parser repository at the configured ref.
-    pub async fn checkout(&self) -> Result<git::Checkout> {
-        git::checkout(
-            self.spec.repo.as_str(),
-            &self.output.build_dir,
-            self.spec.git_ref.requested(),
-        )
-        .await
-        .map_err(|err| Error::Step {
-            name: self.name.as_arc(),
-            kind: error::ParserOp::Clone {
-                dir: self.output.build_dir.clone(),
-            },
-            source: err.into(),
-        })
-    }
-
-    /// Check whether the existing checkout directory is usable for this language.
-    pub async fn is_checkout_usable(&self) -> bool {
-        git::is_checkout_usable(self.spec.repo.as_str(), &self.output.build_dir).await
-    }
+  /// Check whether the existing checkout directory is usable for this language.
+  pub async fn is_checkout_usable(&self) -> bool {
+    git::is_checkout_usable(self.spec.repo.as_str(), &self.output.build_dir).await
+  }
 }
 
 impl LanguageName {
-    /// Return the language name as a string slice.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+  /// Return the language name as a string slice.
+  #[must_use]
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
 
-    /// Return the language name as a cloned `Arc<str>`.
-    #[must_use]
-    pub fn as_arc(&self) -> Arc<str> {
-        self.0.clone()
-    }
+  /// Return the language name as a cloned `Arc<str>`.
+  #[must_use]
+  pub fn as_arc(&self) -> Arc<str> {
+    self.0.clone()
+  }
 }
 
 impl Ref {
-    /// The default source ref used for unpinned parser builds.
-    #[must_use]
-    pub fn head() -> Self {
-        Self::Moving(git::Ref::head())
-    }
+  /// The default source ref used for unpinned parser builds.
+  #[must_use]
+  pub fn head() -> Self {
+    Self::Moving(git::Ref::head())
+  }
 
-    /// Create a parser source ref from user input, preserving parser-version
-    /// normalization while classifying refs for cache semantics.
-    pub fn parse(value: &str) -> StdResult<Self, git::RefError> {
-        let normalized = normalize_source_ref(value);
-        let git_ref = git::Ref::new(normalized)?;
-        if is_stable_source_ref(value, &git_ref) {
-            Ok(Self::Stable(git_ref))
-        } else {
-            Ok(Self::Moving(git_ref))
-        }
+  /// Create a parser source ref from user input, preserving parser-version
+  /// normalization while classifying refs for cache semantics.
+  pub fn parse(value: &str) -> StdResult<Self, git::RefError> {
+    let normalized = normalize_source_ref(value);
+    let git_ref = git::Ref::new(normalized)?;
+    if is_stable_source_ref(value, &git_ref) {
+      Ok(Self::Stable(git_ref))
+    } else {
+      Ok(Self::Moving(git_ref))
     }
+  }
 
-    /// Check whether this is a moving ref (branch).
-    #[must_use]
-    pub const fn is_moving(&self) -> bool {
-        matches!(self, Self::Moving(_))
-    }
+  /// Check whether this is a moving ref (branch).
+  #[must_use]
+  pub const fn is_moving(&self) -> bool {
+    matches!(self, Self::Moving(_))
+  }
 
-    /// Check whether this is a stable ref (tag or SHA).
-    #[must_use]
-    pub const fn is_stable(&self) -> bool {
-        matches!(self, Self::Stable(_))
-    }
+  /// Check whether this is a stable ref (tag or SHA).
+  #[must_use]
+  pub const fn is_stable(&self) -> bool {
+    matches!(self, Self::Stable(_))
+  }
 
-    /// Return the underlying git ref, regardless of moving/stable classification.
-    #[must_use]
-    pub fn requested(&self) -> &git::Ref {
-        match self {
-            Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
-        }
+  /// Return the underlying git ref, regardless of moving/stable classification.
+  #[must_use]
+  pub fn requested(&self) -> &git::Ref {
+    match self {
+      Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
     }
+  }
 }
 
 impl Serialize for Ref {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.requested().as_str())
-    }
+  fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(self.requested().as_str())
+  }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::{os::unix::fs::symlink, process::Command as StdCommand};
+  use super::*;
+  use std::{os::unix::fs::symlink, process::Command as StdCommand};
 
-    use crate::{
-        actors::{DisplayActor, DisplayAddr},
-        args::{Target, TreeSitter},
-        display::Mode,
-        git,
+  use crate::{
+    actors::{DisplayActor, DisplayAddr},
+    args::{Target, TreeSitter},
+    display::Mode,
+    git,
+  };
+  use tempfile::TempDir;
+
+  const FULL_SHA: &str = "636801770eea172d140e64b691815ff11f6b556f";
+
+  #[test]
+  fn ref_classifies_stable_refs() {
+    assert!(Ref::parse("0.21.0").unwrap().is_stable());
+    assert!(Ref::parse("v0.21.0").unwrap().is_stable());
+    assert!(Ref::parse("refs/tags/release").unwrap().is_stable());
+    assert!(Ref::parse(FULL_SHA).unwrap().is_stable());
+  }
+
+  #[test]
+  fn ref_classifies_moving_refs() {
+    assert!(Ref::head().is_moving());
+    assert!(Ref::parse("master").unwrap().is_moving());
+    assert!(Ref::parse("refs/heads/main").unwrap().is_moving());
+    assert!(Ref::parse("vnext").unwrap().is_moving());
+  }
+
+  #[test]
+  fn ref_serializes_as_requested_ref() {
+    #[derive(serde::Serialize)]
+    struct Wrapper {
+      git_ref: Ref,
+    }
+
+    let source = Ref::parse("0.21.0").unwrap();
+
+    assert_eq!(
+      toml::to_string(&Wrapper { git_ref: source }).unwrap(),
+      "git_ref = \"v0.21.0\"\n"
+    );
+  }
+
+  fn test_language_build(build_dir: PathBuf, out_dir: PathBuf) -> LanguageBuild {
+    LanguageBuild::new(
+      build::Context {
+        overwrite_output: false,
+      },
+      LanguageName::from("empty"),
+      build::OutputConfig { build_dir, out_dir },
+      Arc::new(build::Spec {
+        build_script: None,
+        git_ref: Ref::parse("v1.0.0").unwrap(),
+        prefix: String::new(),
+        repo: "https://example.com/tree-sitter-empty".parse().unwrap(),
+        target: Target::Native,
+        tree_sitter: TreeSitter::default(),
+      }),
+    )
+  }
+
+  fn init_git_repo(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
+    let output = StdCommand::new("git")
+      .arg("init")
+      .arg("--quiet")
+      .current_dir(path)
+      .output()
+      .unwrap();
+    assert!(
+      output.status.success(),
+      "git init failed: {}",
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  async fn test_grammar_build(
+    grammar_dir: PathBuf,
+    out_dir: PathBuf,
+    overwrite_output: bool,
+  ) -> (GrammarBuild, DisplayAddr) {
+    let display = DisplayActor::spawn(grammar_dir.clone(), Mode::Plain, out_dir.clone());
+    let progress = display
+      .add_grammar("rust", "rust", git::Ref::head(), 1)
+      .await;
+    let source_ref = Ref::parse("v1.0.0").unwrap();
+    let build = GrammarBuild {
+      context: build::Context { overwrite_output },
+      cache_decision: cache::Decision::miss(cache::MissReason::MissingEntry),
+      dir: grammar_dir.clone(),
+      hash: cache::GrammarHash::from("test"),
+      language: "rust".into(),
+      name: "rust".into(),
+      output: build::OutputConfig {
+        build_dir: grammar_dir,
+        out_dir,
+      },
+      progress,
+      revision: cache::Revision::stable(),
+      spec: Arc::new(build::Spec {
+        build_script: None,
+        git_ref: source_ref,
+        prefix: String::new(),
+        repo: "https://example.com/tree-sitter-rust".parse().unwrap(),
+        target: Target::Native,
+        tree_sitter: TreeSitter::default(),
+      }),
+      ts_cli: PathBuf::from("tree-sitter-macos-arm64-v0.26.5"),
     };
-    use tempfile::TempDir;
 
-    const FULL_SHA: &str = "636801770eea172d140e64b691815ff11f6b556f";
+    (build, display)
+  }
 
-    #[test]
-    fn ref_classifies_stable_refs() {
-        assert!(Ref::parse("0.21.0").unwrap().is_stable());
-        assert!(Ref::parse("v0.21.0").unwrap().is_stable());
-        assert!(Ref::parse("refs/tags/release").unwrap().is_stable());
-        assert!(Ref::parse(FULL_SHA).unwrap().is_stable());
+  async fn write_artifact(build: &GrammarBuild, kind: ArtifactKind, contents: &[u8]) -> PathBuf {
+    let path = build.artifact_path(kind).unwrap();
+    tokio::fs::create_dir_all(path.parent().unwrap())
+      .await
+      .unwrap();
+    tokio::fs::write(&path, contents).await.unwrap();
+    path
+  }
+
+  fn same_identity(a: &Path, b: &Path) -> bool {
+    let a = std::fs::metadata(a).unwrap();
+    let b = std::fs::metadata(b).unwrap();
+    same_file_identity(&a, &b)
+  }
+
+  #[tokio::test]
+  async fn discover_grammars_errors_when_no_grammar_js_files_are_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let build_dir = temp_dir.path().join("tree-sitter-empty");
+    let out_dir = temp_dir.path().join("out");
+    init_git_repo(&build_dir);
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
+
+    let language = test_language_build(build_dir.clone(), out_dir);
+    let err = language.discover_grammars().await.unwrap_err();
+
+    match err {
+      Error::Step { name, kind, source } => {
+        assert_eq!(name.as_ref(), "empty");
+        assert!(matches!(kind, error::ParserOp::Discover { dir } if dir == build_dir));
+        let message = source.as_error().to_string();
+        assert!(message.contains("No grammar.js files found"));
+        assert!(message.contains("https://example.com/tree-sitter-empty"));
+        assert!(message.contains("v1.0.0"));
+      }
+      other => panic!("expected discovery step error, got {other:?}"),
     }
+  }
 
-    #[test]
-    fn ref_classifies_moving_refs() {
-        assert!(Ref::head().is_moving());
-        assert!(Ref::parse("master").unwrap().is_moving());
-        assert!(Ref::parse("refs/heads/main").unwrap().is_moving());
-        assert!(Ref::parse("vnext").unwrap().is_moving());
-    }
+  #[test]
+  fn test_cache_key_format() {
+    let key = cache::Key::new(
+      &LanguageName::from("typescript"),
+      &GrammarName::from("typescript"),
+    );
+    assert_eq!(key.as_str(), "typescript/typescript");
 
-    #[test]
-    fn ref_serializes_as_requested_ref() {
-        #[derive(serde::Serialize)]
-        struct Wrapper {
-            git_ref: Ref,
-        }
+    let key = cache::Key::new(&LanguageName::from("typescript"), &GrammarName::from("tsx"));
+    assert_eq!(key.as_str(), "typescript/tsx");
+  }
 
-        let source = Ref::parse("0.21.0").unwrap();
+  #[test]
+  fn test_extract_grammar_name() {
+    let dir = Path::new("/tmp/build/tree-sitter-typescript");
+    let name = extract_grammar_name(dir).unwrap();
+    assert_eq!(name.as_str(), "typescript");
 
-        assert_eq!(
-            toml::to_string(&Wrapper { git_ref: source }).unwrap(),
-            "git_ref = \"v0.21.0\"\n"
-        );
-    }
+    let dir = Path::new("/tmp/build/custom-parser");
+    let name = extract_grammar_name(dir).unwrap();
+    assert_eq!(name.as_str(), "custom-parser");
+  }
 
-    fn test_language_build(build_dir: PathBuf, out_dir: PathBuf) -> LanguageBuild {
-        LanguageBuild::new(
-            build::Context {
-                overwrite_output: false,
-            },
-            LanguageName::from("empty"),
-            build::OutputConfig { build_dir, out_dir },
-            Arc::new(build::Spec {
-                build_script: None,
-                git_ref: Ref::parse("v1.0.0").unwrap(),
-                prefix: String::new(),
-                repo: "https://example.com/tree-sitter-empty".parse().unwrap(),
-                target: Target::Native,
-                tree_sitter: TreeSitter::default(),
-            }),
-        )
-    }
+  #[test]
+  fn test_extract_grammar_name_strips_prefix() {
+    let name_with_prefix = "tree-sitter-typescript";
+    let stripped = name_with_prefix
+      .strip_prefix("tree-sitter-")
+      .unwrap_or(name_with_prefix);
+    assert_eq!(stripped, "typescript");
 
-    fn init_git_repo(path: &Path) {
-        std::fs::create_dir_all(path).unwrap();
-        let output = StdCommand::new("git")
-            .arg("init")
-            .arg("--quiet")
-            .current_dir(path)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let name_without_prefix = "custom-parser";
+    let not_stripped = name_without_prefix
+      .strip_prefix("tree-sitter-")
+      .unwrap_or(name_without_prefix);
+    assert_eq!(not_stripped, "custom-parser");
+  }
 
-    async fn test_grammar_build(
-        grammar_dir: PathBuf,
-        out_dir: PathBuf,
-        overwrite_output: bool,
-    ) -> (GrammarBuild, DisplayAddr) {
-        let display = DisplayActor::spawn(grammar_dir.clone(), Mode::Plain, out_dir.clone());
-        let progress = display
-            .add_grammar("rust", "rust", git::Ref::head(), 1)
-            .await;
-        let source_ref = Ref::parse("v1.0.0").unwrap();
-        let build = GrammarBuild {
-            context: build::Context { overwrite_output },
-            cache_decision: cache::Decision::miss(cache::MissReason::MissingEntry),
-            dir: grammar_dir.clone(),
-            hash: cache::GrammarHash::from("test"),
-            language: "rust".into(),
-            name: "rust".into(),
-            output: build::OutputConfig {
-                build_dir: grammar_dir,
-                out_dir,
-            },
-            progress,
-            revision: cache::Revision::stable(),
-            spec: Arc::new(build::Spec {
-                build_script: None,
-                git_ref: source_ref,
-                prefix: String::new(),
-                repo: "https://example.com/tree-sitter-rust".parse().unwrap(),
-                target: Target::Native,
-                tree_sitter: TreeSitter::default(),
-            }),
-            ts_cli: PathBuf::from("tree-sitter-macos-arm64-v0.26.5"),
-        };
+  #[test]
+  fn test_artifact_dir_name_from_tree_sitter_cli() {
+    assert_eq!(
+      artifact_dir_name_from_tree_sitter_cli(Path::new(
+        "/tmp/tsdl/tree-sitter-macos-arm64-v0.26.5"
+      ))
+      .unwrap(),
+      "tsdl-macos-arm64-v0.26.5"
+    );
+  }
 
-        (build, display)
-    }
+  #[test]
+  fn test_parser_name_and_ext() {
+    let name = parser_name_and_ext(&GrammarName::from("typescript"), ArtifactKind::Native, "");
+    assert_eq!(name, format!("typescript.{DLL_EXTENSION}"));
+  }
 
-    async fn write_artifact(build: &GrammarBuild, kind: ArtifactKind, contents: &[u8]) -> PathBuf {
-        let path = build.artifact_path(kind).unwrap();
-        tokio::fs::create_dir_all(path.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&path, contents).await.unwrap();
-        path
-    }
+  #[test]
+  fn test_parser_name_with_prefix() {
+    let name = parser_name_and_ext(
+      &GrammarName::from("typescript"),
+      ArtifactKind::Native,
+      "lib",
+    );
+    assert_eq!(name, format!("libtypescript.{DLL_EXTENSION}"));
+  }
 
-    fn same_identity(a: &Path, b: &Path) -> bool {
-        let a = std::fs::metadata(a).unwrap();
-        let b = std::fs::metadata(b).unwrap();
-        same_file_identity(&a, &b)
-    }
+  #[tokio::test]
+  async fn install_missing_destination_creates_hardlink() {
+    let temp_dir = TempDir::new().unwrap();
+    let grammar_dir = temp_dir.path().join("grammar");
+    let out_dir = temp_dir.path().join("out");
+    tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-    #[tokio::test]
-    async fn discover_grammars_errors_when_no_grammar_js_files_are_found() {
-        let temp_dir = TempDir::new().unwrap();
-        let build_dir = temp_dir.path().join("tree-sitter-empty");
-        let out_dir = temp_dir.path().join("out");
-        init_git_repo(&build_dir);
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+    let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
-        let language = test_language_build(build_dir.clone(), out_dir);
-        let err = language.discover_grammars().await.unwrap_err();
+    let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+    let src = write_artifact(&build, ArtifactKind::Native, b"parser").await;
+    build.install_binary(ArtifactKind::Native).await.unwrap();
+    display.shutdown(false).await;
 
-        match err {
-            Error::Step { name, kind, source } => {
-                assert_eq!(name.as_ref(), "empty");
-                assert!(matches!(kind, error::ParserOp::Discover { dir } if dir == build_dir));
-                let message = source.as_error().to_string();
-                assert!(message.contains("No grammar.js files found"));
-                assert!(message.contains("https://example.com/tree-sitter-empty"));
-                assert!(message.contains("v1.0.0"));
-            }
-            other => panic!("expected discovery step error, got {other:?}"),
-        }
-    }
+    assert!(same_identity(&src, &dst));
+  }
 
-    #[test]
-    fn test_cache_key_format() {
-        let key = cache::Key::new(
-            &LanguageName::from("typescript"),
-            &GrammarName::from("typescript"),
-        );
-        assert_eq!(key.as_str(), "typescript/typescript");
+  #[tokio::test]
+  async fn install_same_content_relinks_without_force() {
+    let temp_dir = TempDir::new().unwrap();
+    let grammar_dir = temp_dir.path().join("grammar");
+    let out_dir = temp_dir.path().join("out");
+    tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let key = cache::Key::new(&LanguageName::from("typescript"), &GrammarName::from("tsx"));
-        assert_eq!(key.as_str(), "typescript/tsx");
-    }
+    let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
-    #[test]
-    fn test_extract_grammar_name() {
-        let dir = Path::new("/tmp/build/tree-sitter-typescript");
-        let name = extract_grammar_name(dir).unwrap();
-        assert_eq!(name.as_str(), "typescript");
+    let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+    let src = write_artifact(&build, ArtifactKind::Native, b"parser").await;
+    tokio::fs::write(&dst, b"parser").await.unwrap();
+    assert!(!same_identity(&src, &dst));
 
-        let dir = Path::new("/tmp/build/custom-parser");
-        let name = extract_grammar_name(dir).unwrap();
-        assert_eq!(name.as_str(), "custom-parser");
-    }
+    build.install_binary(ArtifactKind::Native).await.unwrap();
+    display.shutdown(false).await;
 
-    #[test]
-    fn test_extract_grammar_name_strips_prefix() {
-        let name_with_prefix = "tree-sitter-typescript";
-        let stripped = name_with_prefix
-            .strip_prefix("tree-sitter-")
-            .unwrap_or(name_with_prefix);
-        assert_eq!(stripped, "typescript");
+    assert!(same_identity(&src, &dst));
+  }
 
-        let name_without_prefix = "custom-parser";
-        let not_stripped = name_without_prefix
-            .strip_prefix("tree-sitter-")
-            .unwrap_or(name_without_prefix);
-        assert_eq!(not_stripped, "custom-parser");
-    }
+  #[tokio::test]
+  async fn install_same_size_different_content_requires_force() {
+    let temp_dir = TempDir::new().unwrap();
+    let grammar_dir = temp_dir.path().join("grammar");
+    let out_dir = temp_dir.path().join("out");
+    tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-    #[test]
-    fn test_artifact_dir_name_from_tree_sitter_cli() {
-        assert_eq!(
-            artifact_dir_name_from_tree_sitter_cli(Path::new(
-                "/tmp/tsdl/tree-sitter-macos-arm64-v0.26.5"
-            ))
-            .unwrap(),
-            "tsdl-macos-arm64-v0.26.5"
-        );
-    }
+    let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
-    #[test]
-    fn test_parser_name_and_ext() {
-        let name = parser_name_and_ext(&GrammarName::from("typescript"), ArtifactKind::Native, "");
-        assert_eq!(name, format!("typescript.{DLL_EXTENSION}"));
-    }
+    let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+    let src = write_artifact(&build, ArtifactKind::Native, b"new").await;
+    tokio::fs::write(&dst, b"old").await.unwrap();
+    let err = build
+      .install_binary(ArtifactKind::Native)
+      .await
+      .unwrap_err();
+    display.shutdown(false).await;
 
-    #[test]
-    fn test_parser_name_with_prefix() {
-        let name = parser_name_and_ext(
-            &GrammarName::from("typescript"),
-            ArtifactKind::Native,
-            "lib",
-        );
-        assert_eq!(name, format!("libtypescript.{DLL_EXTENSION}"));
-    }
+    assert!(err.to_string().contains("differs from the built parser"));
+    assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"old");
+    assert!(!same_identity(&src, &dst));
+  }
 
-    #[tokio::test]
-    async fn install_missing_destination_creates_hardlink() {
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("grammar");
-        let out_dir = temp_dir.path().join("out");
-        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+  #[tokio::test]
+  async fn install_same_size_different_content_with_force_replaces() {
+    let temp_dir = TempDir::new().unwrap();
+    let grammar_dir = temp_dir.path().join("grammar");
+    let out_dir = temp_dir.path().join("out");
+    tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
+    let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
-        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let src = write_artifact(&build, ArtifactKind::Native, b"parser").await;
-        build.install_binary(ArtifactKind::Native).await.unwrap();
-        display.shutdown(false).await;
+    let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
+    let src = write_artifact(&build, ArtifactKind::Native, b"new").await;
+    tokio::fs::write(&dst, b"old").await.unwrap();
+    build.install_binary(ArtifactKind::Native).await.unwrap();
+    display.shutdown(false).await;
 
-        assert!(same_identity(&src, &dst));
-    }
+    assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"new");
+    assert!(same_identity(&src, &dst));
+  }
 
-    #[tokio::test]
-    async fn install_same_content_relinks_without_force() {
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("grammar");
-        let out_dir = temp_dir.path().join("out");
-        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+  #[tokio::test]
+  async fn install_symlink_requires_force() {
+    let temp_dir = TempDir::new().unwrap();
+    let grammar_dir = temp_dir.path().join("grammar");
+    let out_dir = temp_dir.path().join("out");
+    tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
+    let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
+    let target = out_dir.join(format!("target.{DLL_EXTENSION}"));
 
-        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let src = write_artifact(&build, ArtifactKind::Native, b"parser").await;
-        tokio::fs::write(&dst, b"parser").await.unwrap();
-        assert!(!same_identity(&src, &dst));
+    let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
+    let _src = write_artifact(&build, ArtifactKind::Native, b"new").await;
+    tokio::fs::write(&target, b"old").await.unwrap();
+    symlink(&target, &dst).unwrap();
+    let err = build
+      .install_binary(ArtifactKind::Native)
+      .await
+      .unwrap_err();
+    display.shutdown(false).await;
 
-        build.install_binary(ArtifactKind::Native).await.unwrap();
-        display.shutdown(false).await;
+    assert!(err.to_string().contains("symlink"));
+    assert_eq!(std::fs::read_link(&dst).unwrap(), target);
+    assert_eq!(tokio::fs::read(&target).await.unwrap(), b"old");
+  }
 
-        assert!(same_identity(&src, &dst));
-    }
+  #[tokio::test]
+  async fn install_directory_destination_errors_even_with_force() {
+    let temp_dir = TempDir::new().unwrap();
+    let grammar_dir = temp_dir.path().join("grammar");
+    let out_dir = temp_dir.path().join("out");
+    tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
+    tokio::fs::create_dir_all(&out_dir).await.unwrap();
 
-    #[tokio::test]
-    async fn install_same_size_different_content_requires_force() {
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("grammar");
-        let out_dir = temp_dir.path().join("out");
-        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
+    let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
 
-        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
+    let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
+    let _src = write_artifact(&build, ArtifactKind::Native, b"new").await;
+    tokio::fs::create_dir(&dst).await.unwrap();
+    let err = build
+      .install_binary(ArtifactKind::Native)
+      .await
+      .unwrap_err();
+    display.shutdown(false).await;
 
-        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let src = write_artifact(&build, ArtifactKind::Native, b"new").await;
-        tokio::fs::write(&dst, b"old").await.unwrap();
-        let err = build
-            .install_binary(ArtifactKind::Native)
-            .await
-            .unwrap_err();
-        display.shutdown(false).await;
-
-        assert!(err.to_string().contains("differs from the built parser"));
-        assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"old");
-        assert!(!same_identity(&src, &dst));
-    }
-
-    #[tokio::test]
-    async fn install_same_size_different_content_with_force_replaces() {
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("grammar");
-        let out_dir = temp_dir.path().join("out");
-        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
-
-        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
-
-        let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
-        let src = write_artifact(&build, ArtifactKind::Native, b"new").await;
-        tokio::fs::write(&dst, b"old").await.unwrap();
-        build.install_binary(ArtifactKind::Native).await.unwrap();
-        display.shutdown(false).await;
-
-        assert_eq!(tokio::fs::read(&dst).await.unwrap(), b"new");
-        assert!(same_identity(&src, &dst));
-    }
-
-    #[tokio::test]
-    async fn install_symlink_requires_force() {
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("grammar");
-        let out_dir = temp_dir.path().join("out");
-        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
-
-        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
-        let target = out_dir.join(format!("target.{DLL_EXTENSION}"));
-
-        let (build, display) = test_grammar_build(grammar_dir, out_dir, false).await;
-        let _src = write_artifact(&build, ArtifactKind::Native, b"new").await;
-        tokio::fs::write(&target, b"old").await.unwrap();
-        symlink(&target, &dst).unwrap();
-        let err = build
-            .install_binary(ArtifactKind::Native)
-            .await
-            .unwrap_err();
-        display.shutdown(false).await;
-
-        assert!(err.to_string().contains("symlink"));
-        assert_eq!(std::fs::read_link(&dst).unwrap(), target);
-        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"old");
-    }
-
-    #[tokio::test]
-    async fn install_directory_destination_errors_even_with_force() {
-        let temp_dir = TempDir::new().unwrap();
-        let grammar_dir = temp_dir.path().join("grammar");
-        let out_dir = temp_dir.path().join("out");
-        tokio::fs::create_dir_all(&grammar_dir).await.unwrap();
-        tokio::fs::create_dir_all(&out_dir).await.unwrap();
-
-        let dst = out_dir.join(format!("rust.{DLL_EXTENSION}"));
-
-        let (build, display) = test_grammar_build(grammar_dir, out_dir, true).await;
-        let _src = write_artifact(&build, ArtifactKind::Native, b"new").await;
-        tokio::fs::create_dir(&dst).await.unwrap();
-        let err = build
-            .install_binary(ArtifactKind::Native)
-            .await
-            .unwrap_err();
-        display.shutdown(false).await;
-
-        assert!(err.to_string().contains("directory"));
-        assert!(dst.is_dir());
-    }
+    assert!(err.to_string().contains("directory"));
+    assert!(dst.is_dir());
+  }
 }
