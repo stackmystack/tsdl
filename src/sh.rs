@@ -19,6 +19,19 @@ pub trait Script {
     fn from_str(script: &str) -> Command;
 }
 
+fn signal_display(number: i32) -> Option<String> {
+    let ptr = unsafe { libc::strsignal(number) };
+    if ptr.is_null() {
+        None
+    } else {
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+}
+
 impl Exec for Command {
     fn display(&self) -> Result<String> {
         let program = self.as_std().get_program().to_string_lossy();
@@ -176,18 +189,5 @@ impl Script for Command {
         let mut cmd = Command::new(shell);
         cmd.args(["-c", script]);
         cmd
-    }
-}
-
-fn signal_display(number: i32) -> Option<String> {
-    let ptr = unsafe { libc::strsignal(number) };
-    if ptr.is_null() {
-        None
-    } else {
-        Some(
-            unsafe { std::ffi::CStr::from_ptr(ptr) }
-                .to_string_lossy()
-                .into_owned(),
-        )
     }
 }
