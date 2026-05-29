@@ -788,16 +788,16 @@ impl DisplayActor {
         self.state.grammars.insert(
             id,
             display::GrammarEntry {
+                frozen_elapsed: None,
+                git_ref,
+                msg: Arc::from(""),
+                name,
                 repo: language,
                 repo_id,
-                name,
-                git_ref,
+                started_at: Instant::now(),
                 state: display::ItemState::New,
-                msg: Arc::from(""),
                 step: 0,
                 total: num_tasks,
-                started_at: Instant::now(),
-                frozen_elapsed: None,
             },
         );
 
@@ -824,14 +824,14 @@ impl DisplayActor {
         self.state.repos.insert(
             id,
             display::RepoEntry {
-                name,
+                frozen_elapsed: None,
                 git_ref,
-                state: display::ItemState::New,
                 msg: Arc::from(""),
+                name,
+                started_at: Instant::now(),
+                state: display::ItemState::New,
                 step: 0,
                 total: num_tasks,
-                started_at: Instant::now(),
-                frozen_elapsed: None,
             },
         );
 
