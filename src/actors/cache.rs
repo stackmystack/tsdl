@@ -110,8 +110,33 @@ impl CacheActor {
   /// Process incoming cache messages until the channel closes.
   async fn run(mut self) {
     while let Some(msg) = self.rx.recv().await {
+      use CacheMessage::*;
+
       match msg {
-        CacheMessage::NeedsRebuild {
+        | Get { name, tx } => {
+          Response {
+            tx,
+            kind: ResponseKind::CacheGet { name: &name },
+          }
+          .send(self.db.get(&name).cloned());
+        }
+
+        | HasCompatibleEntries { language, spec, tx } => {
+          Response {
+            tx,
+            kind: ResponseKind::HasCompatibleEntries {
+              language: &language,
+            },
+          }
+          .send(
+            !self.force
+              && self
+                .db
+                .has_compatible_entry_for_language(&language, spec.as_ref()),
+          );
+        }
+
+        | NeedsRebuild {
           hash,
           name,
           spec,
@@ -137,11 +162,7 @@ impl CacheActor {
           .send(decision);
         }
 
-        CacheMessage::Update { entry, name } => {
-          self.db.set(name, entry);
-        }
-
-        CacheMessage::Save { tx } => {
+        | Save { tx } => {
           Response {
             tx,
             kind: ResponseKind::SaveComplete,
@@ -149,27 +170,8 @@ impl CacheActor {
           .send(self.store.save(&self.db).await);
         }
 
-        CacheMessage::HasCompatibleEntries { language, spec, tx } => {
-          Response {
-            tx,
-            kind: ResponseKind::HasCompatibleEntries {
-              language: &language,
-            },
-          }
-          .send(
-            !self.force
-              && self
-                .db
-                .has_compatible_entry_for_language(&language, spec.as_ref()),
-          );
-        }
-
-        CacheMessage::Get { name, tx } => {
-          Response {
-            tx,
-            kind: ResponseKind::CacheGet { name: &name },
-          }
-          .send(self.db.get(&name).cloned());
+        | Update { entry, name } => {
+          self.db.set(name, entry);
         }
       }
     }

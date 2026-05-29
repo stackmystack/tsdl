@@ -61,19 +61,16 @@ fn resolve_build(
 
 /// map cli args + matches into a [`resolvedcommand`] (build, config, or self-update).
 fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
+  use args::{Command::*, ConfigCommand::*};
+
   match &args.command {
-    args::Command::Build => resolve_build(&args.config, args::build_matches(matches), "`build`")
+    | Build => resolve_build(&args.config, args::build_matches(matches), "`build`")
       .map(ResolvedCommand::Build),
-
-    args::Command::Config {
-      command: args::ConfigCommand::Current,
-    } => resolve_build(&args.config, None, "`config current`").map(ResolvedCommand::ConfigCurrent),
-
-    args::Command::Config {
-      command: args::ConfigCommand::Default,
-    } => Ok(ResolvedCommand::ConfigDefault),
-
-    args::Command::Selfupdate { force, target } => Ok(ResolvedCommand::Selfupdate {
+    | Config { command: Current } => {
+      resolve_build(&args.config, None, "`config current`").map(ResolvedCommand::ConfigCurrent)
+    }
+    | Config { command: Default } => Ok(ResolvedCommand::ConfigDefault),
+    | Selfupdate { force, target } => Ok(ResolvedCommand::Selfupdate {
       force: *force,
       target: target.clone(),
     }),
@@ -108,14 +105,16 @@ pub fn setup() -> Result<App> {
 impl ResolvedCommand {
   /// Return a logging policy based on the command type.
   fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
+    use logging::{Implicit::*, Policy};
+
     let implicit = match self {
-      Self::Build(build) => logging::Implicit::BuildDir {
+      | Self::Build(build) => BuildDir {
         dir: &build.command.build_dir,
       },
-      _ => logging::Implicit::None,
+      | _ => logging::Implicit::None,
     };
 
-    logging::Policy { explicit, implicit }
+    Policy { explicit, implicit }
   }
 }
 

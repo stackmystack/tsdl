@@ -441,23 +441,23 @@ impl fmt::Display for Ref {
 impl fmt::Display for RefError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::EmptyRef => write!(f, "git ref cannot be empty"),
-      Self::InvalidRefCharacter { index, character } => {
+      | Self::EmptyRef => write!(f, "git ref cannot be empty"),
+      | Self::InvalidRefCharacter { index, character } => {
         write!(
           f,
           "git ref contains invalid character at byte {index}: {character:?}"
         )
       }
-      Self::InvalidRefSyntax { reason } => write!(f, "git ref is invalid: {reason}"),
-      Self::InvalidShaLength { actual } => {
-        write!(f, "git SHA must be exactly 40 hex characters, got {actual}")
-      }
-      Self::InvalidShaHex { index, character } => {
+      | Self::InvalidShaHex { index, character } => {
         write!(
           f,
           "git SHA contains non-hex character at byte {index}: {character:?}"
         )
       }
+      | Self::InvalidShaLength { actual } => {
+        write!(f, "git SHA must be exactly 40 hex characters, got {actual}")
+      }
+      | Self::InvalidRefSyntax { reason } => write!(f, "git ref is invalid: {reason}"),
     }
   }
 }
@@ -465,8 +465,8 @@ impl fmt::Display for RefError {
 impl fmt::Display for ResolvedRef {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::Tag { label, .. } => write!(f, "{label}"),
-      Self::Ref(git_ref) => write!(f, "{git_ref}"),
+      | Self::Ref(git_ref) => write!(f, "{git_ref}"),
+      | Self::Tag { label, .. } => write!(f, "{label}"),
     }
   }
 }

@@ -7,43 +7,43 @@ use tsdl::{Error, Result, app};
 fn main() -> ExitCode {
   set_panic_hook();
   let app = match app::setup() {
-    Ok(app) => app,
-    Err(e) => {
+    | Err(e) => {
       eprintln!("{e}");
       return ExitCode::FAILURE;
     }
+    | Ok(app) => app,
   };
 
   info!("Starting");
   match run(&app) {
-    Err(Error::Interrupted { signal }) => ExitCode::from(signal.shell_exit_code()),
-    Err(e) => {
+    | Err(Error::Interrupted { signal }) => ExitCode::from(signal.shell_exit_code()),
+    | Err(e) => {
       eprintln!("{e}");
       ExitCode::FAILURE
     }
-    Ok(()) => ExitCode::SUCCESS,
+    | Ok(()) => ExitCode::SUCCESS,
   }
 }
 
 fn run(app: &app::App) -> Result<()> {
+  use app::ResolvedCommand::*;
+
   match &app.command {
-    app::ResolvedCommand::Build(build) => {
+    | Build(build) => {
       let (result, duration) = time(|| tsdl::build::run(&build.command, app));
       match &result {
-        Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
-        Err(Error::Interrupted { signal }) => println!(
+        | Ok(()) => println!("{}", style(format!("Done in {duration}")).green()),
+        | Err(Error::Interrupted { signal }) => println!(
           "{}",
           style(format!("Interrupted by {signal} after {duration}")).yellow()
         ),
-        Err(_) => println!("{}", style(format!("Done in {duration}")).red()),
+        | Err(_) => println!("{}", style(format!("Done in {duration}")).red()),
       }
       result
     }
-    app::ResolvedCommand::ConfigCurrent(build) => tsdl::config::print_current(&build.command),
-    app::ResolvedCommand::ConfigDefault => tsdl::config::print_default(),
-    app::ResolvedCommand::Selfupdate { force, target } => {
-      tsdl::selfupdate::run(*force, target.as_str())
-    }
+    | ConfigCurrent(build) => tsdl::config::print_current(&build.command),
+    | ConfigDefault => tsdl::config::print_default(),
+    | Selfupdate { force, target } => tsdl::selfupdate::run(*force, target.as_str()),
   }
 }
 

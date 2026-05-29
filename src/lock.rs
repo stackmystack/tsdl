@@ -145,10 +145,10 @@ fn same_owner(current: &Owner, previous: &Owner) -> bool {
 impl fmt::Display for Observation {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::LockedBy(owner) => {
+      | Self::LockedBy(owner) => {
         write!(f, "lock is held by PID {} ({})", owner.pid, owner.name)
       }
-      Self::Unknown { pid, reason } => {
+      | Self::Unknown { pid, reason } => {
         if let Some(pid) = pid {
           write!(
             f,
@@ -199,38 +199,38 @@ impl fmt::Display for Owner {
 impl fmt::Display for TakeoverError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::OwnerDisappeared { previous } => write!(
+      | Self::OwnerDisappeared { previous } => write!(
         f,
         "Lock owner PID {} ({}) is no longer running; retry lock acquisition",
         previous.pid, previous.name
       ),
-      Self::OwnerChanged { previous, current } => write!(
+      | Self::OwnerChanged { previous, current } => write!(
         f,
         "Lock owner changed while taking over: previous PID {} ({}), current PID {} ({})",
         previous.pid, previous.name, current.pid, current.name
       ),
-      Self::Cyclic => write!(f, "Lock became cyclic while waiting for release"),
-      Self::Unknown { pid, reason } => {
+      | Self::Cyclic => write!(f, "Lock became cyclic while waiting for release"),
+      | Self::Unknown { pid, reason } => {
         if let Some(pid) = pid {
           write!(f, "Could not identify build lock owner PID {pid}: {reason}")
         } else {
           write!(f, "Could not identify build lock owner: {reason}")
         }
       }
-      Self::SignalFailed { owner } => {
+      | Self::SignalFailed { owner } => {
         write!(
           f,
           "Failed to send SIGTERM to lock owner PID {} ({})",
           owner.pid, owner.name
         )
       }
-      Self::SignalUnsupported { .. } => {
+      | Self::SignalUnsupported { .. } => {
         write!(
           f,
           "SIGTERM is not supported on this platform; cannot terminate lock owner"
         )
       }
-      Self::Timeout {
+      | Self::Timeout {
         previous,
         timeout,
         last_observation,
@@ -241,7 +241,7 @@ impl fmt::Display for TakeoverError {
         previous.pid,
         previous.name
       ),
-      Self::Source(err) => write!(f, "{err}"),
+      | Self::Source(err) => write!(f, "{err}"),
     }
   }
 }
@@ -343,9 +343,9 @@ impl Lock {
     let file = self.open_lock_file()?;
 
     match file.try_lock_exclusive() {
-      Ok(()) => self.activate(file).map(Status::Acquired),
-      Err(err) if is_lock_contention(&err) => Ok(self.lock_status()),
-      Err(err) => Err(Error::Context {
+      | Ok(()) => self.activate(file).map(Status::Acquired),
+      | Err(err) if is_lock_contention(&err) => Ok(self.lock_status()),
+      | Err(err) => Err(Error::Context {
         message: format!("Acquiring build lock {}", self.lock_path.display()),
         source: err.into(),
       }),
@@ -377,14 +377,14 @@ impl Lock {
     }
 
     match process.kill_with(Signal::Term) {
-      Some(true) => {
+      | Some(true) => {
         info!("Sent SIGTERM to lock owner PID {}", owner.pid);
         Ok(())
       }
-      Some(false) => Err(TakeoverError::SignalFailed {
+      | Some(false) => Err(TakeoverError::SignalFailed {
         owner: Box::new(owner.clone()),
       }),
-      None => Err(TakeoverError::SignalUnsupported {
+      | None => Err(TakeoverError::SignalUnsupported {
         owner: Box::new(owner.clone()),
       }),
     }
@@ -420,12 +420,14 @@ impl Lock {
         });
       }
 
+      use Status::*;
+
       match self.try_acquire()? {
-        Status::Acquired(guard) => return Ok(guard),
+        | Acquired(guard) => return Ok(guard),
 
-        Status::Cyclic => return Err(TakeoverError::Cyclic),
+        | Cyclic => return Err(TakeoverError::Cyclic),
 
-        Status::LockedBy(current) => {
+        | LockedBy(current) => {
           if same_owner(&current, owner) {
             last_observation = Observation::LockedBy(Box::new(current));
           } else {
@@ -436,7 +438,7 @@ impl Lock {
           }
         }
 
-        Status::Unknown { pid, reason } => {
+        | Unknown { pid, reason } => {
           // If metadata now points at a different PID that we cannot inspect,
           // stop waiting on the previous owner. Otherwise keep polling until
           // timeout so transient metadata reads or inherited lock handles have
@@ -482,13 +484,13 @@ impl Lock {
   /// Helper for checking process status and determining lock conflicts.
   fn lock_status(&self) -> Status {
     let lock_pid = match self.read_pid() {
-      Ok(pid) => pid,
-      Err(err) => {
+      | Err(err) => {
         return Status::Unknown {
           pid: None,
           reason: format!("lock is held, but owner metadata could not be read: {err}"),
         };
       }
+      | Ok(pid) => pid,
     };
 
     if lock_pid == self.current_pid {
@@ -496,12 +498,12 @@ impl Lock {
     }
 
     match Self::owner_for_pid(lock_pid) {
-      Some(owner) => Status::LockedBy(owner),
-      None => Status::Unknown {
+      | None => Status::Unknown {
         pid: Some(lock_pid),
         reason: "lock is held, but the metadata PID is not running or cannot be inspected"
           .to_string(),
       },
+      | Some(owner) => Status::LockedBy(owner),
     }
   }
 

@@ -82,8 +82,8 @@ pub struct Signal {
 /// Wait for the shutdown signal from the current task-local handle.
 pub async fn cancelled() -> Signal {
   match current() {
-    Some(shutdown) => shutdown.cancelled().await,
-    None => std::future::pending::<Signal>().await,
+    | None => std::future::pending::<Signal>().await,
+    | Some(shutdown) => shutdown.cancelled().await,
   }
 }
 
@@ -171,10 +171,10 @@ impl fmt::Display for PgId {
 impl fmt::Display for PgIdError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::Zero => write!(f, "process group id cannot be zero"),
-      Self::OutOfRange(value) => {
+      | Self::OutOfRange(value) => {
         write!(f, "process group id {value} does not fit in libc::pid_t")
       }
+      | Self::Zero => write!(f, "process group id cannot be zero"),
     }
   }
 }

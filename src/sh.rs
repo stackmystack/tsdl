@@ -70,8 +70,8 @@ impl Exec for Command {
     let base = self.display()?;
 
     match cwd {
-      Some(path) => Ok(format!("[{}] {}", path.display(), base)),
-      None => Ok(base),
+      | None => Ok(base),
+      | Some(path) => Ok(format!("[{}] {}", path.display(), base)),
     }
   }
 
@@ -108,11 +108,11 @@ impl Exec for Command {
     debug!("spawned pid={child_pid:?} cmd={cmd_short}");
 
     let pgid_guard = match (pgid, shutdown::current()) {
-      (Some(pgid), Some(shutdown)) => {
+      | (Some(pgid), Some(shutdown)) => {
         debug!("registered pgid={pgid}");
         Some(shutdown.register_pgid(pgid))
       }
-      _ => None,
+      | _ => None,
     };
 
     // Test hook: pause while the child is running so an external

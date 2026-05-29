@@ -184,16 +184,19 @@ pub async fn verify_artifacts(artifacts: Vec<PathBuf>) -> Decision {
   let mut reasons = Vec::new();
 
   for path in artifacts {
+    use MissReason::*;
+    use io::ErrorKind::NotFound;
+
     match tokio::fs::metadata(&path).await {
-      Ok(metadata) if metadata.is_file() => {}
-      Ok(_) => reasons.push(MissReason::ArtifactNotFile { path }),
-      Err(err) if err.kind() == io::ErrorKind::NotFound => {
-        reasons.push(MissReason::ArtifactMissing { path });
+      | Err(err) if err.kind() == NotFound => {
+        reasons.push(ArtifactMissing { path });
       }
-      Err(err) => reasons.push(MissReason::ArtifactInaccessible {
+      | Err(err) => reasons.push(ArtifactInaccessible {
         path,
         error: err.to_string(),
       }),
+      | Ok(metadata) if metadata.is_file() => {}
+      | Ok(_) => reasons.push(ArtifactNotFile { path }),
     }
   }
 
@@ -324,8 +327,8 @@ impl Db {
     spec: &build::Spec,
   ) -> Decision {
     let decision = match self.get(name) {
-      None => Decision::miss(MissReason::MissingEntry),
-      Some(entry) => entry.rebuild_decision(hash, revision, spec),
+      | None => Decision::miss(MissReason::MissingEntry),
+      | Some(entry) => entry.rebuild_decision(hash, revision, spec),
     };
 
     debug!("Cache decision for {name}: {decision}");
@@ -379,8 +382,8 @@ impl Decision {
   #[must_use]
   pub fn short_message(&self) -> String {
     match self {
-      Self::Hit => "cache hit".to_string(),
-      Self::Miss(miss) => miss.short_message(),
+      | Self::Hit => "cache hit".to_string(),
+      | Self::Miss(miss) => miss.short_message(),
     }
   }
 }
@@ -471,8 +474,8 @@ impl Entry {
 impl fmt::Display for Decision {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Decision::Hit => write!(f, "cache hit"),
-      Decision::Miss(miss) => write!(f, "cache miss: {miss}"),
+      | Decision::Hit => write!(f, "cache hit"),
+      | Decision::Miss(miss) => write!(f, "cache miss: {miss}"),
     }
   }
 }
@@ -504,24 +507,50 @@ impl fmt::Display for Miss {
 impl fmt::Display for MissReason {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::MissingEntry => write!(f, "missing cache entry"),
-      Self::CacheIgnored => write!(f, "cache ignored"),
-      Self::HashChanged { cached, current } => {
+      | Self::ArtifactInaccessible { path, error } => {
+        write!(
+          f,
+          "artifact inaccessible path={} error={error}",
+          path.display()
+        )
+      }
+      | Self::ArtifactMissing { path } => {
+        write!(f, "artifact missing path={}", path.display())
+      }
+      | Self::ArtifactNotFile { path } => {
+        write!(f, "artifact is not a regular file path={}", path.display())
+      }
+      | Self::BuildScriptChanged => write!(f, "build script changed"),
+      | Self::CacheIgnored => write!(f, "cache ignored"),
+      | Self::HashChanged { cached, current } => {
         write!(f, "grammar hash changed cached={cached} current={current}")
       }
-      Self::RepoChanged { cached, current } => {
-        write!(f, "repo changed cached={cached} current={current}")
+      | Self::MissingEntry => write!(f, "missing cache entry"),
+      | Self::OutputsMissing {
+        available,
+        requested,
+      } => {
+        write!(
+          f,
+          "requested output not cached available={available:?} requested={requested:?}"
+        )
       }
-      Self::RefChanged { cached, current } => write!(
+      | Self::PrefixChanged { cached, current } => {
+        write!(f, "prefix changed cached={cached:?} current={current:?}")
+      }
+      | Self::RefChanged { cached, current } => write!(
         f,
         "git ref changed cached={} current={}",
         cached.requested().as_str(),
         current.requested().as_str()
       ),
-      Self::RevisionChanged { cached, current } => {
+      | Self::RepoChanged { cached, current } => {
+        write!(f, "repo changed cached={cached} current={current}")
+      }
+      | Self::RevisionChanged { cached, current } => {
         write!(f, "revision changed cached={cached} current={current}")
       }
-      Self::TreeSitterChanged { cached, current } => write!(
+      | Self::TreeSitterChanged { cached, current } => write!(
         f,
         "tree-sitter changed cached=version:{} repo:{} platform:{} current=version:{} repo:{} platform:{}",
         cached.version,
@@ -531,32 +560,6 @@ impl fmt::Display for MissReason {
         current.repo,
         current.platform
       ),
-      Self::BuildScriptChanged => write!(f, "build script changed"),
-      Self::PrefixChanged { cached, current } => {
-        write!(f, "prefix changed cached={cached:?} current={current:?}")
-      }
-      Self::OutputsMissing {
-        available,
-        requested,
-      } => {
-        write!(
-          f,
-          "requested output not cached available={available:?} requested={requested:?}"
-        )
-      }
-      Self::ArtifactMissing { path } => {
-        write!(f, "artifact missing path={}", path.display())
-      }
-      Self::ArtifactNotFile { path } => {
-        write!(f, "artifact is not a regular file path={}", path.display())
-      }
-      Self::ArtifactInaccessible { path, error } => {
-        write!(
-          f,
-          "artifact inaccessible path={} error={error}",
-          path.display()
-        )
-      }
     }
   }
 }
@@ -564,8 +567,8 @@ impl fmt::Display for MissReason {
 impl fmt::Display for Revision {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::Stable => write!(f, "stable"),
-      Self::Moving { commit } => write!(f, "moving commit={}", commit.as_str()),
+      | Self::Stable => write!(f, "stable"),
+      | Self::Moving { commit } => write!(f, "moving commit={}", commit.as_str()),
     }
   }
 }
@@ -627,9 +630,9 @@ impl Miss {
   #[must_use]
   pub fn short_message(&self) -> String {
     match self.reasons.as_slice() {
-      [] => "cache changed".to_string(),
-      [reason] => reason.short_message().to_string(),
-      reasons => {
+      | [] => "cache changed".to_string(),
+      | [reason] => reason.short_message().to_string(),
+      | reasons => {
         let labels = reasons
           .iter()
           .map(MissReason::short_label)
@@ -646,19 +649,19 @@ impl MissReason {
   #[must_use]
   pub fn short_label(&self) -> &'static str {
     match self {
-      Self::MissingEntry => "missing",
-      Self::CacheIgnored => "ignored",
-      Self::HashChanged { .. } => "hash",
-      Self::RepoChanged { .. } => "repo",
-      Self::RefChanged { .. } => "ref",
-      Self::RevisionChanged { .. } => "revision",
-      Self::TreeSitterChanged { .. } => "tree-sitter",
-      Self::BuildScriptChanged => "script",
-      Self::PrefixChanged { .. } => "prefix",
-      Self::OutputsMissing { .. } => "outputs",
-      Self::ArtifactMissing { .. }
-      | Self::ArtifactNotFile { .. }
-      | Self::ArtifactInaccessible { .. } => "artifact",
+      | Self::ArtifactInaccessible { .. }
+      | Self::ArtifactMissing { .. }
+      | Self::ArtifactNotFile { .. } => "artifact",
+      | Self::BuildScriptChanged => "script",
+      | Self::CacheIgnored => "ignored",
+      | Self::HashChanged { .. } => "hash",
+      | Self::MissingEntry => "missing",
+      | Self::OutputsMissing { .. } => "outputs",
+      | Self::PrefixChanged { .. } => "prefix",
+      | Self::RefChanged { .. } => "ref",
+      | Self::RepoChanged { .. } => "repo",
+      | Self::RevisionChanged { .. } => "revision",
+      | Self::TreeSitterChanged { .. } => "tree-sitter",
     }
   }
 
@@ -666,19 +669,19 @@ impl MissReason {
   #[must_use]
   pub fn short_message(&self) -> &'static str {
     match self {
-      Self::MissingEntry => "not cached",
-      Self::CacheIgnored => "cache ignored",
-      Self::HashChanged { .. } => "grammar changed",
-      Self::RepoChanged { .. } => "repo changed",
-      Self::RefChanged { .. } => "git ref changed",
-      Self::RevisionChanged { .. } => "git ref resolved commit changed",
-      Self::TreeSitterChanged { .. } => "tree-sitter changed",
-      Self::BuildScriptChanged => "build script changed",
-      Self::PrefixChanged { .. } => "prefix changed",
-      Self::OutputsMissing { .. } => "requested output not cached",
-      Self::ArtifactMissing { .. } => "artifact missing",
-      Self::ArtifactNotFile { .. } => "artifact invalid",
-      Self::ArtifactInaccessible { .. } => "artifact inaccessible",
+      | Self::ArtifactInaccessible { .. } => "artifact inaccessible",
+      | Self::ArtifactMissing { .. } => "artifact missing",
+      | Self::ArtifactNotFile { .. } => "artifact invalid",
+      | Self::BuildScriptChanged => "build script changed",
+      | Self::CacheIgnored => "cache ignored",
+      | Self::HashChanged { .. } => "grammar changed",
+      | Self::MissingEntry => "not cached",
+      | Self::OutputsMissing { .. } => "requested output not cached",
+      | Self::PrefixChanged { .. } => "prefix changed",
+      | Self::RefChanged { .. } => "git ref changed",
+      | Self::RepoChanged { .. } => "repo changed",
+      | Self::RevisionChanged { .. } => "git ref resolved commit changed",
+      | Self::TreeSitterChanged { .. } => "tree-sitter changed",
     }
   }
 }
@@ -715,16 +718,16 @@ impl Store {
   /// Delete the cache file from disk.
   pub async fn delete(&self) -> Result<()> {
     match tokio::fs::metadata(&self.file).await {
-      Ok(_) => {
+      | Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+      | Err(err) => {
+        return Err(err)
+          .with_context(|| format!("Reading cache file metadata at {}", self.file.display()));
+      }
+      | Ok(_) => {
         tokio::fs::remove_file(&self.file)
           .await
           .with_context(|| format!("Deleting cache file at {}", self.file.display()))?;
         debug!("Cache file deleted");
-      }
-      Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-      Err(err) => {
-        return Err(err)
-          .with_context(|| format!("Reading cache file metadata at {}", self.file.display()));
       }
     }
 
@@ -826,8 +829,8 @@ mod tests {
 
   fn assert_miss(decision: Decision, expected: &[MissReason]) {
     match decision {
-      Decision::Hit => panic!("expected cache miss"),
-      Decision::Miss(miss) => assert_eq!(miss.reasons, expected),
+      | Decision::Hit => panic!("expected cache miss"),
+      | Decision::Miss(miss) => assert_eq!(miss.reasons, expected),
     }
   }
 

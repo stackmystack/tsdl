@@ -300,8 +300,8 @@ impl ArtifactKind {
   #[must_use]
   fn extension(self) -> &'static str {
     match self {
-      Self::Native => DLL_EXTENSION,
-      Self::Wasm => WASM_EXTENSION,
+      | Self::Native => DLL_EXTENSION,
+      | Self::Wasm => WASM_EXTENSION,
     }
   }
 
@@ -609,10 +609,10 @@ impl GrammarBuild {
     }
 
     match (exact_match, candidates.len()) {
-      (Some(path), _) => Ok(path),
-      (None, 0) => Err(self.missing_parser_error(ext)),
-      (None, 1) => Ok(candidates.into_iter().next().unwrap()),
-      (None, _) => Err(self.multiple_parsers_error(ext, &candidates)),
+      | (None, 0) => Err(self.missing_parser_error(ext)),
+      | (None, 1) => Ok(candidates.into_iter().next().unwrap()),
+      | (None, _) => Err(self.multiple_parsers_error(ext, &candidates)),
+      | (Some(path), _) => Ok(path),
     }
   }
 
@@ -656,17 +656,17 @@ impl GrammarBuild {
       .with_context(|| format!("Reading {}", src.display()))?;
 
     let dst_link_metadata = match fs::symlink_metadata(&dst).await {
-      Ok(metadata) => metadata,
-      Err(err) if err.kind() == io::ErrorKind::NotFound => {
+      | Err(err) if err.kind() == io::ErrorKind::NotFound => {
         self.create_hardlink(&src, &dst).await?;
         return Ok(());
       }
-      Err(err) => {
+      | Err(err) => {
         return Err(Error::Context {
           message: format!("Reading {}", dst.display()),
           source: err.into(),
         });
       }
+      | Ok(metadata) => metadata,
     };
 
     self
@@ -758,15 +758,15 @@ impl GrammarBuild {
     }
 
     match fs::metadata(dst).await {
-      Ok(dst_metadata) if same_file_identity(&src_metadata, &dst_metadata) => return Ok(()),
-      Ok(_) => {}
-      Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-      Err(err) => {
+      | Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+      | Err(err) => {
         return Err(Error::Context {
           message: format!("Reading {}", dst.display()),
           source: err.into(),
         });
       }
+      | Ok(dst_metadata) if same_file_identity(&src_metadata, &dst_metadata) => return Ok(()),
+      | Ok(_) => {}
     }
 
     self.replace_with_hardlink(src, dst).await
@@ -1018,7 +1018,7 @@ impl Ref {
   #[must_use]
   pub fn requested(&self) -> &git::Ref {
     match self {
-      Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
+      | Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
     }
   }
 }
@@ -1175,7 +1175,7 @@ mod tests {
     let err = language.discover_grammars().await.unwrap_err();
 
     match err {
-      Error::Step { name, kind, source } => {
+      | Error::Step { name, kind, source } => {
         assert_eq!(name.as_ref(), "empty");
         assert!(matches!(kind, error::ParserOp::Discover { dir } if dir == build_dir));
         let message = source.as_error().to_string();
@@ -1183,7 +1183,7 @@ mod tests {
         assert!(message.contains("https://example.com/tree-sitter-empty"));
         assert!(message.contains("v1.0.0"));
       }
-      other => panic!("expected discovery step error, got {other:?}"),
+      | other => panic!("expected discovery step error, got {other:?}"),
     }
   }
 

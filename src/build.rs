@@ -72,26 +72,28 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Gua
   // SIGTERM, or another process may replace it.  Each iteration re-checks
   // the lock status and presents the current owner to the user.
   loop {
-    match lock.try_acquire()? {
-      lock::Status::Acquired(guard) => return Ok(guard),
+    use lock::Status::*;
 
-      lock::Status::Cyclic => {
+    match lock.try_acquire()? {
+      | Acquired(guard) => return Ok(guard),
+
+      | Cyclic => {
         info!("lock::Lock already held by this process (cyclic).");
         return Err(Error::Message {
           message: "1+ lock acquisition".into(),
         });
       }
 
-      lock::Status::LockedBy(owner) => match handle_locked_by(lock, &owner, unlock_timeout) {
-        Ok(guard) => return Ok(guard),
-        Err(ref err) if err.is_retryable() => {
+      | LockedBy(owner) => match handle_locked_by(lock, &owner, unlock_timeout) {
+        | Err(ref err) if err.is_retryable() => {
           info!("{err}; re-checking lock status...");
           // continue to the next loop iteration
         }
-        Err(err) => return Err(err.into()),
+        | Err(err) => return Err(err.into()),
+        | Ok(guard) => return Ok(guard),
       },
 
-      lock::Status::Unknown { pid, reason } => {
+      | Unknown { pid, reason } => {
         if let Some(pid) = pid {
           info!("Build directory is locked by PID {pid}, but tsdl could not inspect it: {reason}");
         } else {
@@ -158,24 +160,28 @@ fn get_language_coords(
 ) -> Result<(Url, parser::Ref, Option<String>)> {
   let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
+  use args::ParserConfig::*;
+
   match config {
-    Some(args::ParserConfig::Ref(git_ref)) => Ok((
+    | None => Ok((default_repo(language)?, parser::Ref::head(), None)),
+
+    | Some(Ref(git_ref)) => Ok((
       default_repo(language)?,
       parser::Ref::parse(git_ref)
         .with_context(|| format!("Parsing git ref {git_ref:?} for {language}"))?,
       None,
     )),
 
-    Some(args::ParserConfig::Full {
+    | Some(Full {
       build_script,
       git_ref,
       from,
     }) => {
       let repo = match from {
-        Some(url_str) => {
+        | Some(url_str) => {
           Url::parse(url_str).with_context(|| format!("Parsing {url_str} for {language}"))?
         }
-        None => default_repo(language)?,
+        | None => default_repo(language)?,
       };
 
       Ok((
@@ -185,8 +191,6 @@ fn get_language_coords(
         build_script.clone(),
       ))
     }
-
-    None => Ok((default_repo(language)?, parser::Ref::head(), None)),
   }
 }
 
@@ -292,8 +296,8 @@ fn unique_languages(
   let defined_parsers = command.parsers.as_ref();
 
   let final_languages = match requested_languages {
-    Some(langs) if !langs.is_empty() => langs.clone(),
-    _ => defined_parsers
+    | Some(langs) if !langs.is_empty() => langs.clone(),
+    | _ => defined_parsers
       .map(|parsers| parsers.keys().cloned().collect())
       .unwrap_or_default(),
   };
@@ -303,7 +307,12 @@ fn unique_languages(
 
   for language in unique {
     let result = match get_language_coords(&language, defined_parsers) {
-      Ok((repo, git_ref, build_script)) => Ok(parser::LanguageBuild::new(
+      | Err(err) => Err(Error::Language {
+        name: language,
+        source: err.into(),
+      }),
+
+      | Ok((repo, git_ref, build_script)) => Ok(parser::LanguageBuild::new(
         Context {
           overwrite_output: command.force,
         },
@@ -327,10 +336,6 @@ fn unique_languages(
           target: command.target,
         }),
       )),
-      Err(err) => Err(Error::Language {
-        name: language,
-        source: err.into(),
-      }),
     };
     results.push(result);
   }
