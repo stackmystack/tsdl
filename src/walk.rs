@@ -1,3 +1,6 @@
+//! File-system walker for discovering `grammar.js` files (also used as a git
+//! ls-files path).
+
 use std::path::{Path, PathBuf};
 
 use crate::{cache, git, shutdown, Result};

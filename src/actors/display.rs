@@ -1,3 +1,6 @@
+//! Display actor: ratatui inline render loop (fancy) or plain-text output
+//! (plain). Receives progress updates and materializes terminal output.
+
 use std::io;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -19,6 +22,10 @@ use crate::git;
 // Enums
 // ============================================================
 
+/// Messages sent to the display actor.
+///
+/// Covers registration of new progress rows, per-row updates, and final
+/// shutdown.
 #[derive(Debug)]
 pub enum Message {
     /// Register a repo-level progress line. Returns a `ProgressAddr`.
@@ -55,15 +62,24 @@ pub enum Message {
     },
 }
 
+/// The kind of update to apply to a progress bar.
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateKind {
+    /// Update the status message only.
     Msg,
+    /// Advance to the next step.
     Step,
+    /// Mark the outcome as cached (used before clone is skipped).
     SetOutcomeCached,
+    /// Mark the outcome as built (used before clone proceeds).
     SetOutcomeBuilt,
+    /// Mark the row as cancelled (shutdown).
     Cancel,
+    /// Mark the row as cached at completion.
     Cached,
+    /// Mark the row as finished (built) at completion.
     Fin,
+    /// Mark the row as failed.
     Err,
 }
 
@@ -71,24 +87,36 @@ pub enum UpdateKind {
 // Structs
 // ============================================================
 
+/// The display actor: owns the display state and the message receiver.
 pub struct DisplayActor {
+    /// Shared display state (repos, grammars, layout).
     state: display::State,
+    /// Monotonically increasing ID counter for new rows.
     next_id: display::ItemId,
+    /// Maximum name column width for plain-mode alignment.
     plain_name_width: usize,
+    /// Whether any progress line has been printed (plain mode).
     plain_progress_started: bool,
+    /// Cached rendered cells for the fancy backend.
     grid: display::GridCache,
+    /// Ordered list of visible row specs.
     row_specs: Vec<display::RowSpec>,
+    /// Whether the row list has changed since last render.
     rows_dirty: bool,
+    /// Cached terminal width from the last render cycle.
     last_term_width: Option<usize>,
+    /// Receiver for incoming display messages.
     rx: mpsc::Receiver<Message>,
+    /// Cloned sender used to construct child [`ProgressAddr`] handles.
     tx: mpsc::Sender<Message>,
 }
 
-/// Handle for updating a specific progress bar (repo or grammar).
+/// Handle for sending display messages (register languages, update progress).
 #[derive(Debug, Clone)]
 pub struct DisplayAddr {
     #[allow(dead_code)]
     mode: display::Mode,
+    /// Sender to the display actor.
     tx: mpsc::Sender<Message>,
 }
 
@@ -102,7 +130,9 @@ struct PlainLine {
 /// Handle for updating a specific progress bar (repo or grammar).
 #[derive(Debug, Clone)]
 pub struct ProgressAddr {
+    /// Target row ID for updates.
     id: display::ItemId,
+    /// Sender to the display actor.
     tx: mpsc::Sender<Message>,
 }
 
@@ -110,6 +140,7 @@ pub struct ProgressAddr {
 // Free functions
 // ============================================================
 
+/// Clear from the cursor position to the bottom of the terminal.
 fn clear_from_cursor_down() -> io::Result<()> {
     crossterm::execute!(
         io::stdout(),
@@ -117,6 +148,7 @@ fn clear_from_cursor_down() -> io::Result<()> {
     )
 }
 
+/// Measure the current visible height of the terminal viewport.
 fn current_viewport_height<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
 ) -> Result<u16, B::Error> {
@@ -124,6 +156,7 @@ fn current_viewport_height<B: Backend>(
     Ok(terminal.get_frame().area().height.max(1))
 }
 
+/// Draw a set of lines into the terminal frame.
 fn draw_lines<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
     lines: Vec<Line<'static>>,
@@ -136,6 +169,8 @@ fn draw_lines<B: Backend>(
         .map(|_| ())
 }
 
+/// Draw lines into the viewport, clearing previous content and setting the
+/// cursor below the last visible line.
 fn draw_lines_in_viewport<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
     lines: Vec<Line<'static>>,
@@ -157,6 +192,8 @@ fn draw_lines_in_viewport<B: Backend>(
         .map(|_| ())
 }
 
+/// Transition an item state to `Done`. Returns an error if the state is not
+/// `InProgress(Some(_))`.
 fn finish_item(state: display::ItemState) -> Result<display::ItemState, String> {
     match state {
         display::ItemState::InProgress(Some(outcome)) => Ok(display::ItemState::Done(outcome)),
@@ -172,6 +209,7 @@ fn finish_item(state: display::ItemState) -> Result<display::ItemState, String> 
     }
 }
 
+/// Push lines above the current viewport, scrolling content up.
 fn insert_lines_before_viewport<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
     mut lines: Vec<Line<'static>>,
@@ -194,6 +232,7 @@ fn insert_lines_before_viewport<B: Backend>(
     Ok(())
 }
 
+/// Log and return an error for an invalid finish transition.
 fn invalid_finish(reason: &str, state: display::ItemState) -> Result<display::ItemState, String> {
     let message = format!("{reason}: {state:?}");
     error!("{message}");
@@ -204,6 +243,7 @@ fn invalid_finish(reason: &str, state: display::ItemState) -> Result<display::It
     Err(message)
 }
 
+/// Set the success outcome on an item state without changing its progress phase.
 fn mark_success(state: display::ItemState, outcome: display::SuccessOutcome) -> display::ItemState {
     match state {
         display::ItemState::New | display::ItemState::InProgress(_) => {
@@ -215,6 +255,7 @@ fn mark_success(state: display::ItemState, outcome: display::SuccessOutcome) -> 
     }
 }
 
+/// Format a plain-text message for a grammar row.
 fn plain_grammar_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
     match kind {
         UpdateKind::Err => format!("failed: {msg}"),
@@ -235,6 +276,7 @@ fn plain_grammar_message(kind: UpdateKind, state: display::ItemState, msg: &str)
     }
 }
 
+/// Format a plain-text message for a repo row.
 fn plain_repo_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
     match kind {
         UpdateKind::Err => format!("failed: {msg}"),
@@ -254,6 +296,8 @@ fn plain_repo_message(kind: UpdateKind, state: display::ItemState, msg: &str) ->
     }
 }
 
+/// Render the final report: insert prefix lines above the viewport, then
+/// replace viewport content with the final lines.
 fn render_final_report<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
     lines: Vec<Line<'static>>,
@@ -268,6 +312,8 @@ fn spacer() -> Span<'static> {
     Span::raw(" ")
 }
 
+/// Split a list of lines into a prefix (above viewport) and a suffix that
+/// fits within the viewport height.
 fn split_lines_for_viewport(
     mut lines: Vec<Line<'static>>,
     viewport_height: u16,
@@ -278,6 +324,7 @@ fn split_lines_for_viewport(
     (lines, suffix)
 }
 
+/// Transition `New` or `InProgress` into `InProgress(None)`.
 fn start_item(state: display::ItemState) -> display::ItemState {
     match state {
         display::ItemState::New => display::ItemState::InProgress(None),
@@ -295,16 +342,21 @@ fn start_item(state: display::ItemState) -> display::ItemState {
 impl Addr for DisplayAddr {
     type Message = Message;
 
+    /// Return the actor name for tracing.
     fn name() -> &'static str {
         "DisplayAddr"
     }
 
+    /// Return a reference to the underlying sender.
     fn sender(&self) -> &mpsc::Sender<Self::Message> {
         &self.tx
     }
 }
 
 impl DisplayActor {
+    /// Aggregate the outcome of finished grammar children for a repo.
+    /// Returns `Some(Built)` if any child built, `Some(Cached)` if all are
+    /// cached, or `None` if no children finished.
     fn aggregate_child_done_outcome(
         &self,
         repo_id: display::ItemId,
@@ -332,6 +384,7 @@ impl DisplayActor {
         saw_cached.then_some(display::SuccessOutcome::Cached)
     }
 
+    /// Aggregate the live outcome of still-active grammar children for a repo.
     fn aggregate_child_live_outcome(
         &self,
         repo_id: display::ItemId,
@@ -368,6 +421,7 @@ impl DisplayActor {
         }
     }
 
+    /// Apply a state update to a grammar entry.
     fn apply_grammar_update(grammar: &mut display::GrammarEntry, kind: UpdateKind, msg: Arc<str>) {
         if !grammar.state.is_live() {
             return;
@@ -422,6 +476,7 @@ impl DisplayActor {
         }
     }
 
+    /// Apply a state update to a repo entry.
     fn apply_repo_update(repo: &mut display::RepoEntry, kind: UpdateKind, msg: Arc<str>) {
         if !repo.state.is_live() {
             return;
@@ -482,6 +537,8 @@ impl DisplayActor {
         }
     }
 
+    /// Dispatch an update to the appropriate entry (repo or grammar) and sync
+    /// the parent repo if needed.
     fn apply_update(&mut self, id: display::ItemId, kind: UpdateKind, msg: Arc<str>) {
         if let Some(repo) = self.state.repos.get_mut(&id) {
             Self::apply_repo_update(repo, kind, msg);
@@ -512,6 +569,7 @@ impl DisplayActor {
         }
     }
 
+    /// Cancel all live rows (used on interrupt).
     fn cancel_live_rows(&mut self) {
         let mut parent_ids = Vec::new();
 
@@ -547,6 +605,7 @@ impl DisplayActor {
         }
     }
 
+    /// Render the final fancy report and clean up the terminal.
     fn finish_fancy<B: Backend<Error = io::Error>>(
         &mut self,
         terminal: &mut ratatui::Terminal<B>,
@@ -578,6 +637,7 @@ impl DisplayActor {
         let _ = tx.send(());
     }
 
+    /// Process a single message from the channel.
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::RegisterLanguage {
@@ -727,6 +787,7 @@ impl DisplayActor {
         lines
     }
 
+    /// Build a plain-text progress line for an item (repo or grammar).
     fn plain_progress_line(&self, id: display::ItemId, kind: UpdateKind) -> Option<PlainLine> {
         if let Some(repo) = self.state.repos.get(&id) {
             return Some(PlainLine {
@@ -745,12 +806,14 @@ impl DisplayActor {
         })
     }
 
+    /// Print the build and out directory metadata lines (plain mode).
     fn print_plain_metadata(&self) {
         println!("build: {}", self.state.build_dir.display());
         println!("out:   {}", self.state.out_dir.display());
         println!();
     }
 
+    /// Print a plain progress line with name, step/total, and message.
     fn print_plain_progress(&mut self, line: &PlainLine) {
         if !self.plain_progress_started {
             println!();
@@ -767,11 +830,13 @@ impl DisplayActor {
         );
     }
 
+    /// Print a reference line (plain mode).
     fn print_plain_ref(&mut self, name: &str, git_ref: &str) {
         let width = self.update_plain_name_width(name);
         println!("{name:<width$} @ {git_ref}");
     }
 
+    /// Print the build summary (plain mode).
     fn print_plain_summary(&self) {
         let s = self.state.summary();
         println!();
@@ -781,6 +846,7 @@ impl DisplayActor {
         );
     }
 
+    /// Register a new grammar progress row and return its address.
     fn register_grammar(
         &mut self,
         language: Arc<str>,
@@ -825,6 +891,7 @@ impl DisplayActor {
         }
     }
 
+    /// Register a new repo progress row and return its address.
     fn register_repo(
         &mut self,
         name: Arc<str>,
@@ -856,6 +923,7 @@ impl DisplayActor {
         }
     }
 
+    /// Run the actor event loop, dispatching to fancy or plain mode.
     async fn run(mut self) {
         if self.state.mode == display::Mode::Fancy {
             self.run_fancy().await;
@@ -866,6 +934,7 @@ impl DisplayActor {
 
     // ── Fancy mode ────────────────────────────────────────────────────
 
+    /// Run the fancy (ratatui) render loop.
     async fn run_fancy(&mut self) {
         let viewport_height = crossterm::terminal::size().map_or(40, |(_, h)| h).min(40);
 
@@ -948,6 +1017,7 @@ impl DisplayActor {
 
     // ── Plain mode ────────────────────────────────────────────────────
 
+    /// Run the plain-text progress loop.
     async fn run_plain(&mut self) {
         self.print_plain_metadata();
 
@@ -1003,6 +1073,7 @@ impl DisplayActor {
         }
     }
 
+    /// Spawn the display actor in a background task and return an address handle.
     #[must_use]
     pub fn spawn(build_dir: PathBuf, mode: display::Mode, out_dir: PathBuf) -> DisplayAddr {
         let (tx, rx) = mpsc::channel(256);
@@ -1026,6 +1097,7 @@ impl DisplayActor {
         DisplayAddr::new(mode, tx)
     }
 
+    /// Sync a parent repo's state based on its children's aggregated outcomes.
     fn sync_parent_repo(&mut self, repo_id: display::ItemId) {
         let has_any = self
             .state
@@ -1083,6 +1155,7 @@ impl DisplayActor {
         self.grid.mark_dirty(repo_id);
     }
 
+    /// Update the max plain name width and return the current value.
     fn update_plain_name_width(&mut self, name: &str) -> usize {
         self.plain_name_width = self.plain_name_width.max(name.chars().count());
         self.plain_name_width
@@ -1090,6 +1163,7 @@ impl DisplayActor {
 }
 
 impl DisplayAddr {
+    /// Register a repo-level progress row.
     pub async fn add_language<S: Into<Arc<str>>>(
         &self,
         name: S,
@@ -1105,6 +1179,7 @@ impl DisplayAddr {
         .await
     }
 
+    /// Register a grammar-level progress row.
     pub async fn add_grammar<S: Into<Arc<str>>>(
         &self,
         language: S,
@@ -1122,11 +1197,13 @@ impl DisplayAddr {
         .await
     }
 
+    /// Create a new `DisplayAddr` wrapping a channel sender.
     #[must_use]
     pub fn new(mode: display::Mode, tx: mpsc::Sender<Message>) -> Self {
         Self { mode, tx }
     }
 
+    /// Send a reference line (plain mode; ignored in fancy mode).
     pub async fn reference<S: Into<Arc<str>>>(&self, name: S, git_ref: git::Ref) {
         self.fire(Message::RegisterReference {
             git_ref,
@@ -1135,6 +1212,7 @@ impl DisplayAddr {
         .await;
     }
 
+    /// Shut down the display actor, waiting for cleanup to complete.
     pub async fn shutdown(&self, interrupted: bool) {
         self.request(|tx| Message::Shutdown { interrupted, tx })
             .await;
@@ -1142,6 +1220,7 @@ impl DisplayAddr {
 }
 
 impl ProgressAddr {
+    /// Send a message update (fire-and-forget via `try_send`).
     pub fn msg<S: Into<Arc<str>>>(&self, msg: S) {
         let _ = self.tx.try_send(Message::Update {
             id: self.id,
@@ -1150,6 +1229,7 @@ impl ProgressAddr {
         });
     }
 
+    /// Advance to the next step (fire-and-forget via `try_send`).
     pub fn step<S: Into<Arc<str>>>(&self, msg: S) {
         let _ = self.tx.try_send(Message::Update {
             id: self.id,
@@ -1158,6 +1238,7 @@ impl ProgressAddr {
         });
     }
 
+    /// Send a state update message, awaiting capacity.
     async fn send_state_update(&self, kind: UpdateKind, msg: Arc<str>) {
         let _ = self
             .tx
@@ -1169,29 +1250,35 @@ impl ProgressAddr {
             .await;
     }
 
+    /// Mark the outcome as cached (async).
     pub async fn set_outcome_cached(&self) {
         self.send_state_update(UpdateKind::SetOutcomeCached, Arc::from(""))
             .await;
     }
 
+    /// Cancel the progress row.
     pub async fn cancel(&self) {
         self.send_state_update(UpdateKind::Cancel, Arc::from("cancelled"))
             .await;
     }
 
+    /// Mark the outcome as built (async).
     pub async fn set_outcome_built(&self) {
         self.send_state_update(UpdateKind::SetOutcomeBuilt, Arc::from(""))
             .await;
     }
 
+    /// Complete as cached (async).
     pub async fn cached<S: Into<Arc<str>>>(&self, msg: S) {
         self.send_state_update(UpdateKind::Cached, msg.into()).await;
     }
 
+    /// Complete as built (async).
     pub async fn fin<S: Into<Arc<str>>>(&self, msg: S) {
         self.send_state_update(UpdateKind::Fin, msg.into()).await;
     }
 
+    /// Complete as failed (async).
     pub async fn err<S: Into<Arc<str>>>(&self, msg: S) {
         self.send_state_update(UpdateKind::Err, msg.into()).await;
     }

@@ -1,3 +1,5 @@
+//! PID-based filesystem lock to prevent concurrent builds.
+
 use std::{
     collections::HashSet,
     ffi::OsString,
@@ -111,6 +113,7 @@ pub struct Owner {
 // Free functions
 // ============================================================
 
+/// Join OS command arguments into a single display string.
 fn command_line(cmd: &[std::ffi::OsString]) -> Option<String> {
     if cmd.is_empty() {
         return None;
@@ -124,10 +127,12 @@ fn command_line(cmd: &[std::ffi::OsString]) -> Option<String> {
     )
 }
 
+/// Check if an IO error is caused by lock contention (`WouldBlock`).
 fn is_lock_contention(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock
 }
 
+/// Check if two owner records refer to the same process instance (same PID and start time).
 fn same_owner(current: &Owner, previous: &Owner) -> bool {
     current.pid == previous.pid && current.start_time == previous.start_time
 }
@@ -318,6 +323,7 @@ impl Guard {
 }
 
 impl Lock {
+    /// Create a lock manager for the given build directory.
     #[must_use]
     pub fn new(build_dir: &BuildDir) -> Self {
         Self {
@@ -441,6 +447,7 @@ impl Lock {
             delay = delay.saturating_mul(2).min(Duration::from_millis(500));
         }
     }
+    /// Write PID metadata and construct a Guard after acquiring the OS lock.
     fn activate(&self, mut file: File) -> Result<Guard> {
         self.write_metadata(&mut file)?;
         info!("Acquired lock on build directory");
@@ -450,6 +457,7 @@ impl Lock {
         })
     }
 
+    /// Open (or create) the lock file for exclusive access.
     fn open_lock_file(&self) -> Result<File> {
         if let Some(parent) = self.lock_path.parent() {
             fs::create_dir_all(parent)
@@ -491,6 +499,7 @@ impl Lock {
         }
     }
 
+    /// Read process metadata for a given PID (name, command, cwd, etc.).
     fn owner_for_pid(pid: Pid) -> Option<Owner> {
         let system = Self::system_for_pid(pid);
         let process = system.process(pid)?;
@@ -507,6 +516,7 @@ impl Lock {
         })
     }
 
+    /// Read the PID value stored in the lock file.
     fn read_pid(&self) -> Result<Pid> {
         let content = fs::read_to_string(&self.lock_path)
             .with_context(|| format!("Reading lock file {}", self.lock_path.display()))?;
@@ -522,6 +532,7 @@ impl Lock {
         Ok(Pid::from(pid))
     }
 
+    /// Create a System snapshot with process info for a single PID.
     fn system_for_pid(pid: Pid) -> System {
         let mut system = System::new();
         system.refresh_processes_specifics(
@@ -536,6 +547,7 @@ impl Lock {
         system
     }
 
+    /// Write the current PID into the lock file.
     fn write_metadata(&self, file: &mut File) -> Result<()> {
         file.set_len(0)
             .with_context(|| format!("Truncating lock file {}", self.lock_path.display()))?;

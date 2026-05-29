@@ -1,3 +1,7 @@
+//! Build cache: TOML-backed key-value store indexed by `{language}/{grammar}`.
+//! Entries store grammar hashes and build specs to decide when rebuilds are
+//! needed.
+
 use std::{
     collections::BTreeMap,
     fmt::{self, Write as _},
@@ -22,60 +26,63 @@ use crate::{args, build, build::BuildDir, git, parser, Error, Result, ResultExt}
 /// A cache lookup result for a requested parser build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
+    /// Entry exists and is fully valid.
     Hit,
+    /// Entry is missing or something changed.
     Miss(Miss),
 }
 
 /// One reason a cached parser build cannot be reused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MissReason {
+    /// No cache entry at all.
     MissingEntry,
+    /// Cache was explicitly bypassed (--force).
     CacheIgnored,
+    /// Hash of grammar.js changed.
     HashChanged {
         cached: GrammarHash,
         current: GrammarHash,
     },
-    RepoChanged {
-        cached: String,
-        current: String,
-    },
+    /// Parser repo URL changed.
+    RepoChanged { cached: String, current: String },
+    /// Git ref changed (different tag or branch).
     RefChanged {
         cached: parser::Ref,
         current: parser::Ref,
     },
-    RevisionChanged {
-        cached: Revision,
-        current: Revision,
-    },
+    /// Git ref resolved to a different commit.
+    RevisionChanged { cached: Revision, current: Revision },
+    /// Tree-sitter CLI version changed.
     TreeSitterChanged {
         cached: args::TreeSitter,
         current: args::TreeSitter,
     },
+    /// Build script changed.
     BuildScriptChanged,
-    PrefixChanged {
-        cached: String,
-        current: String,
-    },
+    /// Output filename prefix changed.
+    PrefixChanged { cached: String, current: String },
+    /// Requested output target not covered by cached entry.
     OutputsMissing {
         available: args::Target,
         requested: args::Target,
     },
-    ArtifactMissing {
-        path: PathBuf,
-    },
-    ArtifactNotFile {
-        path: PathBuf,
-    },
-    ArtifactInaccessible {
-        path: PathBuf,
-        error: String,
-    },
+    /// Expected output file is missing from disk.
+    ArtifactMissing { path: PathBuf },
+    /// Expected output path exists but is not a regular file.
+    ArtifactNotFile { path: PathBuf },
+    /// Expected output path exists but cannot be read.
+    ArtifactInaccessible { path: PathBuf, error: String },
 }
 
+/// Parser revision identity: stable (tag/commit) or moving (branch with
+/// pinned commit SHA).
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Revision {
+    /// Stable ref — no per-build commit tracking needed.
     Stable,
+    /// Moving ref — the specific commit SHA checked out this build.
     Moving { commit: git::Sha },
 }
 
@@ -86,6 +93,7 @@ pub enum Revision {
 /// The logical build cache contents.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
+    /// Per-key cache entries (keyed by `"{language}/{grammar}"`).
     #[serde(default)]
     pub parsers: BTreeMap<Key, Entry>,
 }
@@ -104,12 +112,14 @@ pub struct Entry {
     pub outputs: args::Target,
 }
 
+/// SHA-1 hash of a grammar.js file.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GrammarHash(Arc<str>);
 
 struct HashWriter<'a>(&'a mut Sha1);
 
+/// Cache lookup key: `"{language}/{grammar}"`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Key(Arc<str>);
@@ -117,19 +127,23 @@ pub struct Key(Arc<str>);
 /// Details explaining why a cache entry cannot satisfy a requested parser build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Miss {
+    /// Individual reasons for the cache miss.
     pub reasons: Vec<MissReason>,
 }
 
 /// File-backed storage for a [`Db`].
 #[derive(Debug, Clone)]
 pub struct Store {
+    /// Path to the cache file on disk.
     file: PathBuf,
 }
 
 /// Represents a "Delta" to be applied to the cache after a successful build
 #[derive(Debug, Clone)]
 pub struct Update {
+    /// The cache entry to store.
     pub entry: Entry,
+    /// The key to store it under.
     pub name: Key,
 }
 
@@ -157,6 +171,7 @@ pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
     Ok(GrammarHash::from(hex))
 }
 
+/// Sync the directory metadata to disk (best-effort for atomic write safety).
 fn sync_directory(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.sync_all()
 }
@@ -185,6 +200,7 @@ pub async fn verify_artifacts(artifacts: Vec<PathBuf>) -> Decision {
     Decision::from_reasons(reasons)
 }
 
+/// Atomically write cache contents to a file using a temporary file + rename.
 fn write_cache_file_atomically(file: &Path, contents: &str) -> Result<()> {
     let parent = file.parent().ok_or_else(|| Error::Message {
         message: format!(
@@ -228,6 +244,7 @@ fn write_cache_file_atomically(file: &Path, contents: &str) -> Result<()> {
 // ============================================================
 
 impl AsyncWrite for HashWriter<'_> {
+    /// Write bytes into the SHA-1 hasher.
     fn poll_write(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -237,10 +254,12 @@ impl AsyncWrite for HashWriter<'_> {
         Poll::Ready(Ok(buf.len()))
     }
 
+    /// Flush is a no-op for the hasher.
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
+    /// Shutdown is a no-op for the hasher.
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
@@ -263,7 +282,7 @@ impl Db {
     ///
     /// The tree-sitter CLI version, build script, prefix, and target are
     /// intentionally excluded — they affect artefact validity (checked by
-    /// [`needs_rebuild`]) but not whether a prior checkout of the parser
+    /// `needs_rebuild`) but not whether a prior checkout of the parser
     /// source is still usable.
     #[must_use]
     pub fn has_compatible_entry_for_language(
@@ -322,6 +341,7 @@ impl Db {
 }
 
 impl Decision {
+    /// Create a Decision from a list of miss reasons (empty list → Hit).
     #[must_use]
     pub fn from_reasons(reasons: Vec<MissReason>) -> Self {
         if reasons.is_empty() {
@@ -331,11 +351,13 @@ impl Decision {
         }
     }
 
+    /// Check whether this decision indicates a cache hit.
     #[must_use]
     pub fn is_hit(&self) -> bool {
         matches!(self, Self::Hit)
     }
 
+    /// Create a Miss decision for a single reason.
     #[must_use]
     pub fn miss(reason: MissReason) -> Self {
         Self::Miss(Miss {
@@ -343,11 +365,13 @@ impl Decision {
         })
     }
 
+    /// Check whether the decision requires a rebuild.
     #[must_use]
     pub fn needs_rebuild(&self) -> bool {
         !self.is_hit()
     }
 
+    /// Return a short human-readable summary of the decision.
     #[must_use]
     pub fn short_message(&self) -> String {
         match self {
@@ -358,6 +382,8 @@ impl Decision {
 }
 
 impl Entry {
+    /// Compare the current build parameters against this entry and decide
+    /// whether the cached output is still valid.
     #[must_use]
     pub fn rebuild_decision(
         &self,
@@ -424,6 +450,8 @@ impl Entry {
         Decision::from_reasons(reasons)
     }
 
+    /// Check whether two entries describe the same build subject (ignoring
+    /// output coverage).
     #[must_use]
     pub fn same_subject(&self, other: &Self) -> bool {
         self.hash == other.hash
@@ -559,6 +587,7 @@ impl From<String> for Key {
 }
 
 impl GrammarHash {
+    /// Return the hash as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -566,16 +595,19 @@ impl GrammarHash {
 }
 
 impl Key {
+    /// Return the key as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Build the prefix for all keys belonging to a given language.
     #[must_use]
     pub fn language_prefix(language: &parser::LanguageName) -> String {
         format!("{language}/")
     }
 
+    /// Create a cache key from a language name and grammar name.
     #[must_use]
     pub fn new(language: &parser::LanguageName, grammar: &parser::GrammarName) -> Self {
         Self(Arc::from(format!("{language}/{grammar}")))
@@ -583,6 +615,7 @@ impl Key {
 }
 
 impl Miss {
+    /// Return a short human-readable summary of the miss reasons.
     #[must_use]
     pub fn short_message(&self) -> String {
         match self.reasons.as_slice() {
@@ -601,6 +634,7 @@ impl Miss {
 }
 
 impl MissReason {
+    /// Return a compact label for this miss reason (suitable for lists).
     #[must_use]
     pub fn short_label(&self) -> &'static str {
         match self {
@@ -620,6 +654,7 @@ impl MissReason {
         }
     }
 
+    /// Return a one-line message describing this miss reason.
     #[must_use]
     pub fn short_message(&self) -> &'static str {
         match self {
@@ -641,11 +676,13 @@ impl MissReason {
 }
 
 impl Revision {
+    /// Create a stable (non-moving) revision.
     #[must_use]
     pub const fn stable() -> Self {
         Self::Stable
     }
 
+    /// Create a moving revision pinned to a specific commit.
     #[must_use]
     pub const fn moving(commit: git::Sha) -> Self {
         Self::Moving { commit }
@@ -653,6 +690,20 @@ impl Revision {
 }
 
 impl Store {
+    /// Create a store backed by the build directory's cache file.
+    #[must_use]
+    pub fn new(build_dir: &BuildDir) -> Self {
+        Self {
+            file: build_dir.cache_file(),
+        }
+    }
+
+    /// Return the path to the cache file on disk.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.file
+    }
+
     /// Delete the cache file from disk.
     pub async fn delete(&self) -> Result<()> {
         match tokio::fs::metadata(&self.file).await {
@@ -688,18 +739,6 @@ impl Store {
 
         toml::from_str(&contents)
             .with_context(|| format!("Parsing cache file at {}", self.file.display()))
-    }
-
-    #[must_use]
-    pub fn new(build_dir: &BuildDir) -> Self {
-        Self {
-            file: build_dir.cache_file(),
-        }
-    }
-
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.file
     }
 
     /// Atomically save the cache to disk.

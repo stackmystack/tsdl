@@ -1,3 +1,5 @@
+//! Download, prepare, and cache the tree-sitter CLI binary.
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
@@ -32,9 +34,12 @@ enum CliCacheStatus {
 // Structs
 // ============================================================
 
+/// A downloaded and cached tree-sitter CLI binary, ready to use.
 #[derive(Debug, Clone)]
 pub struct PreparedCli {
+    /// Path to the CLI binary on disk.
     pub path: PathBuf,
+    /// The tree-sitter version, platform, and repo used to fetch it.
     pub tree_sitter: args::TreeSitter,
 }
 
@@ -42,6 +47,7 @@ pub struct PreparedCli {
 // Free functions
 // ============================================================
 
+/// Check whether a cached tree-sitter CLI binary is still valid.
 async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
     let metadata = match fs::symlink_metadata(path).await {
         Ok(metadata) => metadata,
@@ -89,6 +95,7 @@ async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
     }
 }
 
+/// Make a binary executable (chmod +x).
 async fn chmod_x(prog: &Path) -> Result<()> {
     let metadata = fs::metadata(prog)
         .await
@@ -100,6 +107,7 @@ async fn chmod_x(prog: &Path) -> Result<()> {
         .with_context(|| format!("chmod +x {}", prog.display()))
 }
 
+/// Download and/or cache the tree-sitter CLI binary for the given tag.
 async fn cli(
     build_dir: &Path,
     handle: &actors::ProgressAddr,
@@ -140,6 +148,7 @@ async fn cli(
     Ok(res)
 }
 
+/// Wrap a result, adding context unless it's an Interrupted error.
 fn context_unless_interrupted<T>(result: Result<T>, message: impl FnOnce() -> String) -> Result<T> {
     match result {
         Ok(value) => Ok(value),
@@ -151,10 +160,12 @@ fn context_unless_interrupted<T>(result: Result<T>, message: impl FnOnce() -> St
     }
 }
 
+/// Format a tree-sitter version string as a git ref for display purposes.
 pub(crate) fn display_tree_sitter_ref(version: &str) -> StdResult<git::Ref, crate::git::RefError> {
     git::Ref::new(normalize_release_ref(version))
 }
 
+/// Download a file via HTTP GET.
 async fn download(url: &str, gz: &Path) -> Result<()> {
     let response = reqwest::get(url)
         .await
@@ -172,6 +183,7 @@ async fn download(url: &str, gz: &Path) -> Result<()> {
         .with_context(|| format!("Writing tree-sitter CLI archive to {}", gz.display()))
 }
 
+/// Download a gzipped CLI binary and install it to the final path.
 async fn download_and_install(url: &str, res: &Path, tag: &str) -> Result<()> {
     let gz = temp_path_for(res, ".gz")?;
     let cli = temp_path_for(res, ".bin")?;
@@ -183,11 +195,13 @@ async fn download_and_install(url: &str, res: &Path, tag: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get the expected CLI version string from a tag (strips "v" prefix).
 fn expected_cli_version(tag: &str) -> Option<&str> {
     let version = tag.strip_prefix('v').unwrap_or(tag);
     is_dotted_numeric_version(version).then_some(version)
 }
 
+/// Find a release tag matching the requested version string.
 fn find_tag(
     refs: &HashMap<String, String>,
     version: &str,
@@ -206,6 +220,7 @@ fn find_tag(
         )
 }
 
+/// Get the first line of a multi-line string (for error summaries).
 fn first_line(message: &str) -> String {
     message
         .lines()
@@ -214,6 +229,7 @@ fn first_line(message: &str) -> String {
         .to_string()
 }
 
+/// Decompress a gzip file to the target path.
 async fn gunzip(gz: &Path, to: &Path) -> Result<()> {
     let file = fs::File::open(gz)
         .await
@@ -233,6 +249,7 @@ async fn gunzip(gz: &Path, to: &Path) -> Result<()> {
         .with_context(|| format!("syncing extracted tree-sitter CLI {}", to.display()))
 }
 
+/// Decompress, verify, and install a downloaded CLI binary.
 async fn install_downloaded_cli(gz: &Path, tmp_cli: &Path, res: &Path, tag: &str) -> Result<()> {
     gunzip(gz, tmp_cli).await?;
     chmod_x(tmp_cli).await?;
@@ -242,6 +259,7 @@ async fn install_downloaded_cli(gz: &Path, tmp_cli: &Path, res: &Path, tag: &str
     promote_cli(tmp_cli, res).await
 }
 
+/// Check if a string looks like a dotted-numeric version.
 fn is_dotted_numeric_version(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -249,6 +267,7 @@ fn is_dotted_numeric_version(value: &str) -> bool {
             .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
 }
 
+/// Normalize a release ref by adding "v" prefix to bare semver.
 fn normalize_release_ref(value: &str) -> String {
     if git::Sha::is_full_sha(value) || value.starts_with('v') {
         value.to_string()
@@ -259,6 +278,7 @@ fn normalize_release_ref(value: &str) -> String {
     }
 }
 
+/// Parse `git ls-remote --refs --tags` output into a tag→sha map.
 fn parse_refs(stdout: &str) -> HashMap<String, String> {
     let mut refs = HashMap::new();
 
@@ -275,6 +295,8 @@ fn parse_refs(stdout: &str) -> HashMap<String, String> {
     refs
 }
 
+/// Download and prepare the tree-sitter CLI binary for the requested version.
+/// Returns the path to the prepared CLI binary and metadata.
 pub async fn prepare(
     build_dir: &Path,
     display: actors::DisplayAddr,
@@ -359,6 +381,7 @@ pub async fn prepare(
     })
 }
 
+/// Move a temp file to its final destination.
 async fn promote_cli(tmp_cli: &Path, res: &Path) -> Result<()> {
     if let Err(err) = fs::rename(tmp_cli, res).await {
         let _ = fs::remove_file(tmp_cli).await;
@@ -374,6 +397,7 @@ async fn promote_cli(tmp_cli: &Path, res: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a user-requested tree-sitter ref into a concrete release tag.
 async fn resolve_release_tag(
     build_dir: &Path,
     handle: &actors::ProgressAddr,
@@ -393,6 +417,7 @@ async fn resolve_release_tag(
 }
 
 #[allow(clippy::missing_panics_doc)]
+/// Look up the git ref for a tree-sitter release tag.
 pub async fn tag(repo: &str, version: &str) -> Result<git::ResolvedRef> {
     let output = Command::new("git")
         .args(["ls-remote", "--refs", "--tags", repo])
@@ -403,6 +428,7 @@ pub async fn tag(repo: &str, version: &str) -> Result<git::ResolvedRef> {
     find_tag(&refs, version).with_context(|| format!("Parsing tree-sitter git ref {version:?}"))
 }
 
+/// Create a temporary file path adjacent to the final path.
 fn temp_path_for(res: &Path, suffix: &str) -> Result<TempPath> {
     let parent = res.parent().ok_or_else(|| Error::Message {
         message: format!(
@@ -428,6 +454,7 @@ fn temp_path_for(res: &Path, suffix: &str) -> Result<TempPath> {
         })
 }
 
+/// Verify that a tree-sitter CLI binary works and matches the expected version.
 async fn verify_cli(path: &Path, tag: &str) -> Result<()> {
     let output =
         context_unless_interrupted(Command::new(path).arg("--version").exec().await, || {

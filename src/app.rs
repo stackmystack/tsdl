@@ -1,3 +1,6 @@
+//! Application entry point: resolves the build command, acquires locks, and
+//! orchestrates the builder.
+
 use std::path::{Path, PathBuf};
 
 use clap::ArgMatches;
@@ -40,6 +43,8 @@ pub struct ResolvedBuild {
 // Free functions
 // ============================================================
 
+/// Resolve the build configuration for a given purpose (e.g. "build", "config
+/// current") and return both the resolved command and its provenance.
 fn resolve_build(
     config_path: &Path,
     matches: Option<&ArgMatches>,
@@ -54,7 +59,8 @@ fn resolve_build(
     })
 }
 
- fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
+/// map cli args + matches into a [`resolvedcommand`] (build, config, or self-update).
+fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
      match &args.command {
          args::Command::Build => {
              resolve_build(&args.config, args::build_matches(matches), "`build`")
@@ -74,6 +80,7 @@ fn resolve_build(
     }
 }
 
+/// Parse CLI args, resolve the command, and initialise logging.
 pub fn setup() -> Result<App> {
     let (args, matches) = config::parse_with_matches();
     let command = resolve_command(&args, &matches)?;
@@ -100,16 +107,17 @@ pub fn setup() -> Result<App> {
 
 
  impl ResolvedCommand {
-     fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
-         let implicit = match self {
-             Self::Build(build) => logging::Implicit::BuildDir {
-                 dir: &build.command.build_dir,
-             },
-             _ => logging::Implicit::None
-         };
+    /// Return a logging policy based on the command type.
+    fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
+        let implicit = match self {
+            Self::Build(build) => logging::Implicit::BuildDir {
+                dir: &build.command.build_dir,
+            },
+            _ => logging::Implicit::None
+        };
 
-         logging::Policy { explicit, implicit }
-     }
+        logging::Policy { explicit, implicit }
+    }
  }
 
 #[cfg(test)]
