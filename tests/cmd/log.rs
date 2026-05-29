@@ -25,6 +25,23 @@ fn build_no_args_should_log_to_default_path() {
 }
 
 #[rstest]
+#[case::nested_in_build_dir("tmp/logs/tsdl.log", "nested inside --build-dir")]
+#[case::lock_file("tmp/tsdl.lock", "conflicts with a tsdl runtime/build file")]
+#[case::cache_file("tmp/cache.toml", "conflicts with a tsdl runtime/build file")]
+fn build_rejects_log_paths_that_conflict_with_fresh_cleanup(
+    #[case] log: &str,
+    #[case] expected: &str,
+) {
+    let mut sandbox = Sandbox::new();
+    sandbox.cmd.args(["build", "--log", log]);
+    sandbox
+        .cmd
+        .assert()
+        .failure()
+        .stderr(p::str::contains(expected));
+}
+
+#[rstest]
 #[case::cwd("tsdl.log")]
 #[case::child_dir("here/log")]
 #[case::build_dir_root("tmp/custom.log")]
@@ -43,23 +60,6 @@ fn build_w_specific_log_path(#[case] log: &str) {
         .child(log)
         .assert(p::path::exists())
         .assert(p::path::is_file());
-}
-
-#[rstest]
-#[case::nested_in_build_dir("tmp/logs/tsdl.log", "nested inside --build-dir")]
-#[case::lock_file("tmp/tsdl.lock", "conflicts with a tsdl runtime/build file")]
-#[case::cache_file("tmp/cache.toml", "conflicts with a tsdl runtime/build file")]
-fn build_rejects_log_paths_that_conflict_with_fresh_cleanup(
-    #[case] log: &str,
-    #[case] expected: &str,
-) {
-    let mut sandbox = Sandbox::new();
-    sandbox.cmd.args(["build", "--log", log]);
-    sandbox
-        .cmd
-        .assert()
-        .failure()
-        .stderr(p::str::contains(expected));
 }
 
 #[rstest]

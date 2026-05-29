@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 
 use crate::{cache, git, shutdown, Result};
 
+// ============================================================
+// Free functions
+// ============================================================
+
 /// Collect grammar.js paths via git ls-files and compute their hashes.
 pub async fn collect_grammar_paths(root: &Path) -> Result<Vec<(PathBuf, cache::GrammarHash)>> {
     let files = git::list_grammar_files(root).await?;
