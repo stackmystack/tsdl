@@ -25,93 +25,232 @@ use crate::{
     Error, Result, ResultExt,
 };
 
+// ============================================================
+// Constants
+// ============================================================
+
 pub const WASM_EXTENSION: &str = "wasm";
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LanguageName(Arc<str>);
-
-impl LanguageName {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn as_arc(&self) -> Arc<str> {
-        self.0.clone()
-    }
-}
-
-impl fmt::Display for LanguageName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for LanguageName {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for LanguageName {
-    fn from(value: &str) -> Self {
-        Self(Arc::from(value))
-    }
-}
-
-impl From<Arc<str>> for LanguageName {
-    fn from(value: Arc<str>) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GrammarName(Arc<str>);
-
-impl GrammarName {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn as_arc(&self) -> Arc<str> {
-        self.0.clone()
-    }
-}
-
-impl fmt::Display for GrammarName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for GrammarName {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for GrammarName {
-    fn from(value: &str) -> Self {
-        Self(Arc::from(value))
-    }
-}
-
-impl From<Arc<str>> for GrammarName {
-    fn from(value: Arc<str>) -> Self {
-        Self(value)
-    }
-}
+// ============================================================
+// Enums
+// ============================================================
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum ArtifactKind {
     Native,
     Wasm,
 }
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum Ref {
+    Stable(git::Ref),
+    Moving(git::Ref),
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+/// A grammar ready to be built, combining definition and cache state
+#[derive(Clone, Debug)]
+pub struct GrammarBuild {
+    pub context: build::Context,
+    pub cache_decision: cache::Decision,
+    pub dir: PathBuf,
+    pub hash: cache::GrammarHash,
+    pub language: LanguageName, // Required for error reporting and cache keys; set from parent LanguageBuild
+    pub name: GrammarName,
+    pub output: build::OutputConfig,
+    pub progress: actors::ProgressAddr, // Use language's handle
+    pub revision: cache::Revision,
+    pub spec: Arc<build::Spec>,
+    pub ts_cli: PathBuf,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GrammarName(Arc<str>);
+
+#[derive(Clone, Debug)]
+pub struct LanguageBuild {
+    pub context: build::Context,
+    pub spec: Arc<build::Spec>,
+    pub name: LanguageName,
+    pub output: build::OutputConfig,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LanguageName(Arc<str>);
+
+// ============================================================
+// Free functions
+// ============================================================
+
+fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
+    let file_name = ts_cli
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::Message {
+            message: format!(
+                "Could not derive artifact id from tree-sitter CLI path {}",
+                ts_cli.display()
+            ),
+        })?;
+    let id = file_name.strip_prefix("tree-sitter-").unwrap_or(file_name);
+    Ok(format!("tsdl-{}", sanitize_path_component(id)))
+}
+
+fn artifact_path_for(
+    build_dir: &Path,
+    ts_cli: &Path,
+    spec: &build::Spec,
+    grammar_name: &GrammarName,
+    kind: ArtifactKind,
+) -> Result<PathBuf> {
+    Ok(build_dir
+        .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
+        .join(parser_name_and_ext(&spec.prefix, grammar_name, kind)))
+}
+
+async fn ensure_parent_dir(path: &Path) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| Error::Message {
+        message: format!(
+            "Could not determine parent directory for {}",
+            path.display()
+        ),
+    })?;
+
+    fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("Creating {}", parent.display()))
+}
+
+fn extract_dir_name(dir: &Path) -> Result<String> {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| Error::Message {
+            message: format!("Could not get dir name for {}", dir.display()),
+        })
+}
+
+/// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
+fn extract_grammar_name(dir: &Path) -> Result<GrammarName> {
+    let dir_name = extract_dir_name(dir)?;
+    let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
+    Ok(GrammarName::from(name))
+}
+
+fn is_dotted_numeric_version(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split('.')
+            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+}
+
+fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
+    git_ref.is_exact_sha()
+        || is_dotted_numeric_version(input)
+        || is_v_dotted_numeric_version(input)
+        || git_ref.as_str().starts_with("refs/tags/")
+}
+
+fn is_v_dotted_numeric_version(value: &str) -> bool {
+    value
+        .strip_prefix('v')
+        .is_some_and(is_dotted_numeric_version)
+}
+
+fn normalize_source_ref(value: &str) -> String {
+    if git::Sha::is_full_sha(value) || value.starts_with('v') {
+        value.to_string()
+    } else if is_dotted_numeric_version(value) {
+        format!("v{value}")
+    } else {
+        value.to_string()
+    }
+}
+
+fn parser_name_and_ext(prefix: &str, grammar_name: &GrammarName, kind: ArtifactKind) -> String {
+    format!("{prefix}{grammar_name}.{}", kind.extension())
+}
+
+fn same_file_identity(a: &Metadata, b: &Metadata) -> bool {
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+async fn same_regular_file_contents(
+    src: &Path,
+    src_metadata: &Metadata,
+    dst: &Path,
+    dst_metadata: &Metadata,
+) -> Result<bool> {
+    if src_metadata.len() != dst_metadata.len() {
+        return Ok(false);
+    }
+
+    let src_hash = cache::hash_file(src).await?;
+    let dst_hash = cache::hash_file(dst).await?;
+    Ok(src_hash == dst_hash)
+}
+
+fn sanitize_path_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn temp_install_path(dst: &Path) -> Result<PathBuf> {
+    let file_name = dst.file_name().ok_or_else(|| Error::Message {
+        message: format!(
+            "Could not create temporary install path for {}",
+            dst.display()
+        ),
+    })?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| Error::Message {
+            message: format!(
+                "System clock is before UNIX epoch while creating temporary install path: {e}"
+            ),
+        })?
+        .as_nanos();
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(format!(".tsdl-{}-{nanos}", process::id()));
+
+    Ok(dst.with_file_name(tmp_name))
+}
+
+async fn verify_artifact(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .await
+        .with_context(|| format!("Reading built artifact {}", path.display()))?;
+
+    if metadata.is_file() {
+        Ok(())
+    } else {
+        Err(Error::Message {
+            message: format!("Built artifact is not a regular file: {}", path.display()),
+        })
+    }
+}
+
+// ============================================================
+// Impls
+// ============================================================
 
 impl ArtifactKind {
     #[must_use]
@@ -128,58 +267,6 @@ impl ArtifactKind {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum Ref {
-    Stable(git::Ref),
-    Moving(git::Ref),
-}
-
-impl Ref {
-    /// The default source ref used for unpinned parser builds.
-    #[must_use]
-    pub fn head() -> Self {
-        Self::Moving(git::Ref::head())
-    }
-
-    /// Create a parser source ref from user input, preserving parser-version
-    /// normalization while classifying refs for cache semantics.
-    pub fn parse(value: &str) -> StdResult<Self, git::RefError> {
-        let normalized = normalize_source_ref(value);
-        let git_ref = git::Ref::new(normalized)?;
-        if is_stable_source_ref(value, &git_ref) {
-            Ok(Self::Stable(git_ref))
-        } else {
-            Ok(Self::Moving(git_ref))
-        }
-    }
-
-    #[must_use]
-    pub const fn is_moving(&self) -> bool {
-        matches!(self, Self::Moving(_))
-    }
-
-    #[must_use]
-    pub const fn is_stable(&self) -> bool {
-        matches!(self, Self::Stable(_))
-    }
-
-    #[must_use]
-    pub fn requested(&self) -> &git::Ref {
-        match self {
-            Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
-        }
-    }
-}
-
-impl Serialize for Ref {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.requested().as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for Ref {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
@@ -190,56 +277,58 @@ impl<'de> Deserialize<'de> for Ref {
     }
 }
 
+impl fmt::Display for GrammarName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for LanguageName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl fmt::Display for Ref {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.requested())
     }
 }
 
-fn is_dotted_numeric_version(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .split('.')
-            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
-}
-
-fn normalize_source_ref(value: &str) -> String {
-    if git::Sha::is_full_sha(value) || value.starts_with('v') {
-        value.to_string()
-    } else if is_dotted_numeric_version(value) {
-        format!("v{value}")
-    } else {
-        value.to_string()
+impl From<&str> for GrammarName {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
     }
 }
 
-fn is_v_dotted_numeric_version(value: &str) -> bool {
-    value
-        .strip_prefix('v')
-        .is_some_and(is_dotted_numeric_version)
+impl From<&str> for LanguageName {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
 }
 
-fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
-    git_ref.is_exact_sha()
-        || is_dotted_numeric_version(input)
-        || is_v_dotted_numeric_version(input)
-        || git_ref.as_str().starts_with("refs/tags/")
+impl From<Arc<str>> for GrammarName {
+    fn from(value: Arc<str>) -> Self {
+        Self(value)
+    }
 }
 
-/// A grammar ready to be built, combining definition and cache state
-#[derive(Clone, Debug)]
-pub struct GrammarBuild {
-    pub context: build::Context,
-    pub cache_decision: cache::Decision,
-    pub dir: PathBuf,
-    pub hash: cache::GrammarHash,
-    pub language: LanguageName, // Required for error reporting and cache keys; set from parent LanguageBuild
-    pub name: GrammarName,
-    pub output: build::OutputConfig,
-    pub progress: actors::ProgressAddr, // Use language's handle
-    pub revision: cache::Revision,
-    pub spec: Arc<build::Spec>,
-    pub ts_cli: PathBuf,
+impl From<Arc<str>> for LanguageName {
+    fn from(value: Arc<str>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<String> for GrammarName {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<String> for LanguageName {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
 }
 
 impl GrammarBuild {
@@ -676,6 +765,7 @@ impl GrammarBuild {
 
         Ok(())
     }
+
     fn missing_parser_error(&self, ext: &str) -> Error {
         Error::Step {
             name: self.language.as_arc(),
@@ -709,12 +799,16 @@ impl GrammarBuild {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LanguageBuild {
-    pub context: build::Context,
-    pub spec: Arc<build::Spec>,
-    pub name: LanguageName,
-    pub output: build::OutputConfig,
+impl GrammarName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn as_arc(&self) -> Arc<str> {
+        self.0.clone()
+    }
 }
 
 impl LanguageBuild {
@@ -800,135 +894,62 @@ impl LanguageBuild {
     }
 }
 
-fn parser_name_and_ext(prefix: &str, grammar_name: &GrammarName, kind: ArtifactKind) -> String {
-    format!("{prefix}{grammar_name}.{}", kind.extension())
-}
+impl LanguageName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 
-fn artifact_path_for(
-    build_dir: &Path,
-    ts_cli: &Path,
-    spec: &build::Spec,
-    grammar_name: &GrammarName,
-    kind: ArtifactKind,
-) -> Result<PathBuf> {
-    Ok(build_dir
-        .join(artifact_dir_name_from_tree_sitter_cli(ts_cli)?)
-        .join(parser_name_and_ext(&spec.prefix, grammar_name, kind)))
-}
-
-fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
-    let file_name = ts_cli
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| Error::Message {
-            message: format!(
-                "Could not derive artifact id from tree-sitter CLI path {}",
-                ts_cli.display()
-            ),
-        })?;
-    let id = file_name.strip_prefix("tree-sitter-").unwrap_or(file_name);
-    Ok(format!("tsdl-{}", sanitize_path_component(id)))
-}
-
-fn sanitize_path_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-
-    if sanitized.is_empty() {
-        "unknown".to_string()
-    } else {
-        sanitized
+    #[must_use]
+    pub fn as_arc(&self) -> Arc<str> {
+        self.0.clone()
     }
 }
 
-async fn ensure_parent_dir(path: &Path) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| Error::Message {
-        message: format!(
-            "Could not determine parent directory for {}",
-            path.display()
-        ),
-    })?;
+impl Ref {
+    /// The default source ref used for unpinned parser builds.
+    #[must_use]
+    pub fn head() -> Self {
+        Self::Moving(git::Ref::head())
+    }
 
-    fs::create_dir_all(parent)
-        .await
-        .with_context(|| format!("Creating {}", parent.display()))
-}
+    /// Create a parser source ref from user input, preserving parser-version
+    /// normalization while classifying refs for cache semantics.
+    pub fn parse(value: &str) -> StdResult<Self, git::RefError> {
+        let normalized = normalize_source_ref(value);
+        let git_ref = git::Ref::new(normalized)?;
+        if is_stable_source_ref(value, &git_ref) {
+            Ok(Self::Stable(git_ref))
+        } else {
+            Ok(Self::Moving(git_ref))
+        }
+    }
 
-async fn verify_artifact(path: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)
-        .await
-        .with_context(|| format!("Reading built artifact {}", path.display()))?;
+    #[must_use]
+    pub const fn is_moving(&self) -> bool {
+        matches!(self, Self::Moving(_))
+    }
 
-    if metadata.is_file() {
-        Ok(())
-    } else {
-        Err(Error::Message {
-            message: format!("Built artifact is not a regular file: {}", path.display()),
-        })
+    #[must_use]
+    pub const fn is_stable(&self) -> bool {
+        matches!(self, Self::Stable(_))
+    }
+
+    #[must_use]
+    pub fn requested(&self) -> &git::Ref {
+        match self {
+            Self::Stable(git_ref) | Self::Moving(git_ref) => git_ref,
+        }
     }
 }
 
-fn same_file_identity(a: &Metadata, b: &Metadata) -> bool {
-    a.dev() == b.dev() && a.ino() == b.ino()
-}
-
-async fn same_regular_file_contents(
-    src: &Path,
-    src_metadata: &Metadata,
-    dst: &Path,
-    dst_metadata: &Metadata,
-) -> Result<bool> {
-    if src_metadata.len() != dst_metadata.len() {
-        return Ok(false);
+impl Serialize for Ref {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.requested().as_str())
     }
-
-    let src_hash = cache::hash_file(src).await?;
-    let dst_hash = cache::hash_file(dst).await?;
-    Ok(src_hash == dst_hash)
-}
-
-fn temp_install_path(dst: &Path) -> Result<PathBuf> {
-    let file_name = dst.file_name().ok_or_else(|| Error::Message {
-        message: format!(
-            "Could not create temporary install path for {}",
-            dst.display()
-        ),
-    })?;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::Message {
-            message: format!(
-                "System clock is before UNIX epoch while creating temporary install path: {e}"
-            ),
-        })?
-        .as_nanos();
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(".tsdl-{}-{nanos}", process::id()));
-
-    Ok(dst.with_file_name(tmp_name))
-}
-
-fn extract_dir_name(dir: &Path) -> Result<String> {
-    dir.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| Error::Message {
-            message: format!("Could not get dir name for {}", dir.display()),
-        })
-}
-
-/// Extract grammar name from directory (strips "tree-sitter-" prefix if present)
-fn extract_grammar_name(dir: &Path) -> Result<GrammarName> {
-    let dir_name = extract_dir_name(dir)?;
-    let name = dir_name.strip_prefix("tree-sitter-").unwrap_or(&dir_name);
-    Ok(GrammarName::from(name))
 }
 
 #[cfg(test)]
