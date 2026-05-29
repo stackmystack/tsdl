@@ -306,9 +306,9 @@ fn merge_provenance(file: &BuildProvenance, cli: &BuildProvenance) -> BuildProve
         show_config: merge_source(file.show_config, cli.show_config),
         target: merge_source(file.target, cli.target),
         tree_sitter: TreeSitterProvenance {
-            version: merge_source(file.tree_sitter.version, cli.tree_sitter.version),
             platform: merge_source(file.tree_sitter.platform, cli.tree_sitter.platform),
             repo: merge_source(file.tree_sitter.repo, cli.tree_sitter.repo),
+            version: merge_source(file.tree_sitter.version, cli.tree_sitter.version),
         },
         unlock_timeout: merge_source(file.unlock_timeout, cli.unlock_timeout),
     }

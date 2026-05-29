@@ -40,17 +40,17 @@ const TIME_STYLE: Style = Style::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Column {
-    Time,
+    Icon,
+    Msg,
+    Name,
     Ref,
     Step,
-    Icon,
-    Name,
-    Msg,
+    Time,
 }
 
 pub(crate) enum ItemInfo<'a> {
-    Repo(&'a RepoEntry),
     Grammar(&'a GrammarEntry),
+    Repo(&'a RepoEntry),
 }
 
 /// Complete lifecycle state for a display row.
@@ -81,16 +81,16 @@ pub enum Mode {
 
 #[derive(Debug, Clone)]
 pub(crate) enum RowKind {
-    Repo,
     Grammar,
+    Repo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuccessOutcome {
-    /// Cache hit.
-    Cached,
     /// Not cached; work was needed.
     Built,
+    /// Cache hit.
+    Cached,
 }
 
 // ============================================================
@@ -503,43 +503,43 @@ impl ItemId {
 impl ItemInfo<'_> {
     pub(crate) fn state(&self) -> ItemState {
         match self {
-            ItemInfo::Repo(r) => r.state,
             ItemInfo::Grammar(g) => g.state,
+            ItemInfo::Repo(r) => r.state,
         }
     }
 
     pub(crate) fn msg(&self) -> &str {
         match self {
-            ItemInfo::Repo(r) => &r.msg,
             ItemInfo::Grammar(g) => &g.msg,
+            ItemInfo::Repo(r) => &r.msg,
         }
     }
 
     pub(crate) fn step(&self) -> usize {
         match self {
-            ItemInfo::Repo(r) => r.step,
             ItemInfo::Grammar(g) => g.step,
+            ItemInfo::Repo(r) => r.step,
         }
     }
 
     pub(crate) fn total(&self) -> usize {
         match self {
-            ItemInfo::Repo(r) => r.total,
             ItemInfo::Grammar(g) => g.total,
+            ItemInfo::Repo(r) => r.total,
         }
     }
 
     pub(crate) fn git_ref(&self) -> &git::Ref {
         match self {
-            ItemInfo::Repo(r) => &r.git_ref,
             ItemInfo::Grammar(g) => &g.git_ref,
+            ItemInfo::Repo(r) => &r.git_ref,
         }
     }
 
     pub(crate) fn elapsed(&self) -> Duration {
         match self {
-            ItemInfo::Repo(r) => r.elapsed(),
             ItemInfo::Grammar(g) => g.elapsed(),
+            ItemInfo::Repo(r) => r.elapsed(),
         }
     }
 }
@@ -598,13 +598,13 @@ impl State {
         let footer_build = dim_line(format!("build: {}", build_dir.display()));
         let footer_out = dim_line(format!("out:   {}", out_dir.display()));
         Self {
-            mode,
-            repos: HashMap::new(),
-            grammars: HashMap::new(),
             build_dir,
-            out_dir,
             footer_build,
             footer_out,
+            grammars: HashMap::new(),
+            mode,
+            out_dir,
+            repos: HashMap::new(),
         }
     }
 
@@ -708,15 +708,15 @@ impl State {
 
     pub fn get_item_info(&self, spec: &RowSpec) -> ItemInfo<'_> {
         match spec.kind {
-            RowKind::Repo => ItemInfo::Repo(
-                self.repos
-                    .get(&spec.id)
-                    .expect("repo not found for row spec"),
-            ),
             RowKind::Grammar => ItemInfo::Grammar(
                 self.grammars
                     .get(&spec.id)
                     .expect("grammar not found for row spec"),
+            ),
+            RowKind::Repo => ItemInfo::Repo(
+                self.repos
+                    .get(&spec.id)
+                    .expect("repo not found for row spec"),
             ),
         }
     }
@@ -789,8 +789,8 @@ impl State {
 impl SuccessOutcome {
     fn color(self) -> Color {
         match self {
-            SuccessOutcome::Cached => Color::Yellow,
             SuccessOutcome::Built => Color::Blue,
+            SuccessOutcome::Cached => Color::Yellow,
         }
     }
 }

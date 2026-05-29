@@ -236,12 +236,12 @@ impl<'a> Options<'a> {
     #[must_use]
     pub const fn git(indent: &'a str, width: usize) -> Self {
         Self {
-            layout: Layout::Column,
             dense: false,
-            width,
-            padding: 1,
             indent,
+            layout: Layout::Column,
             line_ending: "\n",
+            padding: 1,
+            width,
         }
     }
 }
@@ -256,12 +256,12 @@ mod tests {
 
     const fn options(layout: Layout, width: usize) -> Options<'static> {
         Options {
-            layout,
             dense: false,
-            width,
-            padding: 1,
             indent: "",
+            layout,
             line_ending: "\n",
+            padding: 1,
+            width,
         }
     }
 
@@ -273,12 +273,12 @@ mod tests {
     #[test]
     fn plain_layout_prints_one_indented_item_per_line() {
         let opts = Options {
-            layout: Layout::Plain,
             dense: false,
-            width: 80,
-            padding: 1,
             indent: "Z",
+            layout: Layout::Plain,
             line_ending: "\n",
+            padding: 1,
+            width: 80,
         };
 
         assert_eq!(
