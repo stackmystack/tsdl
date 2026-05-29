@@ -1,3 +1,6 @@
+//! Cache actor: async message handler for cache reads, rebuild decisions, and
+//! updates.
+
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
@@ -12,6 +15,11 @@ use crate::{
 // Enums
 // ============================================================
 
+/// Messages sent to the cache actor.
+///
+/// Each variant is a cache operation: query, update, save, or
+/// compatibility check. Response-bearing variants carry a
+/// [`oneshot::Sender`] for the reply.
 #[derive(Debug)]
 pub enum CacheMessage {
     /// Query if a parser needs rebuild
@@ -64,15 +72,20 @@ enum ResponseKind<'a> {
 
 /// The Cache Actor: Manages cache state and processes messages
 pub struct CacheActor {
+    /// In-memory cache database.
     db: cache::Db,
+    /// File-backed storage for persistence.
     store: cache::Store,
+    /// When true, every query returns a miss.
     force: bool,
+    /// Message receiver channel.
     rx: mpsc::Receiver<CacheMessage>,
 }
 
 /// The Cache Handle: Public interface for sending cache operations
 #[derive(Debug, Clone)]
 pub struct CacheAddr {
+    /// Sender half of the channel to the cache actor.
     tx: mpsc::Sender<CacheMessage>,
 }
 
@@ -93,6 +106,7 @@ impl Addr for CacheAddr {
 }
 
 impl CacheActor {
+    /// Process incoming cache messages until the channel closes.
     async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
             match msg {
@@ -160,6 +174,7 @@ impl CacheActor {
         }
     }
 
+    /// Spawn the cache actor in a background task and return an address handle.
     #[must_use]
     pub fn spawn(db: cache::Db, force: bool, store: cache::Store) -> CacheAddr {
         let (tx, rx) = mpsc::channel(64);
@@ -175,16 +190,18 @@ impl CacheActor {
 }
 
 impl CacheAddr {
+    /// Create a new cache address from a sender.
     #[must_use]
     pub fn new(tx: mpsc::Sender<CacheMessage>) -> Self {
         Self { tx }
     }
 
-    /// Accepts any string type (String, &str, Arc<str>) with minimal cloning
+    /// Accepts any string type (`String`, `&str`, `Arc<str>`) with minimal cloning
     pub async fn get(&self, name: cache::Key) -> Option<cache::Entry> {
         self.request(|tx| CacheMessage::Get { name, tx }).await
     }
 
+    /// Check if the cache has compatible entries for a language (same repo + git ref).
     pub async fn has_compatible_entries(
         &self,
         language: parser::LanguageName,
@@ -194,6 +211,7 @@ impl CacheAddr {
             .await
     }
 
+    /// Ask the cache actor whether a parser needs rebuilding.
     pub async fn needs_rebuild(
         &self,
         name: cache::Key,
@@ -211,10 +229,12 @@ impl CacheAddr {
         .await
     }
 
+    /// Save the cache to disk.
     pub async fn save(&self) -> Result<()> {
         self.request(|tx| CacheMessage::Save { tx }).await
     }
 
+    /// Send a cache update (fire-and-forget).
     pub async fn update(&self, update: cache::Update) {
         self.fire(CacheMessage::Update {
             entry: update.entry,

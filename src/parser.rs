@@ -1,3 +1,6 @@
+//! Per-language and per-grammar build pipeline: clone, discover grammars,
+//! build, install.
+
 use std::{
     env::consts::DLL_EXTENSION,
     fmt,
@@ -41,9 +44,13 @@ enum ArtifactKind {
     Wasm,
 }
 
+/// A parser git ref: either a stable tag/commit or a moving branch whose
+/// checked-out commit gets resolved and pinned at clone time.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum Ref {
+    /// Stable ref (tag or commit SHA): revision is always `Stable`.
     Stable(git::Ref),
+    /// Moving ref (branch): revision changes on each build.
     Moving(git::Ref),
 }
 
@@ -54,31 +61,51 @@ pub enum Ref {
 /// A grammar ready to be built, combining definition and cache state
 #[derive(Clone, Debug)]
 pub struct GrammarBuild {
+    /// Overwrite and other per-build flags.
     pub context: build::Context,
+    /// Cache lookup result for this grammar.
     pub cache_decision: cache::Decision,
+    /// Directory containing the checked-out grammar source.
     pub dir: PathBuf,
+    /// SHA-1 hash of the grammar.js source.
     pub hash: cache::GrammarHash,
-    pub language: LanguageName, // Required for error reporting and cache keys; set from parent LanguageBuild
+    /// Parent language name (for cache keys and error reporting).
+    pub language: LanguageName,
+    /// Grammar name within the parser repo.
     pub name: GrammarName,
+    /// Build and output directory paths.
     pub output: build::OutputConfig,
-    pub progress: actors::ProgressAddr, // Use language's handle
+    /// Handle for updating the progress display.
+    pub progress: actors::ProgressAddr,
+    /// Resolved parser revision (commit SHA for moving refs).
     pub revision: cache::Revision,
+    /// Full build spec (source, ref, tree-sitter version, etc.).
     pub spec: Arc<build::Spec>,
+    /// Path to the tree-sitter CLI binary.
     pub ts_cli: PathBuf,
 }
 
+/// A validated grammar name string, used for cache keys and display.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GrammarName(Arc<str>);
 
+/// A language ready for grammar discovery: has a name, context flags, output
+/// paths, and a resolved build spec.
 #[derive(Clone, Debug)]
 pub struct LanguageBuild {
+    /// Overwrite and other per-build flags.
     pub context: build::Context,
+    /// Language name.
     pub name: LanguageName,
+    /// Build and output directory paths.
     pub output: build::OutputConfig,
+    /// Full build spec (source, ref, tree-sitter version, etc.).
     pub spec: Arc<build::Spec>,
 }
 
+/// A validated language name string, used for cache keys, display, and error
+/// reporting.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LanguageName(Arc<str>);
@@ -87,6 +114,7 @@ pub struct LanguageName(Arc<str>);
 // Free functions
 // ============================================================
 
+/// Derive an artifact subdirectory name from the tree-sitter CLI filename.
 fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
     let file_name = ts_cli
         .file_name()
@@ -101,6 +129,7 @@ fn artifact_dir_name_from_tree_sitter_cli(ts_cli: &Path) -> Result<String> {
     Ok(format!("tsdl-{}", sanitize_path_component(id)))
 }
 
+/// Compute the path to a built artifact for a grammar.
 fn artifact_path_for(
     grammar_name: &GrammarName,
     build_dir: &Path,
@@ -113,6 +142,7 @@ fn artifact_path_for(
         .join(parser_name_and_ext(grammar_name, kind, &spec.prefix)))
 }
 
+/// Create the parent directory for a path if it doesn't exist.
 async fn ensure_parent_dir(path: &Path) -> Result<()> {
     let parent = path.parent().ok_or_else(|| Error::Message {
         message: format!(
@@ -126,6 +156,7 @@ async fn ensure_parent_dir(path: &Path) -> Result<()> {
         .with_context(|| format!("Creating {}", parent.display()))
 }
 
+/// Get the last path component as a string.
 fn extract_dir_name(dir: &Path) -> Result<String> {
     dir.file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -141,6 +172,7 @@ fn extract_grammar_name(dir: &Path) -> Result<GrammarName> {
     Ok(GrammarName::from(name))
 }
 
+/// Check whether a string looks like a dotted-numeric version (e.g. "0.21.0").
 fn is_dotted_numeric_version(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -148,6 +180,7 @@ fn is_dotted_numeric_version(value: &str) -> bool {
             .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
 }
 
+/// Determine whether a source ref is "stable" (tag, SHA, version number).
 fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
     git_ref.is_exact_sha()
         || is_dotted_numeric_version(input)
@@ -155,12 +188,14 @@ fn is_stable_source_ref(input: &str, git_ref: &git::Ref) -> bool {
         || git_ref.as_str().starts_with("refs/tags/")
 }
 
+/// Check if a string matches "v" + dotted numeric version.
 fn is_v_dotted_numeric_version(value: &str) -> bool {
     value
         .strip_prefix('v')
         .is_some_and(is_dotted_numeric_version)
 }
 
+/// Normalize a user-provided source ref: adds "v" prefix to bare version numbers.
 fn normalize_source_ref(value: &str) -> String {
     if git::Sha::is_full_sha(value) || value.starts_with('v') {
         value.to_string()
@@ -171,14 +206,17 @@ fn normalize_source_ref(value: &str) -> String {
     }
 }
 
+/// Build the output filename for a grammar artifact.
 fn parser_name_and_ext(grammar_name: &GrammarName, kind: ArtifactKind, prefix: &str) -> String {
     format!("{prefix}{grammar_name}.{}", kind.extension())
 }
 
+/// Check whether two metadata structs refer to the same file (same device + inode).
 fn same_file_identity(a: &Metadata, b: &Metadata) -> bool {
     a.dev() == b.dev() && a.ino() == b.ino()
 }
 
+/// Check if two files have identical contents (via SHA-1 hash).
 async fn same_regular_file_contents(
     dst: &Path,
     dst_metadata: &Metadata,
@@ -194,6 +232,7 @@ async fn same_regular_file_contents(
     Ok(src_hash == dst_hash)
 }
 
+/// Sanitise a string for use as a filesystem path component.
 fn sanitize_path_component(value: &str) -> String {
     let sanitized = value
         .chars()
@@ -213,6 +252,7 @@ fn sanitize_path_component(value: &str) -> String {
     }
 }
 
+/// Create a temporary path next to the destination for atomic install.
 fn temp_install_path(dst: &Path) -> Result<PathBuf> {
     let file_name = dst.file_name().ok_or_else(|| Error::Message {
         message: format!(
@@ -234,6 +274,7 @@ fn temp_install_path(dst: &Path) -> Result<PathBuf> {
     Ok(dst.with_file_name(tmp_name))
 }
 
+/// Check that a path exists and is a regular file.
 async fn verify_artifact(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path)
         .await
@@ -253,6 +294,7 @@ async fn verify_artifact(path: &Path) -> Result<()> {
 // ============================================================
 
 impl ArtifactKind {
+    /// Get the file extension for this artifact kind (e.g. "so", "dylib", "wasm").
     #[must_use]
     fn extension(self) -> &'static str {
         match self {
@@ -261,6 +303,7 @@ impl ArtifactKind {
         }
     }
 
+    /// Check whether this is a wasm target.
     #[must_use]
     const fn is_wasm(self) -> bool {
         matches!(self, Self::Wasm)
@@ -399,6 +442,7 @@ impl GrammarBuild {
         Ok(Some(update))
     }
 
+    /// Build the tree-sitter CLI command line for a given target.
     fn builtin_build_command(&self, kind: ArtifactKind, output_path: &Path) -> Command {
         let mut cmd = Command::new(self.ts_cli.as_os_str());
         cmd.arg("build");
@@ -411,6 +455,7 @@ impl GrammarBuild {
         cmd
     }
 
+    /// Run the full build pipeline for this grammar (generate, build, install).
     async fn build_grammar(&self) -> Result<()> {
         shutdown::test_delay().await;
         shutdown::check()?;
@@ -434,6 +479,7 @@ impl GrammarBuild {
         Ok(())
     }
 
+    /// Build a single target (native or wasm) and return the artifact path.
     async fn build_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
         shutdown::test_delay().await;
         shutdown::check()?;
@@ -450,6 +496,7 @@ impl GrammarBuild {
         self.build_builtin_target(kind).await
     }
 
+    /// Build a target using the built-in tree-sitter CLI.
     async fn build_builtin_target(&self, kind: ArtifactKind) -> Result<PathBuf> {
         let artifact = self.artifact_path(kind)?;
         ensure_parent_dir(&artifact).await?;
@@ -464,6 +511,7 @@ impl GrammarBuild {
         Ok(artifact)
     }
 
+    /// Build a target using a custom build script.
     async fn build_custom_target(&self, kind: ArtifactKind, script: &str) -> Result<PathBuf> {
         let mut cmd = Command::from_str(script);
         cmd.current_dir(self.dir.as_path())
@@ -478,6 +526,7 @@ impl GrammarBuild {
         Ok(artifact)
     }
 
+    /// Create a Step error indicating a build failure.
     fn build_step_error(&self, err: Error) -> Error {
         Error::Step {
             name: self.language.as_arc(),
@@ -488,6 +537,7 @@ impl GrammarBuild {
         }
     }
 
+    /// Build every target (native and/or wasm) requested by the spec.
     async fn build_targets(&self) -> Result<()> {
         if self.spec.target.native() {
             self.build_target(ArtifactKind::Native).await?;
@@ -500,6 +550,7 @@ impl GrammarBuild {
         Ok(())
     }
 
+    /// Create a hardlink from src to dst.
     async fn create_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
         fs::hard_link(src, dst).await.with_context(|| {
             format!(
@@ -510,6 +561,7 @@ impl GrammarBuild {
         })
     }
 
+    /// Brute-force discover a built artifact by searching the grammar directory.
     async fn brute_force_discover(&self, kind: ArtifactKind) -> Result<PathBuf> {
         let ext = kind.extension();
         let expected_name = self.parser_name_and_ext(kind);
@@ -559,6 +611,7 @@ impl GrammarBuild {
         }
     }
 
+    /// Run tree-sitter generate in the grammar directory.
     async fn generate(&self) -> Result<()> {
         Command::new(self.ts_cli.as_os_str())
             .current_dir(self.dir.as_path())
@@ -575,6 +628,7 @@ impl GrammarBuild {
             })
     }
 
+    /// Install built binary artifacts to the output directory.
     async fn install(&self) -> Result<()> {
         // Find and install parser binary for each extension
         if self.spec.target.native() {
@@ -588,6 +642,7 @@ impl GrammarBuild {
         Ok(())
     }
 
+    /// Install a single binary artifact to the output directory.
     async fn install_binary(&self, kind: ArtifactKind) -> Result<()> {
         let src = self.artifact_path(kind)?;
         let dst = self.output.out_dir.join(self.parser_name_and_ext(kind));
@@ -613,6 +668,7 @@ impl GrammarBuild {
             .await
     }
 
+    /// Handle the case where a destination output file already exists.
     async fn install_over_existing(
         &self,
         src: &Path,
@@ -680,6 +736,7 @@ impl GrammarBuild {
         Ok(())
     }
 
+    /// Copy a custom-built artifact to its canonical build-dir location.
     async fn stage_artifact(&self, src: &Path, dst: &Path) -> Result<()> {
         ensure_parent_dir(dst).await?;
         let src_metadata = fs::metadata(src)
@@ -710,6 +767,7 @@ impl GrammarBuild {
         self.replace_with_hardlink(src, dst).await
     }
 
+    /// Return the list of artifact paths that must exist on disk for a cache hit.
     pub fn required_artifacts_for(
         grammar_name: &GrammarName,
         build_dir: &Path,
@@ -741,6 +799,7 @@ impl GrammarBuild {
         Ok(artifacts)
     }
 
+    /// Compute the artifact path for a given target kind.
     fn artifact_path(&self, kind: ArtifactKind) -> Result<PathBuf> {
         artifact_path_for(
             &self.name,
@@ -751,6 +810,7 @@ impl GrammarBuild {
         )
     }
 
+    /// Atomically replace dst with a hardlink to src (via a temp file + rename).
     async fn replace_with_hardlink(&self, src: &Path, dst: &Path) -> Result<()> {
         let tmp = temp_install_path(dst)?;
         self.create_hardlink(src, &tmp).await?;
@@ -766,6 +826,7 @@ impl GrammarBuild {
         Ok(())
     }
 
+    /// Create an error reporting a missing parser binary.
     fn missing_parser_error(&self, ext: &str) -> Error {
         Error::Step {
             name: self.language.as_arc(),
@@ -780,6 +841,7 @@ impl GrammarBuild {
         }
     }
 
+    /// Create an error reporting multiple candidate parser binaries.
     fn multiple_parsers_error(&self, ext: &str, candidates: &[PathBuf]) -> Error {
         Error::Step {
             name: self.language.as_arc(),
@@ -794,17 +856,20 @@ impl GrammarBuild {
         }
     }
 
+    /// Build the output filename for a grammar artifact (with prefix).
     fn parser_name_and_ext(&self, kind: ArtifactKind) -> String {
         parser_name_and_ext(&self.name, kind, &self.spec.prefix)
     }
 }
 
 impl GrammarName {
+    /// Return the grammar name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Return the grammar name as a cloned `Arc<str>`.
     #[must_use]
     pub fn as_arc(&self) -> Arc<str> {
         self.0.clone()
@@ -812,6 +877,7 @@ impl GrammarName {
 }
 
 impl LanguageBuild {
+    /// Create a new `LanguageBuild`.
     #[must_use]
     pub fn new(
         context: build::Context,
@@ -827,6 +893,8 @@ impl LanguageBuild {
         }
     }
 
+    /// Scan the checkout directory for grammar.js files and return their
+    /// names, hashes, and parent directories.
     pub async fn discover_grammars(
         &self,
     ) -> Result<Vec<(GrammarName, cache::GrammarHash, PathBuf)>> {
@@ -865,6 +933,8 @@ impl LanguageBuild {
         Ok(grammars)
     }
 
+    /// Return a new `LanguageBuild` with the tree-sitter version replaced
+    /// (once the CLI has been resolved).
     #[must_use]
     pub fn with_tree_sitter(mut self, tree_sitter: TreeSitter) -> Self {
         let mut spec = self.spec.as_ref().clone();
@@ -873,6 +943,7 @@ impl LanguageBuild {
         self
     }
 
+    /// Clone/checkout the parser repository at the configured ref.
     pub async fn checkout(&self) -> Result<git::Checkout> {
         git::checkout(
             self.spec.repo.as_str(),
@@ -889,17 +960,20 @@ impl LanguageBuild {
         })
     }
 
+    /// Check whether the existing checkout directory is usable for this language.
     pub async fn is_checkout_usable(&self) -> bool {
         git::is_checkout_usable(self.spec.repo.as_str(), &self.output.build_dir).await
     }
 }
 
 impl LanguageName {
+    /// Return the language name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Return the language name as a cloned `Arc<str>`.
     #[must_use]
     pub fn as_arc(&self) -> Arc<str> {
         self.0.clone()
@@ -925,16 +999,19 @@ impl Ref {
         }
     }
 
+    /// Check whether this is a moving ref (branch).
     #[must_use]
     pub const fn is_moving(&self) -> bool {
         matches!(self, Self::Moving(_))
     }
 
+    /// Check whether this is a stable ref (tag or SHA).
     #[must_use]
     pub const fn is_stable(&self) -> bool {
         matches!(self, Self::Stable(_))
     }
 
+    /// Return the underlying git ref, regardless of moving/stable classification.
     #[must_use]
     pub fn requested(&self) -> &git::Ref {
         match self {

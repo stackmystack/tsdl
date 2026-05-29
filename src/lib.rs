@@ -106,6 +106,7 @@ pub fn absolute_normalize(path: &Path) -> Result<PathBuf> {
     Ok(normalize_components(&absolute))
 }
 
+/// Convert a duration to a human-readable string (e.g. "0.50s", "1mn 30s").
 #[must_use]
 pub fn format_duration(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
@@ -141,6 +142,7 @@ pub fn format_duration(duration: Duration) -> String {
     parts.join(" ")
 }
 
+/// Resolve `.` and `..` components without requiring the path to exist.
 fn normalize_components(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
 
@@ -181,6 +183,7 @@ pub fn prompt_user(question: &str, default_yes: bool) -> Result<bool> {
     Ok(input == "y")
 }
 
+/// Strip the current working directory prefix from a path when possible.
 pub fn relative_to_cwd(dir: &Path) -> PathBuf {
     let canon = dir.canon().unwrap_or_else(|_| dir.to_path_buf());
     let cwd = env::current_dir().unwrap_or_else(|_| dir.to_path_buf());

@@ -1,3 +1,5 @@
+//! Command execution trait (`Exec`) with error formatting.
+
 use std::os::unix::process::CommandExt as _;
 use std::{env, fmt::Write, os::unix::process::ExitStatusExt, process::Output, time::Duration};
 
@@ -27,6 +29,7 @@ pub trait Script {
 // Free functions
 // ============================================================
 
+/// Look up the human-readable name of a Unix signal number.
 fn signal_display(number: i32) -> Option<String> {
     let ptr = unsafe { libc::strsignal(number) };
     if ptr.is_null() {
@@ -45,6 +48,7 @@ fn signal_display(number: i32) -> Option<String> {
 // ============================================================
 
 impl Exec for Command {
+    /// Format the command as a one-line string (program + args).
     fn display(&self) -> Result<String> {
         let program = self.as_std().get_program().to_string_lossy();
         let args = self.as_std().get_args();
@@ -60,6 +64,7 @@ impl Exec for Command {
         Ok(res.trim_end().to_string())
     }
 
+    /// Format the command including the working directory prefix.
     fn display_full(&self) -> Result<String> {
         let cwd = self.as_std().get_current_dir();
         let base = self.display()?;
@@ -70,6 +75,7 @@ impl Exec for Command {
         }
     }
 
+    /// Execute the command, handle shutdown signals, and return the output.
     #[tracing::instrument(skip(self))]
     async fn exec(&mut self) -> Result<Output> {
         let cmd_full = self.display_full()?;
@@ -196,6 +202,7 @@ impl Exec for Command {
 }
 
 impl Script for Command {
+    /// Create a shell command to run a script string.
     fn from_str(script: &str) -> Command {
         let shell = env::var("SHELL").unwrap_or_else(|_| String::from("sh"));
         let mut cmd = Command::new(shell);

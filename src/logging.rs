@@ -1,3 +1,5 @@
+//! Logging/tracing setup: dual stderr+file output, configurable levels.
+
 use std::{
     ffi::OsStr,
     fs::{self, File},
@@ -15,8 +17,12 @@ use crate::{absolute_normalize, args, consts, Error, Result, ResultExt};
 // Enums
 // ============================================================
 
+/// Describes how the log path is determined: explicitly via `--log` or
+/// implicitly derived from the build directory.
 pub enum Implicit<'a> {
+    /// Derive from build directory.
     BuildDir { dir: &'a Path },
+    /// No implicit path — log is disabled unless `--log` is given.
     None,
 }
 
@@ -24,16 +30,24 @@ pub enum Implicit<'a> {
 // Structs
 // ============================================================
 
+/// Wrapper around the non-blocking writer guard to keep the log writer alive.
 #[allow(dead_code)]
 pub struct Guard(WorkerGuard);
 
+/// Log path policy: an explicitly provided path or a fallback to the build
+/// directory.
 pub struct Policy<'a> {
+    /// Path provided via `--log` flag.
     pub explicit: Option<&'a Path>,
+    /// Fallback policy when no explicit path is given.
     pub implicit: Implicit<'a>,
 }
 
+/// Active logging session: owns the resolved log path and the writer guard.
 pub struct Session {
+    /// Resolved log file path on disk.
     path: Option<PathBuf>,
+    /// Non-blocking writer guard (keeps writer alive).
     _guard: Option<Guard>,
 }
 
@@ -41,6 +55,7 @@ pub struct Session {
 // Free functions
 // ============================================================
 
+/// Build a tracing layer that writes formatted log output to a writer.
 fn file_layer(
     writer: tracing_appender::non_blocking::NonBlocking,
     color: bool,
@@ -59,6 +74,7 @@ fn file_layer(
         .boxed()
 }
 
+/// Initialize the logging system from a policy, color setting, and verbosity.
 pub fn init(
     policy: Policy<'_>,
     log_color: args::LogColor,
@@ -89,6 +105,7 @@ pub fn init(
     })
 }
 
+/// Register the global tracing subscriber with optional file and stderr layers.
 fn init_tracing(
     writer: Option<tracing_appender::non_blocking::NonBlocking>,
     color: bool,
@@ -108,6 +125,7 @@ fn init_tracing(
     tracing::subscriber::set_global_default(subscriber).unwrap();
 }
 
+/// Open or create the log file.
 fn open_log_file(log: &Path) -> Result<File> {
     let parent = log.parent().unwrap_or(Path::new("."));
     if !parent.exists() {
@@ -116,6 +134,7 @@ fn open_log_file(log: &Path) -> Result<File> {
     File::create(log).context("Creating log file")
 }
 
+/// Resolve the log path from a policy (explicit + implicit fallback).
 fn resolve_log_path(policy: Policy<'_>) -> Result<Option<PathBuf>> {
     match (policy.explicit, policy.implicit) {
         (Some(log), Implicit::BuildDir { dir }) => validate_log_path(dir, log).map(Some),
@@ -127,6 +146,7 @@ fn resolve_log_path(policy: Policy<'_>) -> Result<Option<PathBuf>> {
     }
 }
 
+/// Build a tracing layer for stderr output (used at DEBUG/TRACE levels).
 fn stderr_layer(
     color: bool,
     filter: LevelFilter,
@@ -145,6 +165,7 @@ fn stderr_layer(
         .boxed()
 }
 
+/// Validate that a log path relative to the build directory is acceptable.
 fn validate_log_path(build_dir: &Path, log: &Path) -> Result<PathBuf> {
     let build_dir = absolute_normalize(build_dir)?;
     let log = absolute_normalize(log)?;
@@ -206,6 +227,7 @@ fn validate_log_path(build_dir: &Path, log: &Path) -> Result<PathBuf> {
     Ok(log)
 }
 
+/// Validate a standalone log path (no build directory context).
 fn validate_standalone_log_path(log: &Path) -> Result<PathBuf> {
     let log = absolute_normalize(log)?;
 
@@ -226,6 +248,7 @@ fn validate_standalone_log_path(log: &Path) -> Result<PathBuf> {
 // ============================================================
 
 impl Session {
+    /// Return the resolved log file path, if any.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()

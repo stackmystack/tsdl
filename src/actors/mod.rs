@@ -1,3 +1,6 @@
+//! Actor system: stream-based build pipeline with `Addr` trait, cache actor,
+//! and display actor.
+
 mod cache;
 mod display;
 
@@ -51,8 +54,11 @@ pub trait Addr {
 // Structs
 // ============================================================
 
+/// Wraps a [`oneshot::Sender`] with a debug-friendly kind label for logging.
 pub struct Response<K, T> {
+    /// Debug label identifying which variant generated this response.
     pub kind: K,
+    /// Channel to send the response value back.
     pub tx: oneshot::Sender<T>,
 }
 
@@ -60,6 +66,8 @@ pub struct Response<K, T> {
 // Free functions
 // ============================================================
 
+/// Clone a parser repo, scan it for grammar.js files, and produce a
+/// `GrammarBuild` for each one after resolving the tree-sitter CLI.
 async fn discover_grammars(
     cache: CacheAddr,
     display: DisplayAddr,
@@ -160,6 +168,7 @@ async fn discover_grammars(
     Ok(builds)
 }
 
+/// Determine the revision (stable or moving commit) for a parser and clone it if needed.
 async fn resolve_revision(
     cache: &CacheAddr,
     language: &parser::LanguageBuild,
@@ -274,6 +283,8 @@ pub async fn run(
     result
 }
 
+/// Core pipeline: prepare tree-sitter CLI concurrently, discover grammars, build
+/// them, and accumulate results.
 async fn run_inner(
     build_dir: &Path,
     cache: CacheAddr,
@@ -404,6 +415,7 @@ async fn wait_for_prepared(
 // ============================================================
 
 impl<K: std::fmt::Debug, T: std::fmt::Debug> Response<K, T> {
+    /// Send a value through the response channel.
     /// # Panics
     ///
     /// Will panic channel is closed.

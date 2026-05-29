@@ -1,4 +1,6 @@
-/// Layout direction for [`format`].
+//! Column-layout algorithm for terminal output (multi-column, dense, plain).
+
+/// Layout direction for [`format()`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     /// Fill down each column before moving right.
@@ -16,7 +18,7 @@ struct DenseLayout {
     widths: Vec<usize>,
 }
 
-/// Options controlling [`format`].
+/// Options controlling [`format()`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options<'a> {
     /// Layout direction.
@@ -33,6 +35,7 @@ pub struct Options<'a> {
     pub line_ending: &'a str,
 }
 
+/// Compute the maximum width of each column from the item widths.
 fn compute_column_widths(
     item_widths: &[usize],
     cols: usize,
@@ -53,6 +56,7 @@ fn compute_column_widths(
     widths
 }
 
+/// Return the visible width of a string (accounting for CJK, emoji, etc.).
 fn display_width(value: &str) -> usize {
     console::measure_text_width(value)
 }
@@ -113,6 +117,7 @@ pub fn format_git<S: AsRef<str>>(items: &[S], indent: &str, width: usize) -> Str
     format(items, Options::git(indent, width))
 }
 
+/// Format items one per line (indented).
 fn format_plain<S: AsRef<str>>(items: &[S], options: Options<'_>) -> String {
     let mut output = String::new();
 
@@ -125,6 +130,7 @@ fn format_plain<S: AsRef<str>>(items: &[S], options: Options<'_>) -> String {
     output
 }
 
+/// Render items into a row/column grid with optional per-column widths.
 fn format_table<S: AsRef<str>>(
     items: &[S],
     item_widths: &[usize],
@@ -166,6 +172,7 @@ fn format_table<S: AsRef<str>>(
     output
 }
 
+/// Check whether `item_index` is the last cell in its row.
 const fn is_last_cell_in_row(
     layout: Layout,
     item_index: usize,
@@ -181,6 +188,7 @@ const fn is_last_cell_in_row(
     }
 }
 
+/// Convert grid coordinates to a linear index based on the layout direction.
 const fn linear_index(cols: usize, layout: Layout, rows: usize, x: usize, y: usize) -> usize {
     match layout {
         Layout::Column => x * rows + y,
@@ -189,10 +197,12 @@ const fn linear_index(cols: usize, layout: Layout, rows: usize, x: usize, y: usi
     }
 }
 
+/// Append `count` space characters to the output string.
 fn push_spaces(output: &mut String, count: usize) {
     output.extend(std::iter::repeat_n(' ', count));
 }
 
+/// Try to reduce row count while keeping total width within the limit.
 fn shrink_columns(
     item_widths: &[usize],
     options: Options<'_>,

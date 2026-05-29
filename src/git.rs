@@ -1,3 +1,5 @@
+//! Git operations: clone, fetch, checkout, ls-files, tag resolution.
+
 use std::{
     ffi::OsStr,
     fmt,
@@ -20,16 +22,24 @@ type RefResult<T> = StdResult<T, RefError>;
 /// Error type for git ref and SHA validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefError {
+    /// Ref string is empty.
     EmptyRef,
+    /// Ref contains an invalid character.
     InvalidRefCharacter { index: usize, character: char },
+    /// Ref has invalid syntax.
     InvalidRefSyntax { reason: &'static str },
+    /// SHA string is not 40 characters long.
     InvalidShaLength { actual: usize },
+    /// SHA string contains non-hex characters.
     InvalidShaHex { index: usize, character: char },
 }
 
+/// A resolved git ref after tag lookup or branch checkout.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ResolvedRef {
+    /// A tag with its resolved commit SHA.
     Tag { label: String, sha: Sha },
+    /// A bare git ref (no tag resolution).
     Ref(Ref),
 }
 
@@ -37,14 +47,18 @@ pub enum ResolvedRef {
 // Structs
 // ============================================================
 
+/// The commit SHA checked out for a given git ref.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Checkout {
+    /// The checked-out commit hash.
     pub commit: Sha,
 }
 
+/// A validated git ref string (branch name, tag, or commit SHA).
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Ref(Arc<str>);
 
+/// A validated 40-character hex SHA-1 commit hash.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Sha(Arc<str>);
 
@@ -52,10 +66,14 @@ pub struct Sha(Arc<str>);
 // Free functions
 // ============================================================
 
+/// Check out a git ref in the given directory (with force flag to handle
+/// remote URL changes).
 pub async fn checkout(repo: &str, cwd: &Path, git_ref: &Ref) -> Result<Checkout> {
     checkout_with_force(repo, cwd, git_ref, false).await
 }
 
+/// Like [`checkout`], but optionally force-clean the working directory even
+/// when the remote URL matches.
 pub async fn checkout_with_force(
     repo: &str,
     cwd: &Path,
@@ -77,6 +95,7 @@ pub async fn checkout_with_force(
 }
 
 // TODO: get rid of async fs completely.
+/// Remove a directory or file at `cwd` if it exists.
 async fn clean_anyway(cwd: &Path) -> Result<()> {
     if cwd.exists() {
         if cwd.is_dir() {
@@ -88,6 +107,7 @@ async fn clean_anyway(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Clone a repository and pull if it already exists.
 pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
     if cwd.exists() {
         Command::new("git")
@@ -104,6 +124,7 @@ pub async fn clone(repo: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetch from origin and reset to `FETCH_HEAD`.
 async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> Result<()> {
     Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -119,11 +140,13 @@ async fn fetch_and_checkout(cwd: &Path, git_ref: &Ref) -> Result<()> {
     Ok(())
 }
 
+/// Get the full SHA of HEAD in the given repo.
 async fn get_head_sha(cwd: &Path) -> Result<Sha> {
     let value = get_head_sha1(cwd).await?;
     Sha::new(value.trim()).context("Parsing HEAD commit")
 }
 
+/// Get the raw SHA-1 string of HEAD.
 async fn get_head_sha1(cwd: &Path) -> Result<String> {
     String::from_utf8(
         Command::new("git")
@@ -136,6 +159,7 @@ async fn get_head_sha1(cwd: &Path) -> Result<String> {
     .context("rev-parse HEAD is not a valid utf-8")
 }
 
+/// Get the remote URL for origin.
 async fn get_remote_url(cwd: &Path) -> Result<String> {
     String::from_utf8(
         Command::new("git")
@@ -148,6 +172,7 @@ async fn get_remote_url(cwd: &Path) -> Result<String> {
     .context("remote get-url origin did not return a valid utf-8")
 }
 
+/// Initialise a new repo, add a remote, and fetch+checkout.
 async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> Result<()> {
     clean_anyway(cwd).await?;
     fs::create_dir_all(cwd).await?;
@@ -169,14 +194,18 @@ async fn init_fetch_and_checkout(cwd: &Path, repo: &str, git_ref: &Ref) -> Resul
     Ok(())
 }
 
+/// Check whether the checkout directory contains a usable git repo with the
+/// expected remote URL.
 pub async fn is_checkout_usable(repo: &str, cwd: &Path) -> bool {
     is_valid_git_dir(cwd).await && is_same_remote(cwd, repo).await
 }
 
+/// Check whether a directory has the same origin remote URL as `remote`.
 async fn is_same_remote(cwd: &Path, remote: &str) -> bool {
     remote == get_remote_url(cwd).await.unwrap_or_default().trim()
 }
 
+/// Check whether `cwd` is inside a valid git work tree with a parseable HEAD.
 async fn is_valid_git_dir(cwd: &Path) -> bool {
     let is_inside_work_tree = Command::new("git")
         .current_dir(cwd)
@@ -194,6 +223,8 @@ async fn is_valid_git_dir(cwd: &Path) -> bool {
     is_inside_work_tree && can_parse_head
 }
 
+/// List all grammar.js files tracked by git (excluding common non-source
+/// directories).
 pub async fn list_grammar_files(cwd: &Path) -> Result<Vec<PathBuf>> {
     let output = Command::new("git")
         .current_dir(cwd)
@@ -243,6 +274,7 @@ pub async fn list_grammar_files(cwd: &Path) -> Result<Vec<PathBuf>> {
     Ok(result)
 }
 
+/// Reset HEAD hard to the given ref, fetching first if needed.
 async fn reset_head_hard(cwd: &Path, git_ref: &Ref) -> Result<()> {
     if git_ref.as_str() != get_head_sha1(cwd).await?.trim() {
         Command::new("git")
@@ -255,6 +287,7 @@ async fn reset_head_hard(cwd: &Path, git_ref: &Ref) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a git ref to a tag name or fall back to commit SHA.
 pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> Result<String> {
     // Try to find a tag for this ref
     let tag = Command::new("git")
@@ -281,6 +314,7 @@ pub async fn tag_for_ref(cwd: &Path, git_ref: &Ref) -> Result<String> {
     }
 }
 
+/// Validate a git ref string against Git's refname rules.
 fn validate_git_ref(value: &str) -> RefResult<()> {
     if value.is_empty() {
         return Err(RefError::EmptyRef);
@@ -347,6 +381,7 @@ fn validate_git_ref(value: &str) -> RefResult<()> {
     Ok(())
 }
 
+/// Validate a 40-character hex SHA-1 string.
 fn validate_git_sha(value: &str) -> RefResult<()> {
     if value.len() != 40 {
         return Err(RefError::InvalidShaLength {
@@ -498,6 +533,7 @@ impl Ref {
         }
     }
 
+    /// Check whether the ref is an exact 40-character SHA.
     #[must_use]
     pub fn is_exact_sha(&self) -> bool {
         Sha::is_full_sha(self.as_str())
@@ -530,16 +566,19 @@ impl Sha {
         Ok(Sha(value))
     }
 
+    /// Return the SHA as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Return the first 7 hex characters of the SHA.
     #[must_use]
     pub fn short(&self) -> &str {
         &self.0[..7]
     }
 
+    /// Check whether a string looks like a full 40-character hex SHA.
     #[must_use]
     pub fn is_full_sha(value: &str) -> bool {
         value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())

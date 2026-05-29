@@ -1,3 +1,6 @@
+//! Error type hierarchy: `TsdlError` with nested `Step`, `Parser`,
+//! `Language`, `Command`, and `Build` variants.
+
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,8 +16,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 // ============================================================
 
 pub trait ResultExt<T> {
+    /// Wrap the error value with a context message.
     fn context(self, message: impl Into<String>) -> Result<T>;
 
+    /// Wrap the error value with a lazily-evaluated context message.
     fn with_context(self, message: impl FnOnce() -> String) -> Result<T>;
 }
 
@@ -64,16 +69,22 @@ pub enum Error {
     },
 }
 
+/// The specific parser operation that failed.
 #[derive(Debug, Display)]
 pub enum ParserOp {
+    /// Compilation step inside the checked-out grammar directory.
     #[display("Could not build in {}", dir.display())]
     Build { dir: PathBuf },
+    /// Git clone into the checkout directory.
     #[display("Could not clone to {}", dir.display())]
     Clone { dir: PathBuf },
+    /// Scanning the checkout for grammar.js files.
     #[display("Could not discover grammars in {}", dir.display())]
     Discover { dir: PathBuf },
+    /// Copying or hard-linking the built artifact.
     #[display("Could not copy {} to {}", src.display(), dst.display())]
     Copy { src: PathBuf, dst: PathBuf },
+    /// Running tree-sitter generate.
     #[display("Could not generate in {}", dir.display())]
     Generate { dir: PathBuf },
 }
@@ -82,6 +93,7 @@ pub enum ParserOp {
 // Structs
 // ============================================================
 
+/// Boxed wrapper around [`Error`] to break the recursive type.
 #[derive(Debug)]
 pub struct Cause(Box<Error>);
 
@@ -89,6 +101,7 @@ pub struct Cause(Box<Error>);
 // Free functions
 // ============================================================
 
+/// Format a build error list with indentation.
 fn format_build_errors(w: &mut impl fmt::Write, errors: &[Error], indent: usize) -> fmt::Result {
     let prefix = " ".repeat(indent);
     write!(w, "{prefix}Could not build all parsers.")?;
@@ -101,6 +114,7 @@ fn format_build_errors(w: &mut impl fmt::Write, errors: &[Error], indent: usize)
     Ok(())
 }
 
+/// Format a command execution error with stdout/stderr and indentation.
 fn format_command(
     w: &mut impl fmt::Write,
     indent: usize,
@@ -153,6 +167,7 @@ fn format_command(
     Ok(())
 }
 
+/// Format language collection errors as a comma-separated list.
 fn format_language_collection(
     w: &mut impl fmt::Write,
     related: &[Error],
@@ -179,11 +194,13 @@ fn format_language_collection(
 // ============================================================
 
 impl Cause {
+    /// Wrap an error source into a boxed Cause.
     #[must_use]
     pub fn new(source: impl Into<Error>) -> Self {
         Self(Box::new(source.into()))
     }
 
+    /// Borrow the inner error.
     #[must_use]
     pub fn as_error(&self) -> &Error {
         &self.0
@@ -214,6 +231,7 @@ impl std::error::Error for Error {
 }
 
 impl Error {
+    /// Format the error with a given indentation level, returning a String.
     #[must_use]
     pub fn format_indent(&self, indent: usize) -> String {
         let mut s = String::new();
@@ -221,6 +239,7 @@ impl Error {
         s
     }
 
+    /// Recursively format the error tree with per-level indentation.
     fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
         let prefix = " ".repeat(indent);
         match self {

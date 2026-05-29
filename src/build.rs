@@ -1,3 +1,6 @@
+//! Build orchestrator: resolves languages, acquires the lock, and drives the
+//! per-language build pipeline.
+
 use std::fmt;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -25,24 +28,37 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct BuildDir(PathBuf);
 
+/// Per-language build context flags.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Context {
+    /// Whether to overwrite existing output binaries.
     pub overwrite_output: bool,
 }
 
+/// Paths for the checkout and output directories of a parser build.
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
+    /// Directory where the parser source is checked out.
     pub build_dir: PathBuf,
+    /// Directory where built binaries are installed.
     pub out_dir: PathBuf,
 }
 
+/// Full build specification for a parser: source location, git ref, prefix,
+/// target, and tree-sitter CLI version.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
+    /// Optional custom build script (e.g. "make").
     pub build_script: Option<String>,
+    /// Git ref to check out (tag, branch, or commit SHA).
     pub git_ref: parser::Ref,
+    /// Filename prefix for installed binaries.
     pub prefix: String,
+    /// Repository URL to clone.
     pub repo: Url,
+    /// Build output kind.
     pub target: args::Target,
+    /// Tree-sitter CLI configuration.
     pub tree_sitter: args::TreeSitter,
 }
 
@@ -50,6 +66,7 @@ pub struct Spec {
 // Free functions
 // ============================================================
 
+/// Try to acquire the build lock, prompting the user if another process holds it.
 fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Guard> {
     // Loop because the lock owner may exit naturally between the prompt and
     // SIGTERM, or another process may replace it.  Each iteration re-checks
@@ -88,6 +105,7 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Gua
     }
 }
 
+/// Optionally clear the build directory (--fresh) and ensure it exists.
 fn clear(
     build_dir: &BuildDir,
     guard: &lock::Guard,
@@ -107,6 +125,8 @@ fn clear(
     Ok(())
 }
 
+/// Collect language build definitions from the command arguments, partitioning
+/// results to return all errors if any language fails to resolve.
 fn collect_languages(
     command: &args::BuildCommand,
     build_dir: &BuildDir,
@@ -123,6 +143,7 @@ fn collect_languages(
     }
 }
 
+/// Build the default parser repo URL for a language.
 fn default_repo(language: &str) -> Result<Url> {
     use consts::FROM;
 
@@ -130,6 +151,7 @@ fn default_repo(language: &str) -> Result<Url> {
     Url::parse(&url).with_context(|| format!("Creating url {url} for {language}"))
 }
 
+/// Look up the coordinates (repo URL, git ref, build script) for a language.
 fn get_language_coords(
     language: &str,
     defined_parsers: Option<&BTreeMap<String, args::ParserConfig>>,
@@ -167,6 +189,7 @@ fn get_language_coords(
     }
 }
 
+/// Prompt the user to terminate the lock-holding process, then wait for release.
 fn handle_locked_by(
     lock: &lock::Lock,
     owner: &lock::Owner,
@@ -197,6 +220,7 @@ fn handle_locked_by(
     lock.wait_for_release(owner, unlock_timeout)
 }
 
+/// Set up the runtime and spawn the build pipeline.
 fn ignite(command: &args::BuildCommand, app: &app::App, build_dir: &BuildDir) -> Result<()> {
     fs::create_dir_all(&command.out_dir)?;
 
@@ -240,6 +264,7 @@ fn ignite(command: &args::BuildCommand, app: &app::App, build_dir: &BuildDir) ->
     result
 }
 
+/// Acquire the build lock, clear if requested, and start the build.
 pub fn run(command: &args::BuildCommand, app: &app::App) -> Result<()> {
     if command.show_config {
         crate::config::show(command)?;
@@ -254,6 +279,8 @@ pub fn run(command: &args::BuildCommand, app: &app::App) -> Result<()> {
     Ok(())
 }
 
+/// Produce a sorted, deduplicated list of language build definitions from the
+/// command's requested languages or defined parsers.
 fn unique_languages(
     command: &args::BuildCommand,
     build_dir: &BuildDir,

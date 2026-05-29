@@ -1,3 +1,6 @@
+//! Graceful shutdown: signal handling, process group management, and test
+//! delay hooks.
+
 use std::{
     collections::HashSet,
     fmt,
@@ -76,6 +79,7 @@ pub struct Signal {
 // Free functions
 // ============================================================
 
+/// Wait for the shutdown signal from the current task-local handle.
 pub async fn cancelled() -> Signal {
     match current() {
         Some(shutdown) => shutdown.cancelled().await,
@@ -83,20 +87,24 @@ pub async fn cancelled() -> Signal {
     }
 }
 
+/// Check if shutdown was requested by the current task-local handle.
 pub fn check() -> Result<()> {
     current().map_or(Ok(()), |shutdown| shutdown.check())
 }
 
+/// Get the shutdown handle scoped to the current task, if any.
 #[must_use]
 pub fn current() -> Option<Handle> {
     CURRENT_SHUTDOWN.try_with(Clone::clone).ok()
 }
 
+/// Get the current task-local handle or a no-op default.
 #[must_use]
 pub fn current_or_default() -> Handle {
     current().unwrap_or_default()
 }
 
+/// Install a shutdown handle for the duration of the given future.
 pub async fn scope<F>(shutdown: Handle, future: F) -> F::Output
 where
     F: Future,
@@ -104,6 +112,7 @@ where
     CURRENT_SHUTDOWN.scope(shutdown, future).await
 }
 
+/// Send a Unix signal to an entire process group via `killpg`.
 fn signal_process_group(pgid: PgId, signal: Signal) {
     let rc = unsafe { libc::killpg(pgid.as_pid_t(), signal.number) };
     if rc != 0 {
@@ -130,6 +139,8 @@ pub async fn test_delay() {
     }
 }
 
+/// Test helper that inserts a sleep at every step boundary when
+/// `TSDL_TEST_DELAY_MS` is set. This is a noop in release builds.
 #[cfg(not(debug_assertions))]
 pub async fn test_delay() {
     // noop in release
@@ -175,6 +186,7 @@ impl fmt::Display for Signal {
 }
 
 impl Handle {
+    /// Create a new shutdown handle with no signal set.
     #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = watch::channel(None);
@@ -225,16 +237,19 @@ impl Handle {
         active.remove(&pgid);
     }
 
+    /// Check whether a shutdown signal has been recorded.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.reason().is_some()
     }
 
+    /// Return the signal that triggered shutdown, if any.
     #[must_use]
     pub fn reason(&self) -> Option<Signal> {
         *self.rx.borrow()
     }
 
+    /// Wait until a shutdown signal is set, then return it.
     pub async fn cancelled(&self) -> Signal {
         if let Some(signal) = self.reason() {
             return signal;
@@ -251,6 +266,7 @@ impl Handle {
         }
     }
 
+    /// Return `Err(Interrupted)` if shutdown was signalled, or `Ok(())` otherwise.
     pub fn check(&self) -> Result<()> {
         if let Some(signal) = self.reason() {
             Err(Error::Interrupted { signal })
@@ -285,6 +301,7 @@ impl Handle {
         signal_process_group(pgid, Signal::KILL);
     }
 
+    /// Collect all currently registered child process group IDs.
     fn active_pgids(&self) -> Vec<PgId> {
         self.active_pgids
             .lock()
@@ -294,6 +311,7 @@ impl Handle {
             .collect()
     }
 
+    /// Spawn a background task that listens for OS signals and triggers graceful then forceful shutdown.
     #[cfg(unix)]
     pub fn spawn_signal_listener(&self) -> Result<tokio::task::JoinHandle<()>> {
         use std::process;
@@ -349,6 +367,7 @@ impl PgId {
         self.0.get()
     }
 
+    /// Convert to the platform `pid_t` type (panics if the invariant is violated).
     fn as_pid_t(self) -> libc::pid_t {
         <libc::pid_t>::try_from(self.0.get()).expect("PgId invariant: value fits in libc::pid_t")
     }

@@ -1,3 +1,5 @@
+//! CLI argument definitions using clap.
+
 use std::{collections::BTreeMap, fmt, num::NonZeroUsize, path::PathBuf};
 
 use clap::{
@@ -22,6 +24,7 @@ const TSDL_VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/tsdl.version"
 // Enums
 // ============================================================
 
+/// CLI commands: build parsers, manage config, or self-update.
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum Command {
     /// Build one or many parsers.
@@ -46,49 +49,71 @@ pub enum Command {
     },
 }
 
+/// Subcommands for the `config` command.
 #[derive(clap::Subcommand, Clone, Debug, Default)]
 pub enum ConfigCommand {
+    /// Show the currently active (merged) configuration.
     #[default]
     Current,
+    /// Show the built-in default configuration.
     Default,
 }
 
+/// Whether to emit colored stderr logs (auto, on, off).
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum LogColor {
+    /// Respect terminal capabilities.
     Auto,
+    /// Force plain text (no ANSI escapes).
     No,
+    /// Force colored output.
     Yes,
 }
 
+/// A single parser override, either a bare git ref string or a full block
+/// with optional build script and custom repo URL.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 #[serde(rename_all = "kebab-case")]
 pub enum ParserConfig {
+    /// Full parser configuration block.
     Full {
+        /// Custom build script (e.g. "make" or a shell command).
         #[serde(alias = "cmd", alias = "script")]
         build_script: Option<String>,
 
+        /// Custom repository URL for this parser.
         from: Option<String>,
 
+        /// Git ref to check out (tag, branch, or commit SHA).
         #[serde(rename = "ref")]
         git_ref: String,
     },
+    /// Short form: a bare git ref string.
     Ref(String),
 }
 
+/// Terminal progress display style: auto-detect, force fancy (ratatui), or force plain.
 #[derive(clap::ValueEnum, Clone, Debug, Deserialize, Serialize)]
 pub enum ProgressStyle {
+    /// Respect terminal TTY detection.
     Auto,
+    /// Force ratatui inline rendering.
     Fancy,
+    /// Force plain line-by-line output.
     Plain,
 }
 
+/// Build target: native shared library, WebAssembly, or both.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Target {
+    /// Build a native `.so`/`.dylib`.
     #[default]
     Native,
+    /// Build a `.wasm` binary.
     Wasm,
+    /// Build both targets.
     All,
 }
 
@@ -107,6 +132,7 @@ pub enum VersionBump {
 // Structs
 // ============================================================
 
+/// Top-level CLI arguments.
 #[derive(Clone, Debug, clap::Parser)]
 #[command(author = crate_authors!("\n"), version = TSDL_VERSION, about, styles=get_styles(), allow_external_subcommands = true)]
 #[command(help_template(
@@ -145,19 +171,31 @@ pub struct Args {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BuildCommand {
+    /// Checkout and build directory root.
     pub build_dir: PathBuf,
+    /// Ignore cache, force a full rebuild.
     pub force: bool,
+    /// Clear build directory before starting.
     pub fresh: bool,
+    /// Specific languages (positional CLI args); `None` means "all configured".
     #[serde(skip_serializing)]
     pub languages: Option<Vec<String>>,
+    /// Max concurrent build jobs.
     pub jobs: NonZeroUsize,
+    /// Directory for installed parser binaries.
     #[serde(rename = "out-dir", alias = "out")]
     pub out_dir: PathBuf,
+    /// Per-parser configuration overrides from config file.
     pub parsers: Option<BTreeMap<String, ParserConfig>>,
+    /// Output filename prefix for installed binaries.
     pub prefix: String,
+    /// Print resolved config and exit.
     pub show_config: bool,
+    /// Build output kind (native, wasm, or all).
     pub target: Target,
+    /// Tree-sitter CLI version, platform, and repo.
     pub tree_sitter: TreeSitter,
+    /// Seconds to wait for a stale lock to be released.
     pub unlock_timeout: u64,
 }
 
@@ -207,9 +245,11 @@ pub struct OptionalTreeSitter {
     pub repo: Option<String>,
 }
 
+/// The tree-sitter CLI binary version, platform, and download repo.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TreeSitter {
+    /// Git tag (or ref) of the tree-sitter CLI release.
     #[serde(
         default = "default_tree_sitter_version",
         alias = "git-ref",
@@ -217,9 +257,11 @@ pub struct TreeSitter {
     )]
     pub version: String,
 
+    /// Target platform string used to select the correct release asset.
     #[serde(default = "default_tree_sitter_platform")]
     pub platform: String,
 
+    /// GitHub repository to download the CLI from (owner/name).
     #[serde(default = "default_tree_sitter_repo")]
     pub repo: String,
 }
@@ -228,6 +270,7 @@ pub struct TreeSitter {
 // Free functions
 // ============================================================
 
+/// Get the build subcommand matches, if any.
 #[must_use]
 pub fn build_matches(matches: &ArgMatches) -> Option<&ArgMatches> {
     matches.subcommand().and_then(|(name, sub)| {
@@ -239,24 +282,29 @@ pub fn build_matches(matches: &ArgMatches) -> Option<&ArgMatches> {
     })
 }
 
+/// Return the number of available CPUs as the default job count.
 #[must_use]
 pub fn default_jobs() -> NonZeroUsize {
     NonZeroUsize::new(num_cpus::get()).unwrap_or(NonZeroUsize::MIN)
 }
 
+/// Get the default tree-sitter platform from compile-time constants.
 fn default_tree_sitter_platform() -> String {
     PLATFORM.to_string()
 }
 
+/// Get the default tree-sitter download repo from compile-time constants.
 fn default_tree_sitter_repo() -> String {
     REPO.to_string()
 }
 
+/// Get the default tree-sitter version from compile-time constants.
 fn default_tree_sitter_version() -> String {
     VERSION.to_string()
 }
 
 #[must_use]
+/// Define the CLI colour scheme.
 const fn get_styles() -> clap::builder::Styles {
     clap::builder::Styles::styled()
         .usage(
@@ -293,6 +341,7 @@ const fn get_styles() -> clap::builder::Styles {
 // ============================================================
 
 impl Command {
+    /// Check whether this command is a build.
     #[must_use]
     pub const fn is_build(&self) -> bool {
         matches!(self, Command::Build)
@@ -335,6 +384,7 @@ impl fmt::Display for ConfigCommand {
 }
 
 impl Target {
+    /// Check whether `self` covers the requested target (e.g. All covers everything).
     #[must_use]
     pub fn covers(&self, other: Target) -> bool {
         matches!(
@@ -343,6 +393,7 @@ impl Target {
         )
     }
 
+    /// Combine two targets into the broadest coverage.
     #[must_use]
     pub fn union(self, other: Self) -> Self {
         match (self, other) {
@@ -355,16 +406,19 @@ impl Target {
         }
     }
 
+    /// Check whether the target includes native builds.
     #[must_use]
     pub fn native(&self) -> bool {
         matches!(self, Self::All | Self::Native)
     }
 
+    /// Check whether the target includes wasm builds.
     #[must_use]
     pub fn wasm(&self) -> bool {
         matches!(self, Self::All | Self::Wasm)
     }
 
+    /// Return a lowercased string representation.
     #[must_use]
     pub fn to_lowercase(&self) -> &'static str {
         match self {

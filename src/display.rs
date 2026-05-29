@@ -1,3 +1,6 @@
+//! Display state model: repos, grammars, grid cache, layout computation, and
+//! summary counts.
+
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -40,16 +43,24 @@ const TIME_STYLE: Style = Style::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Column {
+    /// Icon (status indicator).
     Icon,
+    /// Message text.
     Msg,
+    /// Parser/grammar name.
     Name,
+    /// Git ref string.
     Ref,
+    /// Step counter (e.g. "[1/4]").
     Step,
+    /// Elapsed time.
     Time,
 }
 
 pub(crate) enum ItemInfo<'a> {
+    /// References a grammar-level entry.
     Grammar(&'a GrammarEntry),
+    /// References a repo-level entry.
     Repo(&'a RepoEntry),
 }
 
@@ -73,18 +84,29 @@ pub enum ItemState {
     Failed,
 }
 
+/// The selected display backend.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mode {
+    /// Ratatui inline terminal rendering.
     Fancy,
+    /// Deterministic line-by-line output.
     Plain,
 }
 
+// ============================================================
+// Structs
+// ============================================================
+
+/// The kind of rows: collapsed single-grammar repos and multi-grammar repos.
 #[derive(Debug, Clone)]
 pub(crate) enum RowKind {
+    /// A grammar-level progress row.
     Grammar,
+    /// A repo-level progress row.
     Repo,
 }
 
+/// Whether a completed build needed actual work or was served from cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuccessOutcome {
     /// Not cached; work was needed.
@@ -99,9 +121,13 @@ pub enum SuccessOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedLayout {
+    /// Width of the time column.
     pub time: usize,
+    /// Width of the git-ref column.
     pub ref_: usize,
+    /// Width of the step column.
     pub step: usize,
+    /// Width of the name column.
     pub name: usize,
     /// Total width consumed by non-message columns: time + sp + ref + sp +
     /// step + sp + icon(1) + sp + name + sp.
@@ -116,13 +142,21 @@ struct CellKey {
 
 #[derive(Debug, Clone)]
 pub(crate) struct GrammarEntry {
+    /// Parent repo name.
     pub repo: Arc<str>,
+    /// Parent repo's item ID (for batch updates).
     pub repo_id: Option<ItemId>,
+    /// Grammar name within the repo.
     pub name: Arc<str>,
+    /// Git ref for display.
     pub git_ref: git::Ref,
+    /// Current lifecycle state.
     pub state: ItemState,
+    /// Current status message.
     pub msg: Arc<str>,
+    /// Current step index (0-based).
     pub step: usize,
+    /// Total number of steps.
     pub total: usize,
     /// Creation time for the whole item. This is not reset between steps.
     pub started_at: Instant,
@@ -131,21 +165,31 @@ pub(crate) struct GrammarEntry {
 }
 
 pub(crate) struct GridCache {
+    /// Cached rendered cells, keyed by (`item_id`, column).
     cells: HashMap<CellKey, Span<'static>>,
+    /// Item IDs whose cells need recomputation.
     pub dirty_items: HashSet<ItemId>,
+    /// Current column layout (widths).
     pub layout: CachedLayout,
 }
 
+/// Unique identifier for a display row (repo or grammar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemId(NonZeroU64);
 
 #[derive(Debug, Clone)]
 pub(crate) struct RepoEntry {
+    /// Repo name.
     pub name: Arc<str>,
+    /// Git ref for display.
     pub git_ref: git::Ref,
+    /// Current lifecycle state.
     pub state: ItemState,
+    /// Current status message.
     pub msg: Arc<str>,
+    /// Current step index (0-based).
     pub step: usize,
+    /// Total number of steps.
     pub total: usize,
     /// Creation time for the whole item. This is not reset between steps.
     pub started_at: Instant,
@@ -155,7 +199,9 @@ pub(crate) struct RepoEntry {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RowSpec {
+    /// Unique row identifier.
     pub id: ItemId,
+    /// Whether this row is a repo or a grammar.
     pub kind: RowKind,
     /// The text to display in the name column (already includes indent).
     pub display_name: Arc<str>,
@@ -163,22 +209,33 @@ pub(crate) struct RowSpec {
     pub indent: &'static str,
 }
 
+/// Tallies of terminal row states for the summary footer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct BuildSummary {
+    /// Rows still building.
     pub building: usize,
+    /// Rows that were built (not cached).
     pub built: usize,
+    /// Rows served from cache.
     pub cached: usize,
+    /// Rows cancelled by shutdown.
     pub cancelled: usize,
+    /// Rows that failed.
     pub failed: usize,
 }
 
 pub(crate) struct State {
+    /// Build directory root path.
     pub build_dir: PathBuf,
     footer_build: Line<'static>,
     footer_out: Line<'static>,
+    /// Grammar-level entries keyed by item ID.
     pub grammars: HashMap<ItemId, GrammarEntry>,
+    /// Display mode.
     pub mode: Mode,
+    /// Output directory path.
     pub out_dir: PathBuf,
+    /// Repo-level entries keyed by item ID.
     pub repos: HashMap<ItemId, RepoEntry>,
 }
 
@@ -186,6 +243,7 @@ pub(crate) struct State {
 // Free functions
 // ============================================================
 
+/// Render the status icon cell (●, ✓, ✗) with indicator color.
 pub(crate) fn compute_icon_cell(info: &ItemInfo<'_>) -> Span<'static> {
     let state = info.state();
     Span::styled(
@@ -196,6 +254,7 @@ pub(crate) fn compute_icon_cell(info: &ItemInfo<'_>) -> Span<'static> {
     )
 }
 
+/// Render the message cell, truncating to fit the available width.
 pub(crate) fn compute_msg_cell(
     info: &ItemInfo<'_>,
     layout: &CachedLayout,
@@ -207,6 +266,7 @@ pub(crate) fn compute_msg_cell(
     Span::styled(truncate_str(info.msg(), msg_width), MSG_STYLE)
 }
 
+/// Render the name cell with indentation and outcome-based colour.
 pub(crate) fn compute_name_cell(
     display_name: &str,
     indent: &str,
@@ -223,12 +283,14 @@ pub(crate) fn compute_name_cell(
     )
 }
 
+/// Render the git ref cell, left-aligned.
 pub(crate) fn compute_ref_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
     let ref_str = info.git_ref().short();
     let padded = format!("{:<width$}", ref_str, width = layout.ref_);
     Span::styled(padded, REF_STYLE)
 }
 
+/// Render the step counter cell (e.g. "[2/4]"), right-aligned.
 pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
     let step_str = if info.total() > 0 {
         format!("[{}/{}]", info.step().min(info.total()), info.total())
@@ -240,6 +302,7 @@ pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> S
     Span::styled(padded, REF_STYLE)
 }
 
+/// Render the elapsed time cell, right-aligned.
 pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
     let time = format_elapsed_duration(info.elapsed());
     // Right-aligned
@@ -247,6 +310,8 @@ pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> S
     Span::styled(padded, TIME_STYLE)
 }
 
+/// Accumulate a single item state into the summary counters.
+/// Accumulate a single item state into the summary counters.
 fn count_item_state(
     state: ItemState,
     cached: &mut usize,
@@ -265,6 +330,7 @@ fn count_item_state(
 }
 
 /// Pre-computed dimmed footer lines (static; never change).
+/// Build a dimmed footer line.
 fn dim_line(text: String) -> Line<'static> {
     Line::from(Span::styled(
         text,
@@ -278,6 +344,7 @@ fn dim_line(text: String) -> Line<'static> {
 ///
 /// Columns in order: Time _ Ref _ Step _ Icon _ Name _ Msg
 /// (5 spacers between 6 columns).
+/// Compute the total width consumed by all non-message columns.
 const fn fixed_width(time: usize, rf: usize, step: usize, name: usize) -> usize {
     time + SPACER_WIDTH
         + rf
@@ -290,6 +357,8 @@ const fn fixed_width(time: usize, rf: usize, step: usize, name: usize) -> usize 
         + SPACER_WIDTH
 }
 
+/// Format a duration as " 0.00s" or " 3:45".
+/// Format a duration as " 0.00s" or " 3:45".
 fn format_elapsed_duration(dur: Duration) -> String {
     let secs = dur.as_secs_f64();
     if secs < 60.0 {
@@ -325,6 +394,7 @@ pub fn mode_from_args(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) 
     mode
 }
 
+/// Append a "building" counter span to the summary line.
 fn push_summary_building(spans: &mut Vec<Span<'static>>, count: usize) {
     spans.push(Span::raw("  "));
     spans.push(Span::styled(
@@ -337,6 +407,7 @@ fn push_summary_building(spans: &mut Vec<Span<'static>>, count: usize) {
     ));
 }
 
+/// Append a "cancelled" counter span to the summary line.
 fn push_summary_cancelled(spans: &mut Vec<Span<'static>>, count: usize, _leading: bool) {
     spans.push(Span::raw("  "));
     spans.push(Span::styled(
@@ -349,6 +420,7 @@ fn push_summary_cancelled(spans: &mut Vec<Span<'static>>, count: usize, _leading
     ));
 }
 
+/// Append a "failed" counter span to the summary line.
 fn push_summary_failed(spans: &mut Vec<Span<'static>>, count: usize) {
     spans.push(Span::raw("  "));
     spans.push(Span::styled(
@@ -361,6 +433,7 @@ fn push_summary_failed(spans: &mut Vec<Span<'static>>, count: usize) {
     ));
 }
 
+/// Append a "cached"/"built" success counter span to the summary line.
 fn push_summary_success(
     spans: &mut Vec<Span<'static>>,
     count: usize,
@@ -393,6 +466,7 @@ fn push_summary_success(
     }
 }
 
+/// Truncate a string with an ellipsis if it exceeds `max` characters.
 fn truncate_str(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -427,6 +501,7 @@ impl Default for CachedLayout {
 }
 
 impl CachedLayout {
+    /// Apply minimum width constraints and recompute `fixed_width`.
     fn finalize(&mut self) {
         self.time = TIME_COL_WIDTH;
         self.ref_ = self.ref_.max(MIN_REF_WIDTH);
@@ -437,6 +512,7 @@ impl CachedLayout {
 }
 
 impl GrammarEntry {
+    /// Return the elapsed time (frozen or live).
     pub(crate) fn elapsed(&self) -> Duration {
         self.frozen_elapsed
             .unwrap_or_else(|| self.started_at.elapsed())
@@ -444,6 +520,7 @@ impl GrammarEntry {
 }
 
 impl GridCache {
+    /// Create an empty grid cache.
     pub fn new() -> Self {
         Self {
             cells: HashMap::new(),
@@ -476,10 +553,12 @@ impl GridCache {
         }
     }
 
+    /// Mark all cells for an item as needing recomputation.
     pub fn mark_dirty(&mut self, item_id: ItemId) {
         self.dirty_items.insert(item_id);
     }
 
+    /// Clear the dirty set after recomputation.
     pub fn clear_dirty(&mut self) {
         self.dirty_items.clear();
     }
@@ -492,11 +571,13 @@ impl GridCache {
 }
 
 impl ItemId {
+    /// Create an `ItemId` from a non-zero u64.
     #[must_use]
     pub(crate) fn new(value: NonZeroU64) -> Self {
         Self(value)
     }
 
+    /// Return the next sequential `ItemId`.
     #[must_use]
     pub(crate) fn next_after(self) -> Self {
         let next = self
@@ -510,6 +591,7 @@ impl ItemId {
 }
 
 impl ItemInfo<'_> {
+    /// Get the current item state.
     pub(crate) fn state(&self) -> ItemState {
         match self {
             ItemInfo::Grammar(g) => g.state,
@@ -517,6 +599,7 @@ impl ItemInfo<'_> {
         }
     }
 
+    /// Get the current message string.
     pub(crate) fn msg(&self) -> &str {
         match self {
             ItemInfo::Grammar(g) => &g.msg,
@@ -524,6 +607,7 @@ impl ItemInfo<'_> {
         }
     }
 
+    /// Get the current step index (0-based).
     pub(crate) fn step(&self) -> usize {
         match self {
             ItemInfo::Grammar(g) => g.step,
@@ -531,6 +615,7 @@ impl ItemInfo<'_> {
         }
     }
 
+    /// Get the total number of steps.
     pub(crate) fn total(&self) -> usize {
         match self {
             ItemInfo::Grammar(g) => g.total,
@@ -538,6 +623,8 @@ impl ItemInfo<'_> {
         }
     }
 
+    /// Get the git ref for this item.
+    /// Get the git ref for this item.
     pub(crate) fn git_ref(&self) -> &git::Ref {
         match self {
             ItemInfo::Grammar(g) => &g.git_ref,
@@ -545,6 +632,7 @@ impl ItemInfo<'_> {
         }
     }
 
+    /// Get the elapsed time for this item.
     pub(crate) fn elapsed(&self) -> Duration {
         match self {
             ItemInfo::Grammar(g) => g.elapsed(),
@@ -554,11 +642,13 @@ impl ItemInfo<'_> {
 }
 
 impl ItemState {
+    /// Check whether the item is still live (new or in progress).
     #[must_use]
     pub fn is_live(self) -> bool {
         matches!(self, Self::New | Self::InProgress(_))
     }
 
+    /// Get the success outcome, if the item has reached a terminal outcome state.
     #[must_use]
     pub fn success_outcome(self) -> Option<SuccessOutcome> {
         match self {
@@ -568,6 +658,7 @@ impl ItemState {
         }
     }
 
+    /// Return the status icon character.
     fn icon(self) -> &'static str {
         match self {
             Self::New | Self::InProgress(_) => "●",
@@ -576,6 +667,7 @@ impl ItemState {
         }
     }
 
+    /// Return the colour for the name text.
     fn name_color(self) -> Color {
         match self {
             Self::Failed => Color::Red,
@@ -585,6 +677,7 @@ impl ItemState {
         }
     }
 
+    /// Return the colour for the status indicator.
     fn indicator_color(self) -> Color {
         match self {
             Self::Done(_) => Color::Green,
@@ -596,6 +689,7 @@ impl ItemState {
 }
 
 impl RepoEntry {
+    /// Return the elapsed time (frozen or live).
     pub(crate) fn elapsed(&self) -> Duration {
         self.frozen_elapsed
             .unwrap_or_else(|| self.started_at.elapsed())
@@ -603,6 +697,7 @@ impl RepoEntry {
 }
 
 impl State {
+    /// Create a new display state with the given build dir, mode, and output dir.
     pub fn new(build_dir: PathBuf, mode: Mode, out_dir: PathBuf) -> Self {
         let footer_build = dim_line(format!("build: {}", build_dir.display()));
         let footer_out = dim_line(format!("out:   {}", out_dir.display()));
@@ -619,14 +714,17 @@ impl State {
 
     // ── Footer lines ──────────────────────────────────────────────
 
+    /// Return the pre-computed "build:" footer line.
     pub fn footer_build_line(&self) -> Line<'static> {
         self.footer_build.clone()
     }
 
+    /// Return the pre-computed "out:" footer line.
     pub fn footer_out_line(&self) -> Line<'static> {
         self.footer_out.clone()
     }
 
+    /// Build the summary counts footer line.
     pub fn format_footer_counts(&self) -> Line<'static> {
         let s = self.summary();
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -715,6 +813,7 @@ impl State {
 
     // ── Item access ───────────────────────────────────────────────
 
+    /// Get the item info for a row spec.
     pub fn get_item_info(&self, spec: &RowSpec) -> ItemInfo<'_> {
         match spec.kind {
             RowKind::Grammar => ItemInfo::Grammar(
@@ -754,6 +853,7 @@ impl State {
 
     // ── Summary counts ────────────────────────────────────────────
 
+    /// Compute build summary counts from all item states.
     pub(crate) fn summary(&self) -> BuildSummary {
         let mut cached = 0;
         let mut built = 0;
@@ -802,6 +902,7 @@ impl State {
 }
 
 impl SuccessOutcome {
+    /// Return the display colour for entries with this outcome.
     fn color(self) -> Color {
         match self {
             SuccessOutcome::Built => Color::Blue,
