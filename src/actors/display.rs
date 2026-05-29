@@ -195,15 +195,17 @@ fn draw_lines_in_viewport<B: Backend>(
 /// Transition an item state to `Done`. Returns an error if the state is not
 /// `InProgress(Some(_))`.
 fn finish_item(state: display::ItemState) -> Result<display::ItemState, String> {
+  use display::ItemState::*;
+
   match state {
-    display::ItemState::InProgress(Some(outcome)) => Ok(display::ItemState::Done(outcome)),
-    display::ItemState::New | display::ItemState::InProgress(None) => invalid_finish(
+    | Cancelled | Done(_) | Failed => {
+      invalid_finish("finish update received for terminal item state", state)
+    }
+    | InProgress(Some(outcome)) => Ok(Done(outcome)),
+    | New | InProgress(None) => invalid_finish(
       "finish update received before cached/built path was set",
       state,
     ),
-    display::ItemState::Done(_) | display::ItemState::Cancelled | display::ItemState::Failed => {
-      invalid_finish("finish update received for terminal item state", state)
-    }
   }
 }
 
@@ -243,54 +245,44 @@ fn invalid_finish(reason: &str, state: display::ItemState) -> Result<display::It
 
 /// Set the success outcome on an item state without changing its progress phase.
 fn mark_success(state: display::ItemState, outcome: display::SuccessOutcome) -> display::ItemState {
+  use display::ItemState::*;
+
   match state {
-    display::ItemState::New | display::ItemState::InProgress(_) => {
-      display::ItemState::InProgress(Some(outcome))
-    }
-    display::ItemState::Done(_) | display::ItemState::Cancelled | display::ItemState::Failed => {
-      state
-    }
+    | Cancelled | Done(_) | Failed => state,
+    | New | InProgress(_) => InProgress(Some(outcome)),
   }
 }
 
 /// Format a plain-text message for a grammar row.
 fn plain_grammar_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
+  use UpdateKind::*;
+  use display::{ItemState::*, SuccessOutcome};
+
   match kind {
-    UpdateKind::Err => format!("failed: {msg}"),
-    UpdateKind::Cached => "cached".to_string(),
-    UpdateKind::Fin => match state {
-      display::ItemState::Done(display::SuccessOutcome::Cached) => "cached".to_string(),
-      display::ItemState::Done(display::SuccessOutcome::Built) => "built".to_string(),
-      display::ItemState::New
-      | display::ItemState::InProgress(_)
-      | display::ItemState::Cancelled
-      | display::ItemState::Failed => msg.to_string(),
+    | Cached => "cached".to_string(),
+    | Cancel | Msg | SetOutcomeBuilt | SetOutcomeCached | Step => msg.to_string(),
+    | Err => format!("failed: {msg}"),
+    | Fin => match state {
+      | Done(SuccessOutcome::Cached) => "cached".to_string(),
+      | Done(SuccessOutcome::Built) => "built".to_string(),
+      | New | InProgress(_) | Cancelled | Failed => msg.to_string(),
     },
-    UpdateKind::SetOutcomeBuilt
-    | UpdateKind::SetOutcomeCached
-    | UpdateKind::Cancel
-    | UpdateKind::Msg
-    | UpdateKind::Step => msg.to_string(),
   }
 }
 
 /// Format a plain-text message for a repo row.
 fn plain_repo_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
+  use UpdateKind::*;
+  use display::ItemState::*;
+
   match kind {
-    UpdateKind::Err => format!("failed: {msg}"),
-    UpdateKind::Cached => "cached".to_string(),
-    UpdateKind::Fin => match state {
-      display::ItemState::Done(_) => "done".to_string(),
-      display::ItemState::New
-      | display::ItemState::InProgress(_)
-      | display::ItemState::Cancelled
-      | display::ItemState::Failed => msg.to_string(),
+    | Cached => "cached".to_string(),
+    | Err => format!("failed: {msg}"),
+    | Fin => match state {
+      | Cancelled | Failed | New | InProgress(_) => msg.to_string(),
+      | Done(_) => "done".to_string(),
     },
-    UpdateKind::SetOutcomeBuilt
-    | UpdateKind::SetOutcomeCached
-    | UpdateKind::Cancel
-    | UpdateKind::Msg
-    | UpdateKind::Step => msg.to_string(),
+    | Cancel | Msg | SetOutcomeBuilt | SetOutcomeCached | Step => msg.to_string(),
   }
 }
 
@@ -324,12 +316,12 @@ fn split_lines_for_viewport(
 
 /// Transition `New` or `InProgress` into `InProgress(None)`.
 fn start_item(state: display::ItemState) -> display::ItemState {
+  use display::ItemState::*;
+
   match state {
-    display::ItemState::New => display::ItemState::InProgress(None),
-    display::ItemState::InProgress(outcome) => display::ItemState::InProgress(outcome),
-    display::ItemState::Done(_) | display::ItemState::Cancelled | display::ItemState::Failed => {
-      state
-    }
+    | Cancelled | Done(_) | Failed => state,
+    | InProgress(outcome) => InProgress(outcome),
+    | New => InProgress(None),
   }
 }
 
@@ -359,6 +351,8 @@ impl DisplayActor {
     &self,
     repo_id: display::ItemId,
   ) -> Option<display::SuccessOutcome> {
+    use display::{ItemState::*, SuccessOutcome::*};
+
     let mut saw_cached = false;
 
     for grammar in self
@@ -368,18 +362,15 @@ impl DisplayActor {
       .filter(|g| g.repo_id == Some(repo_id))
     {
       match grammar.state {
-        display::ItemState::Done(display::SuccessOutcome::Built) => {
-          return Some(display::SuccessOutcome::Built);
+        | Done(Built) => {
+          return Some(Built);
         }
-        display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,
-        display::ItemState::New
-        | display::ItemState::InProgress(_)
-        | display::ItemState::Cancelled
-        | display::ItemState::Failed => {}
+        | Done(Cached) => saw_cached = true,
+        | New | InProgress(_) | Cancelled | Failed => {}
       }
     }
 
-    saw_cached.then_some(display::SuccessOutcome::Cached)
+    saw_cached.then_some(Cached)
   }
 
   /// Aggregate the live outcome of still-active grammar children for a repo.
@@ -396,17 +387,15 @@ impl DisplayActor {
       .values()
       .filter(|g| g.repo_id == Some(repo_id))
     {
+      use display::{ItemState::*, SuccessOutcome::*};
+
       match grammar.state {
-        display::ItemState::InProgress(Some(display::SuccessOutcome::Built))
-        | display::ItemState::Done(display::SuccessOutcome::Built) => {
-          return Some(display::SuccessOutcome::Built);
+        | Cancelled | Failed => {}
+        | Done(Built) | InProgress(Some(Built)) => {
+          return Some(Built);
         }
-        display::ItemState::InProgress(Some(display::SuccessOutcome::Cached))
-        | display::ItemState::Done(display::SuccessOutcome::Cached) => saw_cached = true,
-        display::ItemState::New | display::ItemState::InProgress(None) => {
-          saw_unknown = true;
-        }
-        display::ItemState::Cancelled | display::ItemState::Failed => {}
+        | Done(Cached) | InProgress(Some(Cached)) => saw_cached = true,
+        | InProgress(None) | New => saw_unknown = true,
       }
     }
 
@@ -426,49 +415,56 @@ impl DisplayActor {
     }
 
     match kind {
-      UpdateKind::Msg => {
-        grammar.msg = msg;
-      }
-      UpdateKind::Step => {
-        grammar.state = start_item(grammar.state);
-        grammar.step += 1;
-        grammar.msg = msg;
-      }
-      UpdateKind::SetOutcomeCached => {
-        grammar.state = mark_success(grammar.state, display::SuccessOutcome::Cached);
-      }
-      UpdateKind::Cancel => {
-        grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-        grammar.state = display::ItemState::Cancelled;
-        grammar.step = grammar.total;
-        grammar.msg = msg;
-      }
-      UpdateKind::SetOutcomeBuilt => {
-        grammar.state = mark_success(grammar.state, display::SuccessOutcome::Built);
-      }
-      UpdateKind::Cached => {
+      | UpdateKind::Cached => {
         grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
         grammar.state = display::ItemState::Done(display::SuccessOutcome::Cached);
         grammar.step = grammar.total;
         grammar.msg = msg;
       }
-      UpdateKind::Fin => {
+
+      | UpdateKind::Cancel => {
+        grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+        grammar.state = display::ItemState::Cancelled;
+        grammar.step = grammar.total;
+        grammar.msg = msg;
+      }
+
+      | UpdateKind::Err => {
+        grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
+        grammar.state = display::ItemState::Failed;
+        grammar.msg = msg;
+      }
+
+      | UpdateKind::Fin => {
         grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
         match finish_item(grammar.state) {
-          Ok(state) => {
+          | Ok(state) => {
             grammar.state = state;
             grammar.msg = msg;
           }
-          Err(message) => {
+          | Err(message) => {
             grammar.state = display::ItemState::Failed;
             grammar.msg = message.into();
           }
         }
         grammar.step = grammar.total;
       }
-      UpdateKind::Err => {
-        grammar.frozen_elapsed = Some(grammar.started_at.elapsed());
-        grammar.state = display::ItemState::Failed;
+
+      | UpdateKind::Msg => {
+        grammar.msg = msg;
+      }
+
+      | UpdateKind::SetOutcomeCached => {
+        grammar.state = mark_success(grammar.state, display::SuccessOutcome::Cached);
+      }
+
+      | UpdateKind::SetOutcomeBuilt => {
+        grammar.state = mark_success(grammar.state, display::SuccessOutcome::Built);
+      }
+
+      | UpdateKind::Step => {
+        grammar.state = start_item(grammar.state);
+        grammar.step += 1;
         grammar.msg = msg;
       }
     }
@@ -480,46 +476,42 @@ impl DisplayActor {
       return;
     }
 
+    use display::ItemState::*;
+    use display::SuccessOutcome::*;
+
     match kind {
-      UpdateKind::Msg => {
-        repo.msg = msg;
-      }
-      UpdateKind::Step => {
-        repo.state = start_item(repo.state);
-        repo.step += 1;
-        repo.msg = msg;
-      }
-      UpdateKind::SetOutcomeCached => {
-        repo.state = mark_success(repo.state, display::SuccessOutcome::Cached);
-      }
-      UpdateKind::Cancel => {
+      | UpdateKind::Cached => {
         repo.frozen_elapsed = Some(repo.started_at.elapsed());
-        repo.state = display::ItemState::Cancelled;
+        repo.state = Done(Cached);
         if repo.total > 0 {
           repo.step = repo.total;
         }
         repo.msg = msg;
       }
-      UpdateKind::SetOutcomeBuilt => {
-        repo.state = mark_success(repo.state, display::SuccessOutcome::Built);
-      }
-      UpdateKind::Cached => {
+      | UpdateKind::Cancel => {
         repo.frozen_elapsed = Some(repo.started_at.elapsed());
-        repo.state = display::ItemState::Done(display::SuccessOutcome::Cached);
+        repo.state = Cancelled;
         if repo.total > 0 {
           repo.step = repo.total;
         }
         repo.msg = msg;
       }
-      UpdateKind::Fin => {
+
+      | UpdateKind::Err => {
+        repo.frozen_elapsed = Some(repo.started_at.elapsed());
+        repo.state = Failed;
+        repo.msg = msg;
+      }
+
+      | UpdateKind::Fin => {
         repo.frozen_elapsed = Some(repo.started_at.elapsed());
         match finish_item(repo.state) {
-          Ok(state) => {
+          | Ok(state) => {
             repo.state = state;
             repo.msg = msg;
           }
-          Err(message) => {
-            repo.state = display::ItemState::Failed;
+          | Err(message) => {
+            repo.state = Failed;
             repo.msg = message.into();
           }
         }
@@ -527,9 +519,22 @@ impl DisplayActor {
           repo.step = repo.total;
         }
       }
-      UpdateKind::Err => {
-        repo.frozen_elapsed = Some(repo.started_at.elapsed());
-        repo.state = display::ItemState::Failed;
+
+      | UpdateKind::Msg => {
+        repo.msg = msg;
+      }
+
+      | UpdateKind::SetOutcomeCached => {
+        repo.state = mark_success(repo.state, Cached);
+      }
+
+      | UpdateKind::SetOutcomeBuilt => {
+        repo.state = mark_success(repo.state, Built);
+      }
+
+      | UpdateKind::Step => {
+        repo.state = start_item(repo.state);
+        repo.step += 1;
         repo.msg = msg;
       }
     }
@@ -548,15 +553,12 @@ impl DisplayActor {
     if let Some(grammar) = self.state.grammars.get_mut(&id) {
       Self::apply_grammar_update(grammar, kind, msg);
       self.grid.mark_dirty(id);
+
+      use UpdateKind::*;
+
       if matches!(
         kind,
-        UpdateKind::Cached
-          | UpdateKind::Err
-          | UpdateKind::Fin
-          | UpdateKind::SetOutcomeBuilt
-          | UpdateKind::SetOutcomeCached
-          | UpdateKind::Cancel
-          | UpdateKind::Step
+        Cached | Cancel | Err | Fin | SetOutcomeBuilt | SetOutcomeCached | Step
       ) {
         maybe_parent_id = grammar.repo_id;
       }
@@ -618,17 +620,17 @@ impl DisplayActor {
     final_lines.push(Line::from(""));
 
     match render_final_report(terminal, final_lines) {
-      Ok(()) => {
+      | Err(err) => {
+        ratatui::restore();
+        println!();
+        eprintln!("tsdl: fancy display final report failed: {err}");
+      }
+      | Ok(()) => {
         ratatui::restore();
         if let Err(err) = clear_from_cursor_down() {
           println!();
           eprintln!("tsdl: fancy display cleanup failed: {err}");
         }
-      }
-      Err(err) => {
-        ratatui::restore();
-        println!();
-        eprintln!("tsdl: fancy display final report failed: {err}");
       }
     }
 
@@ -637,8 +639,10 @@ impl DisplayActor {
 
   /// Process a single message from the channel.
   fn handle_message(&mut self, msg: Message) {
+    use Message::*;
+
     match msg {
-      Message::RegisterLanguage {
+      | RegisterLanguage {
         git_ref,
         name,
         num_tasks,
@@ -647,7 +651,8 @@ impl DisplayActor {
         let addr = self.register_repo(name, git_ref, num_tasks);
         let _ = tx.send(addr);
       }
-      Message::RegisterGrammar {
+
+      | RegisterGrammar {
         git_ref,
         language,
         name,
@@ -657,15 +662,18 @@ impl DisplayActor {
         let addr = self.register_grammar(language, name, git_ref, num_tasks);
         let _ = tx.send(addr);
       }
-      Message::RegisterReference { .. } => {}
-      Message::Update { id, kind, msg } => {
-        self.apply_update(id, kind, msg);
-      }
-      Message::Shutdown { interrupted, tx } => {
+
+      | RegisterReference { .. } => {}
+
+      | Shutdown { interrupted, tx } => {
         if interrupted {
           self.cancel_live_rows();
         }
         let _ = tx.send(());
+      }
+
+      | Update { id, kind, msg } => {
+        self.apply_update(id, kind, msg);
       }
     }
   }
@@ -937,8 +945,8 @@ impl DisplayActor {
         viewport: ratatui::Viewport::Inline(viewport_height),
       },
     ) {
-      Ok(terminal) => terminal,
-      Err(err) => {
+      | Ok(terminal) => terminal,
+      | Err(err) => {
         eprintln!("tsdl: fancy display unavailable; falling back to plain progress: {err}");
         self.run_plain().await;
         return;
@@ -978,11 +986,11 @@ impl DisplayActor {
       // ── drain any messages that queued up concurrently ─────
       while let Ok(msg) = self.rx.try_recv() {
         match msg {
-          Message::Shutdown { interrupted, tx } => {
+          | Message::Shutdown { interrupted, tx } => {
             shutdown = Some((interrupted, tx));
             break;
           }
-          other => self.handle_message(other),
+          | other => self.handle_message(other),
         }
       }
 
@@ -1015,8 +1023,11 @@ impl DisplayActor {
     self.print_plain_metadata();
 
     while let Some(msg) = self.rx.recv().await {
+      use Message::*;
+      use UpdateKind::*;
+
       match msg {
-        Message::RegisterLanguage {
+        | RegisterLanguage {
           git_ref,
           name,
           num_tasks,
@@ -1025,7 +1036,7 @@ impl DisplayActor {
           let addr = self.register_repo(name, git_ref, num_tasks);
           let _ = tx.send(addr);
         }
-        Message::RegisterGrammar {
+        | RegisterGrammar {
           git_ref,
           language,
           name,
@@ -1037,22 +1048,19 @@ impl DisplayActor {
           let addr = self.register_grammar(language, name, git_ref, num_tasks);
           let _ = tx.send(addr);
         }
-        Message::RegisterReference { git_ref, name } => {
+        | RegisterReference { git_ref, name } => {
           self.print_plain_ref(&name, git_ref.short());
         }
-        Message::Update { id, kind, msg } => {
+        | Update { id, kind, msg } => {
           self.apply_update(id, kind, msg);
-          if matches!(
-            kind,
-            UpdateKind::Msg | UpdateKind::SetOutcomeCached | UpdateKind::SetOutcomeBuilt
-          ) {
+          if matches!(kind, Msg | SetOutcomeCached | SetOutcomeBuilt) {
             continue;
           }
           if let Some(line) = self.plain_progress_line(id, kind) {
             self.print_plain_progress(&line);
           }
         }
-        Message::Shutdown { interrupted, tx } => {
+        | Shutdown { interrupted, tx } => {
           if interrupted {
             self.cancel_live_rows();
           }

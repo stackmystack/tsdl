@@ -182,18 +182,18 @@ const fn is_last_cell_in_row(
   x: usize,
 ) -> bool {
   match layout {
-    Layout::Column => item_index + rows >= item_count,
-    Layout::Row => x == cols - 1 || item_index == item_count - 1,
-    Layout::Plain => unreachable!(),
+    | Layout::Column => item_index + rows >= item_count,
+    | Layout::Plain => unreachable!(),
+    | Layout::Row => x == cols - 1 || item_index == item_count - 1,
   }
 }
 
 /// Convert grid coordinates to a linear index based on the layout direction.
 const fn linear_index(cols: usize, layout: Layout, rows: usize, x: usize, y: usize) -> usize {
   match layout {
-    Layout::Column => x * rows + y,
-    Layout::Row => y * cols + x,
-    Layout::Plain => unreachable!(),
+    | Layout::Column => x * rows + y,
+    | Layout::Plain => unreachable!(),
+    | Layout::Row => y * cols + x,
   }
 }
 

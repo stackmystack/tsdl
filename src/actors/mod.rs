@@ -98,8 +98,7 @@ async fn discover_grammars(
   // Also concurrent with CLI preparation.
   progress.step("scanning");
   let grammars = match language.discover_grammars().await {
-    Ok(grammars) => grammars,
-    Err(e) => {
+    | Err(e) => {
       if shutdown::current().is_some_and(|s| s.is_cancelled()) {
         progress.cancel().await;
       } else {
@@ -107,6 +106,7 @@ async fn discover_grammars(
       }
       return Err(e);
     }
+    | Ok(grammars) => grammars,
   };
   progress.fin("done").await;
 
@@ -185,7 +185,15 @@ async fn resolve_revision(
     progress.set_outcome_built().await;
     progress.step("cloning");
     match language.checkout().await {
-      Ok(checkout) => {
+      | Err(e) => {
+        if shutdown::current().is_some_and(|s| s.is_cancelled()) {
+          progress.cancel().await;
+        } else {
+          progress.err("clone failed").await;
+        }
+        Err(e)
+      }
+      | Ok(checkout) => {
         info!(
           "Resolved parser {} git ref {} to commit {}",
           language.name,
@@ -193,14 +201,6 @@ async fn resolve_revision(
           checkout.commit.as_str()
         );
         Ok(crate::cache::Revision::moving(checkout.commit))
-      }
-      Err(e) => {
-        if shutdown::current().is_some_and(|s| s.is_cancelled()) {
-          progress.cancel().await;
-        } else {
-          progress.err("clone failed").await;
-        }
-        Err(e)
       }
     }
   } else {
@@ -238,14 +238,14 @@ pub async fn run(
   tree_sitter: &args::TreeSitter,
 ) -> Result<()> {
   let tree_sitter_ref = match tree_sitter::display_tree_sitter_ref(&tree_sitter.version) {
-    Ok(git_ref) => git_ref,
-    Err(err) => {
+    | Err(err) => {
       display.shutdown(false).await;
       return Err(Error::Context {
         message: format!("Parsing tree-sitter git ref {:?}", tree_sitter.version),
         source: err.into(),
       });
     }
+    | Ok(git_ref) => git_ref,
   };
 
   display.reference("tree-sitter-cli", tree_sitter_ref).await;
@@ -396,10 +396,10 @@ async fn wait_for_prepared(
   loop {
     if let Some(result) = rx.borrow().as_ref() {
       return match result {
-        Ok(prepared) => Ok(prepared.clone()),
-        Err(e) => Err(Error::Message {
+        | Err(e) => Err(Error::Message {
           message: format!("tree-sitter CLI preparation failed: {e}"),
         }),
+        | Ok(prepared) => Ok(prepared.clone()),
       };
     }
     if rx.changed().await.is_err() {

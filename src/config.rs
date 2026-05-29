@@ -550,9 +550,11 @@ fn resolve_bool(
 
 /// Run a config command (current or default).
 pub fn run(config_path: &Path, command: &args::ConfigCommand) -> Result<()> {
+  use args::ConfigCommand::*;
+
   match command {
-    args::ConfigCommand::Current => print_current(&current(config_path, None)?),
-    args::ConfigCommand::Default => print_default(),
+    | Current => print_current(&current(config_path, None)?),
+    | Default => print_default(),
   }
 }
 
@@ -619,9 +621,9 @@ impl Source {
   /// Convert a clap `ValueSource` to a config Source.
   fn from_value_source(source: ValueSource) -> Option<Self> {
     match source {
-      ValueSource::CommandLine => Some(Self::CommandLine),
-      ValueSource::EnvVariable => Some(Self::Environment),
-      _ => None,
+      | ValueSource::CommandLine => Some(Self::CommandLine),
+      | ValueSource::EnvVariable => Some(Self::Environment),
+      | _ => None,
     }
   }
 }

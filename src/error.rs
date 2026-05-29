@@ -181,8 +181,8 @@ fn format_language_collection(
       write!(w, ", ")?;
     }
     match error {
-      Error::Language { name, .. } => write!(w, "{name}")?,
-      _ => error.format(w, 0)?,
+      | Error::Language { name, .. } => write!(w, "{name}")?,
+      | _ => error.format(w, 0)?,
     }
   }
 
@@ -216,16 +216,16 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
   fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
     match self {
-      Error::Build { .. }
+      | Error::Build { .. }
       | Error::Command { .. }
       | Error::Config { .. }
       | Error::Interrupted { .. }
       | Error::LanguageCollection { .. }
       | Error::Message { .. } => None,
-      Error::Context { source, .. }
+      | Error::Context { source, .. }
       | Error::Language { source, .. }
       | Error::Step { source, .. } => Some(source.as_error()),
-      Error::Io { source } => Some(source),
+      | Error::Io { source } => Some(source),
     }
   }
 }
@@ -241,16 +241,19 @@ impl Error {
 
   /// Recursively format the error tree with per-level indentation.
   fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
+    use Error::*;
+
     let prefix = " ".repeat(indent);
+
     match self {
-      Error::Build { errors } => format_build_errors(w, errors, indent),
-      Error::Command {
+      | Build { errors } => format_build_errors(w, errors, indent),
+      | Command {
         msg,
         stderr,
         stdout,
       } => format_command(w, indent, msg, stdout, stderr),
-      Error::Config { message } => write!(w, "{prefix}Configuration error: {message}"),
-      Error::Context { message, source } => {
+      | Config { message } => write!(w, "{prefix}Configuration error: {message}"),
+      | Context { message, source } => {
         write!(
           w,
           "{}{}\n{}",
@@ -259,9 +262,9 @@ impl Error {
           source.as_error().format_indent(indent + 2)
         )
       }
-      Error::Io { source } => write!(w, "{prefix}IO error: {source}"),
-      Error::Interrupted { signal } => write!(w, "{prefix}Interrupted by {signal}"),
-      Error::Language { name, source } => {
+      | Io { source } => write!(w, "{prefix}IO error: {source}"),
+      | Interrupted { signal } => write!(w, "{prefix}Interrupted by {signal}"),
+      | Language { name, source } => {
         write!(
           w,
           "{}{}\n{}",
@@ -270,9 +273,9 @@ impl Error {
           source.as_error().format_indent(indent + 2)
         )
       }
-      Error::LanguageCollection { related } => format_language_collection(w, related, indent),
-      Error::Message { message } => write!(w, "{prefix}{message}"),
-      Error::Step { name, kind, source } => {
+      | LanguageCollection { related } => format_language_collection(w, related, indent),
+      | Message { message } => write!(w, "{prefix}{message}"),
+      | Step { name, kind, source } => {
         write!(
           w,
           "{}{}: {}.\n{}",

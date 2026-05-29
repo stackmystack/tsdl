@@ -80,22 +80,24 @@ pub fn init(
   log_color: args::LogColor,
   verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 ) -> Result<Session> {
+  use args::LogColor::*;
+
   let color = match log_color {
-    args::LogColor::Auto => atty::is(atty::Stream::Stdout),
-    args::LogColor::No => false,
-    args::LogColor::Yes => true,
+    | Auto => atty::is(atty::Stream::Stdout),
+    | No => false,
+    | Yes => true,
   };
   console::set_colors_enabled(color);
 
   let filter = verbose.log_level_filter().as_trace();
   let path = resolve_log_path(policy)?;
   let (writer, guard) = match path.as_ref() {
-    Some(path) => {
+    | None => (None, None),
+    | Some(path) => {
       let file = open_log_file(path)?;
       let (writer, guard) = tracing_appender::non_blocking(file);
       (Some(writer), Some(Guard(guard)))
     }
-    None => (None, None),
   };
 
   init_tracing(writer, color, filter);
@@ -137,12 +139,12 @@ fn open_log_file(log: &Path) -> Result<File> {
 /// Resolve the log path from a policy (explicit + implicit fallback).
 fn resolve_log_path(policy: Policy<'_>) -> Result<Option<PathBuf>> {
   match (policy.explicit, policy.implicit) {
-    (Some(log), Implicit::BuildDir { dir }) => validate_log_path(dir, log).map(Some),
-    (Some(log), Implicit::None) => validate_standalone_log_path(log).map(Some),
-    (None, Implicit::BuildDir { dir }) => {
+    | (Some(log), Implicit::BuildDir { dir }) => validate_log_path(dir, log).map(Some),
+    | (Some(log), Implicit::None) => validate_standalone_log_path(log).map(Some),
+    | (None, Implicit::BuildDir { dir }) => {
       validate_log_path(dir, &dir.join(consts::LOG_FILE)).map(Some)
     }
-    (None, Implicit::None) => Ok(None),
+    | (None, Implicit::None) => Ok(None),
   }
 }
 

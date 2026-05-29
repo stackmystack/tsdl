@@ -46,10 +46,10 @@ fn download_and_replace(asset_name: &str, download_url: &str, version: &Version)
 
 fn parse_target(raw: &str) -> Result<UpdateTarget> {
   match raw {
-    "major" => Ok(UpdateTarget::Relative(VersionBump::Major)),
-    "minor" => Ok(UpdateTarget::Relative(VersionBump::Minor)),
-    "patch" => Ok(UpdateTarget::Relative(VersionBump::Patch)),
-    other => Version::parse(other)
+    | "major" => Ok(UpdateTarget::Relative(VersionBump::Major)),
+    | "minor" => Ok(UpdateTarget::Relative(VersionBump::Minor)),
+    | "patch" => Ok(UpdateTarget::Relative(VersionBump::Patch)),
+    | other => Version::parse(other)
       .map(UpdateTarget::Exact)
       .context("expected 'patch', 'minor', 'major', or a semver like '2.5.0'"),
   }
@@ -78,7 +78,7 @@ pub fn run(force: bool, target: &str) -> Result<()> {
   }
 
   let (release, version) = match update_target {
-    UpdateTarget::Exact(target_version) => {
+    | UpdateTarget::Exact(target_version) => {
       let Some(found_release) = releases
         .iter()
         .find(|r| Version::parse(&r.version).is_ok_and(|v| v == target_version))
@@ -108,7 +108,7 @@ pub fn run(force: bool, target: &str) -> Result<()> {
       (found_release.clone(), target_version)
     }
 
-    UpdateTarget::Relative(bump) => {
+    | UpdateTarget::Relative(bump) => {
       let compatible: Vec<_> = releases
         .iter()
         .filter(|r| {
@@ -119,9 +119,9 @@ pub fn run(force: bool, target: &str) -> Result<()> {
             return false;
           }
           match bump {
-            VersionBump::Major => true,
-            VersionBump::Minor => rel_ver.major == current_version.major,
-            VersionBump::Patch => {
+            | VersionBump::Major => true,
+            | VersionBump::Minor => rel_ver.major == current_version.major,
+            | VersionBump::Patch => {
               rel_ver.major == current_version.major && rel_ver.minor == current_version.minor
             }
           }

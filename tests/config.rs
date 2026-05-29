@@ -24,8 +24,8 @@ impl Drop for EnvVarGuard {
     // SAFETY: The caller holds ENV_LOCK, serializing all env access
     // within these tests.
     match &self.previous {
-      Some(value) => unsafe { env::set_var(self.key, value) },
-      None => unsafe { env::remove_var(self.key) },
+      | None => unsafe { env::remove_var(self.key) },
+      | Some(value) => unsafe { env::set_var(self.key, value) },
     }
   }
 }

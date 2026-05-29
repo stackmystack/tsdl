@@ -50,14 +50,14 @@ pub struct PreparedCli {
 /// Check whether a cached tree-sitter CLI binary is still valid.
 async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
   let metadata = match fs::symlink_metadata(path).await {
-    Ok(metadata) => metadata,
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+    | Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
       return Ok(CliCacheStatus::Missing);
     }
-    Err(err) => {
+    | Err(err) => {
       return Err(err)
         .with_context(|| format!("Inspecting cached tree-sitter CLI {}", path.display()));
     }
+    | Ok(metadata) => metadata,
   };
 
   let file_type = metadata.file_type();
@@ -89,9 +89,9 @@ async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
   }
 
   match verify_cli(path, tag).await {
-    Ok(()) => Ok(CliCacheStatus::Hit),
-    Err(Error::Interrupted { signal }) => Err(Error::Interrupted { signal }),
-    Err(err) => Ok(CliCacheStatus::Invalid(first_line(&err.to_string()))),
+    | Err(Error::Interrupted { signal }) => Err(Error::Interrupted { signal }),
+    | Err(err) => Ok(CliCacheStatus::Invalid(first_line(&err.to_string()))),
+    | Ok(()) => Ok(CliCacheStatus::Hit),
   }
 }
 
@@ -122,18 +122,18 @@ async fn cli(
   let url = format!("{repo}/releases/download/{tag}/{gz_basename}");
 
   match check_cached_cli(&res, tag).await? {
-    CliCacheStatus::Hit => {
+    | CliCacheStatus::Hit => {
       info!("Using cached tree-sitter CLI at {}", res.display());
       handle.set_outcome_cached().await;
       handle.step("cached");
     }
-    CliCacheStatus::Missing => {
+    | CliCacheStatus::Missing => {
       info!("Tree-sitter CLI cache miss for {tag}; downloading from {url}");
       handle.set_outcome_built().await;
       handle.step("downloading");
       download_and_install(&url, &res, tag).await?;
     }
-    CliCacheStatus::Invalid(reason) => {
+    | CliCacheStatus::Invalid(reason) => {
       warn!(
         "Cached tree-sitter CLI at {} is invalid ({reason}); re-downloading from {url}",
         res.display()
@@ -151,12 +151,12 @@ async fn cli(
 /// Wrap a result, adding context unless it's an Interrupted error.
 fn context_unless_interrupted<T>(result: Result<T>, message: impl FnOnce() -> String) -> Result<T> {
   match result {
-    Ok(value) => Ok(value),
-    Err(err @ Error::Interrupted { .. }) => Err(err),
-    Err(err) => Err(Error::Context {
+    | Err(err @ Error::Interrupted { .. }) => Err(err),
+    | Err(err) => Err(Error::Context {
       message: message(),
       source: err.into(),
     }),
+    | Ok(value) => Ok(value),
   }
 }
 
@@ -321,8 +321,7 @@ pub async fn prepare(
 
   progress.step(format!("resolving {git_ref}"));
   let tag = match tag(repo.as_str(), git_ref).await {
-    Ok(tag) => tag,
-    Err(e) => {
+    | Err(e) => {
       if shutdown::current().is_some_and(|s| s.is_cancelled()) {
         progress.cancel().await;
       } else {
@@ -330,10 +329,10 @@ pub async fn prepare(
       }
       return Err(e);
     }
+    | Ok(tag) => tag,
   };
   let release_tag = match resolve_release_tag(build_dir, &progress, &tree_sitter.repo, &tag).await {
-    Ok(tag) => tag,
-    Err(e) => {
+    | Err(e) => {
       if shutdown::current().is_some_and(|s| s.is_cancelled()) {
         progress.cancel().await;
       } else {
@@ -341,6 +340,7 @@ pub async fn prepare(
       }
       return Err(e);
     }
+    | Ok(tag) => tag,
   };
   info!("Resolved tree-sitter CLI ref {git_ref:?} to release tag {release_tag:?}");
 
@@ -360,8 +360,7 @@ pub async fn prepare(
       )
     },
   ) {
-    Ok(cli) => cli,
-    Err(e) => {
+    | Err(e) => {
       if shutdown::current().is_some_and(|s| s.is_cancelled()) {
         progress.cancel().await;
       } else {
@@ -369,6 +368,7 @@ pub async fn prepare(
       }
       return Err(e);
     }
+    | Ok(cli) => cli,
   };
   progress.fin("done").await;
 
@@ -406,13 +406,13 @@ async fn resolve_release_tag(
   resolved_ref: &git::ResolvedRef,
 ) -> Result<String> {
   let tag = match resolved_ref {
-    git::ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
-    git::ResolvedRef::Ref(git_ref) => {
+    | git::ResolvedRef::Ref(git_ref) => {
       handle.msg(format!("resolving exact tag for {resolved_ref}"));
       let tree_sitter = build_dir.join("tree-sitter");
       git::clone(repo, &tree_sitter).await?;
       Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
     }
+    | git::ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
   };
   Ok(tag.into_owned())
 }
@@ -512,8 +512,8 @@ mod tests {
     std_fs::write(&path, b"tree-sitter 1.2.3\n").unwrap();
 
     match check_cached_cli(&path, "v1.2.3").await.unwrap() {
-      CliCacheStatus::Invalid(reason) => assert!(reason.contains("not executable")),
-      status => panic!("expected invalid cache entry, got {status:?}"),
+      | CliCacheStatus::Invalid(reason) => assert!(reason.contains("not executable")),
+      | status => panic!("expected invalid cache entry, got {status:?}"),
     }
   }
 
@@ -536,8 +536,8 @@ mod tests {
     write_script(&path, "#!/bin/sh\necho 'tree-sitter 9.9.9'\n");
 
     match check_cached_cli(&path, "v1.2.3").await.unwrap() {
-      CliCacheStatus::Invalid(reason) => assert!(reason.contains("expected version")),
-      status => panic!("expected invalid cache entry, got {status:?}"),
+      | CliCacheStatus::Invalid(reason) => assert!(reason.contains("expected version")),
+      | status => panic!("expected invalid cache entry, got {status:?}"),
     }
   }
 
@@ -584,11 +584,11 @@ mod tests {
     );
     let tag = find_tag(&refs, "1.0.0").unwrap();
     match tag {
-      git::ResolvedRef::Tag { sha, label } => {
+      | git::ResolvedRef::Ref(_) => panic!("Expected git::ResolvedRef::Tag"),
+      | git::ResolvedRef::Tag { sha, label } => {
         assert_eq!(sha.as_str(), "636801770eea172d140e64b691815ff11f6b556f");
         assert_eq!(label, "v1.0.0");
       }
-      git::ResolvedRef::Ref(_) => panic!("Expected git::ResolvedRef::Tag"),
     }
   }
 
@@ -597,10 +597,10 @@ mod tests {
     let refs = HashMap::new();
     let tag = find_tag(&refs, "1.0.0").unwrap();
     match tag {
-      git::ResolvedRef::Ref(git_ref) => {
+      | git::ResolvedRef::Ref(git_ref) => {
         assert_eq!(git_ref.as_str(), "v1.0.0");
       }
-      git::ResolvedRef::Tag { .. } => panic!("Expected git::ResolvedRef::Ref"),
+      | git::ResolvedRef::Tag { .. } => panic!("Expected git::ResolvedRef::Ref"),
     }
   }
 }

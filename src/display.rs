@@ -320,12 +320,15 @@ fn count_item_state(
   failed: &mut usize,
   cancelled: &mut usize,
 ) {
+  use ItemState::*;
+  use SuccessOutcome::*;
+
   match state {
-    ItemState::New | ItemState::InProgress(_) => *building += 1,
-    ItemState::Done(SuccessOutcome::Cached) => *cached += 1,
-    ItemState::Done(SuccessOutcome::Built) => *built += 1,
-    ItemState::Cancelled => *cancelled += 1,
-    ItemState::Failed => *failed += 1,
+    | Cancelled => *cancelled += 1,
+    | Done(Built) => *built += 1,
+    | Done(Cached) => *cached += 1,
+    | Failed => *failed += 1,
+    | InProgress(_) | New => *building += 1,
   }
 }
 
@@ -377,15 +380,15 @@ fn format_elapsed_duration(dur: Duration) -> String {
 #[must_use]
 pub fn mode_from_args(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Mode {
   let mut mode = match progress {
-    ProgressStyle::Auto => {
+    | ProgressStyle::Auto => {
       if atty::is(atty::Stream::Stdout) {
         Mode::Fancy
       } else {
         Mode::Plain
       }
     }
-    ProgressStyle::Fancy => Mode::Fancy,
-    ProgressStyle::Plain => Mode::Plain,
+    | ProgressStyle::Fancy => Mode::Fancy,
+    | ProgressStyle::Plain => Mode::Plain,
   };
 
   if matches!(verbose.log_level(), Some(Level::Debug | Level::Trace)) {
@@ -596,32 +599,32 @@ impl ItemInfo<'_> {
   /// Get the current item state.
   pub(crate) fn state(&self) -> ItemState {
     match self {
-      ItemInfo::Grammar(g) => g.state,
-      ItemInfo::Repo(r) => r.state,
+      | ItemInfo::Grammar(g) => g.state,
+      | ItemInfo::Repo(r) => r.state,
     }
   }
 
   /// Get the current message string.
   pub(crate) fn msg(&self) -> &str {
     match self {
-      ItemInfo::Grammar(g) => &g.msg,
-      ItemInfo::Repo(r) => &r.msg,
+      | ItemInfo::Grammar(g) => &g.msg,
+      | ItemInfo::Repo(r) => &r.msg,
     }
   }
 
   /// Get the current step index (0-based).
   pub(crate) fn step(&self) -> usize {
     match self {
-      ItemInfo::Grammar(g) => g.step,
-      ItemInfo::Repo(r) => r.step,
+      | ItemInfo::Grammar(g) => g.step,
+      | ItemInfo::Repo(r) => r.step,
     }
   }
 
   /// Get the total number of steps.
   pub(crate) fn total(&self) -> usize {
     match self {
-      ItemInfo::Grammar(g) => g.total,
-      ItemInfo::Repo(r) => r.total,
+      | ItemInfo::Grammar(g) => g.total,
+      | ItemInfo::Repo(r) => r.total,
     }
   }
 
@@ -629,16 +632,16 @@ impl ItemInfo<'_> {
   /// Get the git ref for this item.
   pub(crate) fn git_ref(&self) -> &git::Ref {
     match self {
-      ItemInfo::Grammar(g) => &g.git_ref,
-      ItemInfo::Repo(r) => &r.git_ref,
+      | ItemInfo::Grammar(g) => &g.git_ref,
+      | ItemInfo::Repo(r) => &r.git_ref,
     }
   }
 
   /// Get the elapsed time for this item.
   pub(crate) fn elapsed(&self) -> Duration {
     match self {
-      ItemInfo::Grammar(g) => g.elapsed(),
-      ItemInfo::Repo(r) => r.elapsed(),
+      | ItemInfo::Grammar(g) => g.elapsed(),
+      | ItemInfo::Repo(r) => r.elapsed(),
     }
   }
 }
@@ -654,38 +657,38 @@ impl ItemState {
   #[must_use]
   pub fn success_outcome(self) -> Option<SuccessOutcome> {
     match self {
-      Self::InProgress(outcome) => outcome,
-      Self::Done(outcome) => Some(outcome),
-      Self::New | Self::Cancelled | Self::Failed => None,
+      | Self::Cancelled | Self::Failed | Self::New => None,
+      | Self::Done(outcome) => Some(outcome),
+      | Self::InProgress(outcome) => outcome,
     }
   }
 
   /// Return the status icon character.
   fn icon(self) -> &'static str {
     match self {
-      Self::New | Self::InProgress(_) => "●",
-      Self::Done(_) => "✓",
-      Self::Cancelled | Self::Failed => "✗",
+      | Self::Cancelled | Self::Failed => "✗",
+      | Self::Done(_) => "✓",
+      | Self::New | Self::InProgress(_) => "●",
     }
   }
 
   /// Return the colour for the name text.
   fn name_color(self) -> Color {
     match self {
-      Self::Failed => Color::Red,
-      Self::Cancelled => Color::Yellow,
-      Self::New | Self::InProgress(None) => Color::DarkGray,
-      Self::InProgress(Some(outcome)) | Self::Done(outcome) => outcome.color(),
+      | Self::Cancelled => Color::Yellow,
+      | Self::Done(outcome) | Self::InProgress(Some(outcome)) => outcome.color(),
+      | Self::Failed => Color::Red,
+      | Self::New | Self::InProgress(None) => Color::DarkGray,
     }
   }
 
   /// Return the colour for the status indicator.
   fn indicator_color(self) -> Color {
     match self {
-      Self::Done(_) => Color::Green,
-      Self::Cancelled => Color::Yellow,
-      Self::Failed => Color::Red,
-      Self::New | Self::InProgress(_) => Color::DarkGray,
+      | Self::Done(_) => Color::Green,
+      | Self::Cancelled => Color::Yellow,
+      | Self::Failed => Color::Red,
+      | Self::New | Self::InProgress(_) => Color::DarkGray,
     }
   }
 }
@@ -819,13 +822,13 @@ impl State {
   /// Get the item info for a row spec.
   pub fn get_item_info(&self, spec: &RowSpec) -> ItemInfo<'_> {
     match spec.kind {
-      RowKind::Grammar => ItemInfo::Grammar(
+      | RowKind::Grammar => ItemInfo::Grammar(
         self
           .grammars
           .get(&spec.id)
           .expect("grammar not found for row spec"),
       ),
-      RowKind::Repo => ItemInfo::Repo(
+      | RowKind::Repo => ItemInfo::Repo(
         self
           .repos
           .get(&spec.id)
@@ -910,8 +913,8 @@ impl SuccessOutcome {
   /// Return the display colour for entries with this outcome.
   fn color(self) -> Color {
     match self {
-      SuccessOutcome::Built => Color::Blue,
-      SuccessOutcome::Cached => Color::Yellow,
+      | SuccessOutcome::Built => Color::Blue,
+      | SuccessOutcome::Cached => Color::Yellow,
     }
   }
 }

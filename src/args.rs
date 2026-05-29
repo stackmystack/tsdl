@@ -388,21 +388,21 @@ impl Target {
   /// Check whether `self` covers the requested target (e.g. All covers everything).
   #[must_use]
   pub fn covers(&self, other: Target) -> bool {
-    matches!(
-      (self, other),
-      (Target::All, _) | (Target::Native, Target::Native) | (Target::Wasm, Target::Wasm)
-    )
+    use Target::*;
+
+    matches!((self, other), (All, _) | (Native, Native) | (Wasm, Wasm))
   }
 
   /// Combine two targets into the broadest coverage.
   #[must_use]
   pub fn union(self, other: Self) -> Self {
     match (self, other) {
-      (Self::Native, Self::Native) => Self::Native,
-      (Self::Wasm, Self::Wasm) => Self::Wasm,
-      (Self::All, _) | (_, Self::All) | (Self::Native, Self::Wasm) | (Self::Wasm, Self::Native) => {
-        Self::All
-      }
+      | (Self::Native, Self::Native) => Self::Native,
+      | (Self::Wasm, Self::Wasm) => Self::Wasm,
+      | (Self::All, _)
+      | (_, Self::All)
+      | (Self::Native, Self::Wasm)
+      | (Self::Wasm, Self::Native) => Self::All,
     }
   }
 
@@ -422,9 +422,9 @@ impl Target {
   #[must_use]
   pub fn to_lowercase(&self) -> &'static str {
     match self {
-      Target::Native => "native",
-      Target::Wasm => "wasm",
-      Target::All => "all",
+      | Target::Native => "native",
+      | Target::Wasm => "wasm",
+      | Target::All => "all",
     }
   }
 }
@@ -432,9 +432,9 @@ impl Target {
 impl fmt::Display for VersionBump {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Self::Major => write!(f, "major"),
-      Self::Minor => write!(f, "minor"),
-      Self::Patch => write!(f, "patch"),
+      | Self::Major => write!(f, "major"),
+      | Self::Minor => write!(f, "minor"),
+      | Self::Patch => write!(f, "patch"),
     }
   }
 }
