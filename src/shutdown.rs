@@ -16,6 +16,105 @@ tokio::task_local! {
     static CURRENT_SHUTDOWN: Handle;
 }
 
+// ============================================================
+// Enums
+// ============================================================
+
+/// Error returned when constructing a [`PgId`] from a raw value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PgIdError {
+    /// Process group ID zero would target the current process group.
+    Zero,
+    /// The value cannot be represented by the platform's `pid_t` type.
+    OutOfRange(u32),
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+/// Cooperative shutdown signal shared across build tasks.
+#[derive(Clone, Debug)]
+pub struct Handle {
+    tx: watch::Sender<Option<Signal>>,
+    rx: watch::Receiver<Option<Signal>>,
+    /// Active child process group IDs. Build commands are put in their own
+    /// process groups so a signal can target each command's whole subprocess tree.
+    active_pgids: Arc<Mutex<HashSet<PgId>>>,
+}
+
+/// A positive Unix process group ID.
+///
+/// `PgId` rejects zero and values that do not fit in `libc::pid_t`, so callers
+/// cannot accidentally use `killpg(0, ...)`/`kill(-0, ...)` semantics and signal
+/// the current process group.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PgId(NonZeroU32);
+
+/// Registration guard for an active child process group.
+///
+/// Keep this guard alive while the child process group may still contain live
+/// processes. Dropping it removes the [`PgId`] from shutdown's active set, so a
+/// later second signal will no longer send `SIGKILL` to that process group.
+/// Drop it promptly after the child has exited and been reaped; this narrows the
+/// window where a stale, OS-reused process group ID could be signalled by a
+/// later shutdown escalation.
+#[derive(Debug)]
+pub struct PgIdGuard {
+    shutdown: Handle,
+    pgid: PgId,
+}
+
+/// A Unix signal that requested shutdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signal {
+    pub number: i32,
+    pub name: &'static str,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+pub async fn cancelled() -> Signal {
+    match current() {
+        Some(shutdown) => shutdown.cancelled().await,
+        None => std::future::pending::<Signal>().await,
+    }
+}
+
+pub fn check() -> Result<()> {
+    current().map_or(Ok(()), |shutdown| shutdown.check())
+}
+
+#[must_use]
+pub fn current() -> Option<Handle> {
+    CURRENT_SHUTDOWN.try_with(Clone::clone).ok()
+}
+
+#[must_use]
+pub fn current_or_default() -> Handle {
+    current().unwrap_or_default()
+}
+
+pub async fn scope<F>(shutdown: Handle, future: F) -> F::Output
+where
+    F: Future,
+{
+    CURRENT_SHUTDOWN.scope(shutdown, future).await
+}
+
+fn signal_process_group(pgid: PgId, signal: Signal) {
+    let rc = unsafe { libc::killpg(pgid.as_pid_t(), signal.number) };
+    if rc != 0 {
+        debug!(
+            "failed to send {} to pgid={pgid}: {}",
+            signal.name,
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// Test helper: when `TSDL_TEST_DELAY_MS` is set, inserts a sleep at every step
 /// boundary so signal delivery can be observed deterministically.
 ///
@@ -36,65 +135,19 @@ pub async fn test_delay() {
     // noop in release
 }
 
-/// A Unix signal that requested shutdown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Signal {
-    pub number: i32,
-    pub name: &'static str,
-}
+// ============================================================
+// Impls
+// ============================================================
 
-impl Signal {
-    pub const HUP: Self = Self {
-        number: libc::SIGHUP,
-        name: "SIGHUP",
-    };
-    pub const INT: Self = Self {
-        number: libc::SIGINT,
-        name: "SIGINT",
-    };
-    pub const QUIT: Self = Self {
-        number: libc::SIGQUIT,
-        name: "SIGQUIT",
-    };
-    pub const TERM: Self = Self {
-        number: libc::SIGTERM,
-        name: "SIGTERM",
-    };
-    pub const KILL: Self = Self {
-        number: libc::SIGKILL,
-        name: "SIGKILL",
-    };
-
-    /// Conventional shell exit status for commands terminated by signal N.
-    #[must_use]
-    pub fn shell_exit_code(self) -> u8 {
-        u8::try_from(128 + self.number).unwrap_or(255)
+impl Default for Handle {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl fmt::Display for Signal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-/// A positive Unix process group ID.
-///
-/// `PgId` rejects zero and values that do not fit in `libc::pid_t`, so callers
-/// cannot accidentally use `killpg(0, ...)`/`kill(-0, ...)` semantics and signal
-/// the current process group.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct PgId(NonZeroU32);
-
-impl PgId {
-    /// Return the raw positive process group ID value.
-    #[must_use]
-    pub fn get(self) -> u32 {
-        self.0.get()
-    }
-
-    fn as_pid_t(self) -> libc::pid_t {
-        <libc::pid_t>::try_from(self.0.get()).expect("PgId invariant: value fits in libc::pid_t")
+impl Drop for PgIdGuard {
+    fn drop(&mut self) {
+        self.shutdown.unregister_pgid(self.pgid);
     }
 }
 
@@ -102,25 +155,6 @@ impl fmt::Display for PgId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.get())
     }
-}
-
-impl TryFrom<u32> for PgId {
-    type Error = PgIdError;
-
-    fn try_from(value: u32) -> StdResult<Self, Self::Error> {
-        let value = NonZeroU32::new(value).ok_or(PgIdError::Zero)?;
-        <libc::pid_t>::try_from(value.get()).map_err(|_| PgIdError::OutOfRange(value.get()))?;
-        Ok(Self(value))
-    }
-}
-
-/// Error returned when constructing a [`PgId`] from a raw value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PgIdError {
-    /// Process group ID zero would target the current process group.
-    Zero,
-    /// The value cannot be represented by the platform's `pid_t` type.
-    OutOfRange(u32),
 }
 
 impl fmt::Display for PgIdError {
@@ -134,35 +168,9 @@ impl fmt::Display for PgIdError {
     }
 }
 
-impl std::error::Error for PgIdError {}
-
-/// Cooperative shutdown signal shared across build tasks.
-#[derive(Clone, Debug)]
-pub struct Handle {
-    tx: watch::Sender<Option<Signal>>,
-    rx: watch::Receiver<Option<Signal>>,
-    /// Active child process group IDs. Build commands are put in their own
-    /// process groups so a signal can target each command's whole subprocess tree.
-    active_pgids: Arc<Mutex<HashSet<PgId>>>,
-}
-
-/// Registration guard for an active child process group.
-///
-/// Keep this guard alive while the child process group may still contain live
-/// processes. Dropping it removes the [`PgId`] from shutdown's active set, so a
-/// later second signal will no longer send `SIGKILL` to that process group.
-/// Drop it promptly after the child has exited and been reaped; this narrows the
-/// window where a stale, OS-reused process group ID could be signalled by a
-/// later shutdown escalation.
-#[derive(Debug)]
-pub struct PgIdGuard {
-    shutdown: Handle,
-    pgid: PgId,
-}
-
-impl Drop for PgIdGuard {
-    fn drop(&mut self) {
-        self.shutdown.unregister_pgid(self.pgid);
+impl fmt::Display for Signal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
     }
 }
 
@@ -334,48 +342,56 @@ impl Handle {
     }
 }
 
-impl Default for Handle {
-    fn default() -> Self {
-        Self::new()
+impl PgId {
+    /// Return the raw positive process group ID value.
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    fn as_pid_t(self) -> libc::pid_t {
+        <libc::pid_t>::try_from(self.0.get()).expect("PgId invariant: value fits in libc::pid_t")
     }
 }
 
-fn signal_process_group(pgid: PgId, signal: Signal) {
-    let rc = unsafe { libc::killpg(pgid.as_pid_t(), signal.number) };
-    if rc != 0 {
-        debug!(
-            "failed to send {} to pgid={pgid}: {}",
-            signal.name,
-            std::io::Error::last_os_error()
-        );
+impl Signal {
+    pub const HUP: Self = Self {
+        number: libc::SIGHUP,
+        name: "SIGHUP",
+    };
+    pub const INT: Self = Self {
+        number: libc::SIGINT,
+        name: "SIGINT",
+    };
+    pub const QUIT: Self = Self {
+        number: libc::SIGQUIT,
+        name: "SIGQUIT",
+    };
+    pub const TERM: Self = Self {
+        number: libc::SIGTERM,
+        name: "SIGTERM",
+    };
+    pub const KILL: Self = Self {
+        number: libc::SIGKILL,
+        name: "SIGKILL",
+    };
+
+    /// Conventional shell exit status for commands terminated by signal N.
+    #[must_use]
+    pub fn shell_exit_code(self) -> u8 {
+        u8::try_from(128 + self.number).unwrap_or(255)
     }
 }
 
-pub async fn scope<F>(shutdown: Handle, future: F) -> F::Output
-where
-    F: Future,
-{
-    CURRENT_SHUTDOWN.scope(shutdown, future).await
-}
+impl std::error::Error for PgIdError {}
 
-#[must_use]
-pub fn current() -> Option<Handle> {
-    CURRENT_SHUTDOWN.try_with(Clone::clone).ok()
-}
+impl TryFrom<u32> for PgId {
+    type Error = PgIdError;
 
-#[must_use]
-pub fn current_or_default() -> Handle {
-    current().unwrap_or_default()
-}
-
-pub fn check() -> Result<()> {
-    current().map_or(Ok(()), |shutdown| shutdown.check())
-}
-
-pub async fn cancelled() -> Signal {
-    match current() {
-        Some(shutdown) => shutdown.cancelled().await,
-        None => std::future::pending::<Signal>().await,
+    fn try_from(value: u32) -> StdResult<Self, Self::Error> {
+        let value = NonZeroU32::new(value).ok_or(PgIdError::Zero)?;
+        <libc::pid_t>::try_from(value.get()).map_err(|_| PgIdError::OutOfRange(value.get()))?;
+        Ok(Self(value))
     }
 }
 
