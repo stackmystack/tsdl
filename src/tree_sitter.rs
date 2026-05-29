@@ -17,17 +17,76 @@ use crate::sh::Exec;
 use crate::shutdown;
 use crate::{Error, Result, ResultExt, SafeCanonicalize};
 
-#[derive(Debug, Clone)]
-pub struct PreparedCli {
-    pub path: PathBuf,
-    pub tree_sitter: args::TreeSitter,
-}
+// ============================================================
+// Enums
+// ============================================================
 
 #[derive(Debug, PartialEq, Eq)]
 enum CliCacheStatus {
     Hit,
     Missing,
     Invalid(String),
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct PreparedCli {
+    pub path: PathBuf,
+    pub tree_sitter: args::TreeSitter,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
+    let metadata = match fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CliCacheStatus::Missing)
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("Inspecting cached tree-sitter CLI {}", path.display()));
+        }
+    };
+
+    let file_type = metadata.file_type();
+    if file_type.is_dir() {
+        return Err(Error::Message {
+            message: format!(
+                "Cached tree-sitter CLI path is a directory and cannot be replaced: {}",
+                path.display()
+            ),
+        });
+    }
+
+    if file_type.is_symlink() {
+        return Ok(CliCacheStatus::Invalid(
+            "cached path is a symbolic link".to_string(),
+        ));
+    }
+
+    if !file_type.is_file() {
+        return Ok(CliCacheStatus::Invalid(
+            "cached path is not a regular file".to_string(),
+        ));
+    }
+
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Ok(CliCacheStatus::Invalid(
+            "cached file is not executable".to_string(),
+        ));
+    }
+
+    match verify_cli(path, tag).await {
+        Ok(()) => Ok(CliCacheStatus::Hit),
+        Err(Error::Interrupted { signal }) => Err(Error::Interrupted { signal }),
+        Err(err) => Ok(CliCacheStatus::Invalid(first_line(&err.to_string()))),
+    }
 }
 
 async fn chmod_x(prog: &Path) -> Result<()> {
@@ -81,69 +140,19 @@ async fn cli(
     Ok(res)
 }
 
-async fn resolve_release_tag(
-    build_dir: &Path,
-    handle: &actors::ProgressAddr,
-    repo: &str,
-    resolved_ref: &git::ResolvedRef,
-) -> Result<String> {
-    let tag = match resolved_ref {
-        git::ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
-        git::ResolvedRef::Ref(git_ref) => {
-            handle.msg(format!("resolving exact tag for {resolved_ref}"));
-            let tree_sitter = build_dir.join("tree-sitter");
-            git::clone(repo, &tree_sitter).await?;
-            Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
-        }
-    };
-    Ok(tag.into_owned())
+fn context_unless_interrupted<T>(result: Result<T>, message: impl FnOnce() -> String) -> Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(err @ Error::Interrupted { .. }) => Err(err),
+        Err(err) => Err(Error::Context {
+            message: message(),
+            source: err.into(),
+        }),
+    }
 }
 
-async fn check_cached_cli(path: &Path, tag: &str) -> Result<CliCacheStatus> {
-    let metadata = match fs::symlink_metadata(path).await {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CliCacheStatus::Missing)
-        }
-        Err(err) => {
-            return Err(err)
-                .with_context(|| format!("Inspecting cached tree-sitter CLI {}", path.display()));
-        }
-    };
-
-    let file_type = metadata.file_type();
-    if file_type.is_dir() {
-        return Err(Error::Message {
-            message: format!(
-                "Cached tree-sitter CLI path is a directory and cannot be replaced: {}",
-                path.display()
-            ),
-        });
-    }
-
-    if file_type.is_symlink() {
-        return Ok(CliCacheStatus::Invalid(
-            "cached path is a symbolic link".to_string(),
-        ));
-    }
-
-    if !file_type.is_file() {
-        return Ok(CliCacheStatus::Invalid(
-            "cached path is not a regular file".to_string(),
-        ));
-    }
-
-    if metadata.permissions().mode() & 0o111 == 0 {
-        return Ok(CliCacheStatus::Invalid(
-            "cached file is not executable".to_string(),
-        ));
-    }
-
-    match verify_cli(path, tag).await {
-        Ok(()) => Ok(CliCacheStatus::Hit),
-        Err(Error::Interrupted { signal }) => Err(Error::Interrupted { signal }),
-        Err(err) => Ok(CliCacheStatus::Invalid(first_line(&err.to_string()))),
-    }
+pub(crate) fn display_tree_sitter_ref(version: &str) -> StdResult<git::Ref, crate::git::RefError> {
+    git::Ref::new(normalize_release_ref(version))
 }
 
 async fn download(url: &str, gz: &Path) -> Result<()> {
@@ -174,103 +183,9 @@ async fn download_and_install(url: &str, res: &Path, tag: &str) -> Result<()> {
     Ok(())
 }
 
-async fn install_downloaded_cli(gz: &Path, tmp_cli: &Path, res: &Path, tag: &str) -> Result<()> {
-    gunzip(gz, tmp_cli).await?;
-    chmod_x(tmp_cli).await?;
-    context_unless_interrupted(verify_cli(tmp_cli, tag).await, || {
-        format!("Verifying downloaded tree-sitter CLI {}", tmp_cli.display())
-    })?;
-    promote_cli(tmp_cli, res).await
-}
-
-fn temp_path_for(res: &Path, suffix: &str) -> Result<TempPath> {
-    let parent = res.parent().ok_or_else(|| Error::Message {
-        message: format!(
-            "Could not determine parent directory for tree-sitter CLI path {}",
-            res.display()
-        ),
-    })?;
-    let name = res.file_name().map_or_else(
-        || Cow::Borrowed("tree-sitter"),
-        |name| name.to_string_lossy(),
-    );
-
-    tempfile::Builder::new()
-        .prefix(&format!(".{name}."))
-        .suffix(suffix)
-        .tempfile_in(parent)
-        .map(tempfile::NamedTempFile::into_temp_path)
-        .with_context(|| {
-            format!(
-                "Creating temporary tree-sitter CLI file in {}",
-                parent.display()
-            )
-        })
-}
-
-async fn promote_cli(tmp_cli: &Path, res: &Path) -> Result<()> {
-    if let Err(err) = fs::rename(tmp_cli, res).await {
-        let _ = fs::remove_file(tmp_cli).await;
-        return Err(err).with_context(|| {
-            format!(
-                "Installing tree-sitter CLI {} to {}",
-                tmp_cli.display(),
-                res.display()
-            )
-        });
-    }
-
-    Ok(())
-}
-
-async fn verify_cli(path: &Path, tag: &str) -> Result<()> {
-    let output =
-        context_unless_interrupted(Command::new(path).arg("--version").exec().await, || {
-            format!("Running {} --version", path.display())
-        })?;
-
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    if let Some(expected) = expected_cli_version(tag) {
-        if !output.contains(expected) {
-            return Err(Error::Message {
-                message: format!(
-                    "tree-sitter CLI version output did not contain expected version {expected:?}: {}",
-                    output.trim()
-                ),
-            });
-        }
-    }
-
-    Ok(())
-}
-
 fn expected_cli_version(tag: &str) -> Option<&str> {
     let version = tag.strip_prefix('v').unwrap_or(tag);
     is_dotted_numeric_version(version).then_some(version)
-}
-
-fn first_line(message: &str) -> String {
-    message
-        .lines()
-        .next()
-        .unwrap_or("unknown verification failure")
-        .to_string()
-}
-
-fn context_unless_interrupted<T>(result: Result<T>, message: impl FnOnce() -> String) -> Result<T> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(err @ Error::Interrupted { .. }) => Err(err),
-        Err(err) => Err(Error::Context {
-            message: message(),
-            source: err.into(),
-        }),
-    }
 }
 
 fn find_tag(
@@ -291,21 +206,12 @@ fn find_tag(
         )
 }
 
-fn is_dotted_numeric_version(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .split('.')
-            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
-}
-
-fn normalize_release_ref(value: &str) -> String {
-    if git::Sha::is_full_sha(value) || value.starts_with('v') {
-        value.to_string()
-    } else if is_dotted_numeric_version(value) {
-        format!("v{value}")
-    } else {
-        value.to_string()
-    }
+fn first_line(message: &str) -> String {
+    message
+        .lines()
+        .next()
+        .unwrap_or("unknown verification failure")
+        .to_string()
 }
 
 async fn gunzip(gz: &Path, to: &Path) -> Result<()> {
@@ -325,6 +231,32 @@ async fn gunzip(gz: &Path, to: &Path) -> Result<()> {
     file.sync_all()
         .await
         .with_context(|| format!("syncing extracted tree-sitter CLI {}", to.display()))
+}
+
+async fn install_downloaded_cli(gz: &Path, tmp_cli: &Path, res: &Path, tag: &str) -> Result<()> {
+    gunzip(gz, tmp_cli).await?;
+    chmod_x(tmp_cli).await?;
+    context_unless_interrupted(verify_cli(tmp_cli, tag).await, || {
+        format!("Verifying downloaded tree-sitter CLI {}", tmp_cli.display())
+    })?;
+    promote_cli(tmp_cli, res).await
+}
+
+fn is_dotted_numeric_version(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split('.')
+            .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+}
+
+fn normalize_release_ref(value: &str) -> String {
+    if git::Sha::is_full_sha(value) || value.starts_with('v') {
+        value.to_string()
+    } else if is_dotted_numeric_version(value) {
+        format!("v{value}")
+    } else {
+        value.to_string()
+    }
 }
 
 fn parse_refs(stdout: &str) -> HashMap<String, String> {
@@ -427,8 +359,37 @@ pub async fn prepare(
     })
 }
 
-pub(crate) fn display_tree_sitter_ref(version: &str) -> StdResult<git::Ref, crate::git::RefError> {
-    git::Ref::new(normalize_release_ref(version))
+async fn promote_cli(tmp_cli: &Path, res: &Path) -> Result<()> {
+    if let Err(err) = fs::rename(tmp_cli, res).await {
+        let _ = fs::remove_file(tmp_cli).await;
+        return Err(err).with_context(|| {
+            format!(
+                "Installing tree-sitter CLI {} to {}",
+                tmp_cli.display(),
+                res.display()
+            )
+        });
+    }
+
+    Ok(())
+}
+
+async fn resolve_release_tag(
+    build_dir: &Path,
+    handle: &actors::ProgressAddr,
+    repo: &str,
+    resolved_ref: &git::ResolvedRef,
+) -> Result<String> {
+    let tag = match resolved_ref {
+        git::ResolvedRef::Tag { label, .. } => Cow::Borrowed(label.as_str()),
+        git::ResolvedRef::Ref(git_ref) => {
+            handle.msg(format!("resolving exact tag for {resolved_ref}"));
+            let tree_sitter = build_dir.join("tree-sitter");
+            git::clone(repo, &tree_sitter).await?;
+            Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
+        }
+    };
+    Ok(tag.into_owned())
 }
 
 #[allow(clippy::missing_panics_doc)]
@@ -440,6 +401,57 @@ pub async fn tag(repo: &str, version: &str) -> Result<git::ResolvedRef> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let refs = parse_refs(&stdout);
     find_tag(&refs, version).with_context(|| format!("Parsing tree-sitter git ref {version:?}"))
+}
+
+fn temp_path_for(res: &Path, suffix: &str) -> Result<TempPath> {
+    let parent = res.parent().ok_or_else(|| Error::Message {
+        message: format!(
+            "Could not determine parent directory for tree-sitter CLI path {}",
+            res.display()
+        ),
+    })?;
+    let name = res.file_name().map_or_else(
+        || Cow::Borrowed("tree-sitter"),
+        |name| name.to_string_lossy(),
+    );
+
+    tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(suffix)
+        .tempfile_in(parent)
+        .map(tempfile::NamedTempFile::into_temp_path)
+        .with_context(|| {
+            format!(
+                "Creating temporary tree-sitter CLI file in {}",
+                parent.display()
+            )
+        })
+}
+
+async fn verify_cli(path: &Path, tag: &str) -> Result<()> {
+    let output =
+        context_unless_interrupted(Command::new(path).arg("--version").exec().await, || {
+            format!("Running {} --version", path.display())
+        })?;
+
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if let Some(expected) = expected_cli_version(tag) {
+        if !output.contains(expected) {
+            return Err(Error::Message {
+                message: format!(
+                    "tree-sitter CLI version output did not contain expected version {expected:?}: {}",
+                    output.trim()
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
