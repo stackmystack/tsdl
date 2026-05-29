@@ -13,7 +13,7 @@ use sha1::{Digest, Sha1};
 use tokio::io::AsyncWrite;
 use tracing::debug;
 
-use crate::{args, build, build_dir::BuildDir, git, parser, Error, Result, ResultExt};
+use crate::{args, build, build::BuildDir, git, parser, Error, Result, ResultExt};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

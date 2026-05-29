@@ -1,3 +1,4 @@
+use std::fmt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -11,15 +12,18 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use url::Url;
 
-use crate::consts::FROM;
 use crate::{
-    actors, app, args, build_dir::BuildDir, cache, format_duration, lock, parser, prompt_user,
-    shutdown, Error, Result, ResultExt, SafeCanonicalize,
+    absolute_normalize, actors, app, args, cache, consts, format_duration, lock, parser,
+    prompt_user, shutdown, Error, Result, ResultExt, SafeCanonicalize,
 };
 
 // ============================================================
 // Structs
 // ============================================================
+
+/// The root build directory — anchor for all derived paths.
+#[derive(Clone, Debug)]
+pub struct BuildDir(PathBuf);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Context {
@@ -120,6 +124,8 @@ fn collect_languages(
 }
 
 fn default_repo(language: &str) -> Result<Url> {
+    use consts::FROM;
+
     let url = format!("{FROM}{language}");
     Url::parse(&url).with_context(|| format!("Creating url {url} for {language}"))
 }
@@ -303,8 +309,59 @@ fn unique_languages(
 }
 
 // ============================================================
-// Tests
+// Impls
 // ============================================================
+
+impl AsRef<Path> for BuildDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl BuildDir {
+    /// The absolute, normalised path as a `&Path`.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Path to the build cache TOML file inside this build directory.
+    #[must_use]
+    pub fn cache_file(&self) -> PathBuf {
+        self.0.join(consts::CACHE_FILE)
+    }
+
+    /// Per-language checkout directory: `<build_dir>/tree-sitter-<language>`.
+    #[must_use]
+    pub fn checkout_dir(&self, language: &str) -> PathBuf {
+        self.0.join(format!("tree-sitter-{language}"))
+    }
+
+    /// Path to the PID lock file inside this build directory.
+    #[must_use]
+    pub fn lock_file(&self) -> PathBuf {
+        self.0.join(consts::LOCK_FILE)
+    }
+
+    /// Path to the default log file inside this build directory.
+    #[must_use]
+    pub fn log_file(&self) -> PathBuf {
+        self.0.join(consts::LOG_FILE)
+    }
+
+    /// Create a `BuildDir`, resolving relative paths against the current
+    /// working directory and normalising `.` / `..` components.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = absolute_normalize(&path.into())?;
+        Ok(Self(path))
+    }
+}
+
+impl fmt::Display for BuildDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.display())
+    }
+}
 
 #[cfg(test)]
 mod tests {

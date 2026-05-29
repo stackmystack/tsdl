@@ -16,7 +16,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, Update
 use tracing::info;
 
 use crate::{
-    absolute_normalize, build_dir::BuildDir, consts, format_duration, Error, Result, ResultExt,
+    absolute_normalize, build::BuildDir, consts, format_duration, Error, Result, ResultExt,
 };
 
 /// Information about the process currently holding the build lock.
