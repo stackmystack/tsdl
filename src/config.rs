@@ -12,8 +12,10 @@ use tracing::debug;
 
 use crate::{args, columns, Result, ResultExt};
 
-// ── Arg ID constants for provenance tracking ────────────────────────────
-//
+// ============================================================
+// Constants
+// ============================================================
+
 // clap derive uses the Rust field name as the arg ID, not the long flag
 // name.  These constants match the field names so `ArgMatches::value_source`
 // can look them up.
@@ -35,7 +37,23 @@ const ARG_TS_PLATFORM: &str = "platform";
 const ARG_TS_REPO: &str = "repo";
 const ARG_UNLOCK_TIMEOUT: &str = "unlock_timeout";
 
-// ── Build CLI argument structs ─────────────────────────────────────────
+// ============================================================
+// Enums
+// ============================================================
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Source {
+    #[default]
+    BuiltInDefault,
+    ConfigFile,
+    Environment,
+    CommandLine,
+}
+
+// ============================================================
+// Structs
+// ============================================================
 
 /// CLI arguments for the `build` subcommand, defined via derive so the arg
 /// definitions and value extraction stay in sync.
@@ -104,47 +122,6 @@ pub struct BuildArgs {
     pub unlock_timeout: Option<u64>,
 }
 
-/// Nested CLI arguments for tree-sitter configuration.
-#[derive(clap::Args, Clone, Debug, Default)]
-pub struct TreeSitterArgs {
-    #[arg(long = "tree-sitter-version", short = 'V', env = "TSDL_VERSION")]
-    pub version: Option<String>,
-    #[arg(long = "tree-sitter-platform", env = "TSDL_PLATFORM")]
-    pub platform: Option<String>,
-    #[arg(long = "tree-sitter-repo", short = 'R', env = "TSDL_REPO")]
-    pub repo: Option<String>,
-}
-
-// ── Source / provenance types ──────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Source {
-    #[default]
-    BuiltInDefault,
-    ConfigFile,
-    Environment,
-    CommandLine,
-}
-
-impl Source {
-    fn from_value_source(source: ValueSource) -> Option<Self> {
-        match source {
-            ValueSource::CommandLine => Some(Self::CommandLine),
-            ValueSource::EnvVariable => Some(Self::Environment),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct TreeSitterProvenance {
-    pub version: Source,
-    pub platform: Source,
-    pub repo: Source,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BuildProvenance {
@@ -162,7 +139,34 @@ pub struct BuildProvenance {
     pub unlock_timeout: Source,
 }
 
-// ── Configuration resolution ───────────────────────────────────────────
+/// Nested CLI arguments for tree-sitter configuration.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct TreeSitterArgs {
+    #[arg(long = "tree-sitter-version", short = 'V', env = "TSDL_VERSION")]
+    pub version: Option<String>,
+    #[arg(long = "tree-sitter-platform", env = "TSDL_PLATFORM")]
+    pub platform: Option<String>,
+    #[arg(long = "tree-sitter-repo", short = 'R', env = "TSDL_REPO")]
+    pub repo: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TreeSitterProvenance {
+    pub version: Source,
+    pub platform: Source,
+    pub repo: Source,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+fn apply_opt<T>(field: &mut T, value: Option<T>) {
+    if let Some(v) = value {
+        *field = v;
+    }
+}
 
 pub fn current(config: &Path, matches: Option<&ArgMatches>) -> Result<args::BuildCommand> {
     let (cmd, _provenance) = current_with_provenance(config, matches)?;
@@ -194,67 +198,12 @@ pub fn current_with_provenance(
     Ok((command, provenance))
 }
 
-fn merge(
-    defaults: args::BuildCommand,
-    file: args::OptionalBuildCommand,
-    cli: args::OptionalBuildCommand,
-) -> args::BuildCommand {
-    let mut cmd = defaults;
-    apply_opt(&mut cmd.build_dir, file.build_dir);
-    apply_opt(&mut cmd.build_dir, cli.build_dir);
-    apply_opt(&mut cmd.force, file.force);
-    apply_opt(&mut cmd.force, cli.force);
-    apply_opt(&mut cmd.fresh, file.fresh);
-    apply_opt(&mut cmd.fresh, cli.fresh);
-    apply_opt(&mut cmd.jobs, file.jobs);
-    apply_opt(&mut cmd.jobs, cli.jobs);
-    apply_opt(&mut cmd.out_dir, file.out_dir);
-    apply_opt(&mut cmd.out_dir, cli.out_dir);
-    if let Some(parsers) = file.parsers {
-        cmd.parsers = Some(parsers);
-    }
-    apply_opt(&mut cmd.prefix, file.prefix);
-    apply_opt(&mut cmd.prefix, cli.prefix);
-    apply_opt(&mut cmd.show_config, file.show_config);
-    apply_opt(&mut cmd.show_config, cli.show_config);
-    apply_opt(&mut cmd.target, file.target);
-    apply_opt(&mut cmd.target, cli.target);
-    apply_opt(&mut cmd.unlock_timeout, file.unlock_timeout);
-    apply_opt(&mut cmd.unlock_timeout, cli.unlock_timeout);
-
-    apply_opt(&mut cmd.tree_sitter.version, file.tree_sitter.version);
-    apply_opt(&mut cmd.tree_sitter.version, cli.tree_sitter.version);
-    apply_opt(&mut cmd.tree_sitter.platform, file.tree_sitter.platform);
-    apply_opt(&mut cmd.tree_sitter.platform, cli.tree_sitter.platform);
-    apply_opt(&mut cmd.tree_sitter.repo, file.tree_sitter.repo);
-    apply_opt(&mut cmd.tree_sitter.repo, cli.tree_sitter.repo);
-
-    if let Some(langs) = cli.languages {
-        cmd.languages = Some(langs);
-    }
-
-    cmd
-}
-
-fn apply_opt<T>(field: &mut T, value: Option<T>) {
-    if let Some(v) = value {
-        *field = v;
-    }
-}
-
-fn read_file_overrides(config: &Path) -> Result<args::OptionalBuildCommand> {
-    if !config.exists() {
-        return Ok(args::OptionalBuildCommand::default());
-    }
-
-    let contents = fs::read_to_string(config)
-        .with_context(|| format!("Reading config file {}", config.display()))?;
-
-    if contents.trim().is_empty() {
-        return Ok(args::OptionalBuildCommand::default());
-    }
-
-    toml::from_str(&contents).with_context(|| format!("Parsing config file {}", config.display()))
+/// Extract CLI overrides from parsed `ArgMatches` into `OptionalBuildCommand`
+/// with provenance tracking.
+#[must_use]
+pub fn extract_overrides(matches: &ArgMatches) -> (args::OptionalBuildCommand, BuildProvenance) {
+    let cli = BuildArgs::from_arg_matches(matches).unwrap_or_else(|err| err.exit());
+    overrides_from_build_args(cli, matches)
 }
 
 fn file_provenance_from(overrides: &args::OptionalBuildCommand) -> BuildProvenance {
@@ -302,6 +251,48 @@ fn file_provenance_from(overrides: &args::OptionalBuildCommand) -> BuildProvenan
     p
 }
 
+fn merge(
+    defaults: args::BuildCommand,
+    file: args::OptionalBuildCommand,
+    cli: args::OptionalBuildCommand,
+) -> args::BuildCommand {
+    let mut cmd = defaults;
+    apply_opt(&mut cmd.build_dir, file.build_dir);
+    apply_opt(&mut cmd.build_dir, cli.build_dir);
+    apply_opt(&mut cmd.force, file.force);
+    apply_opt(&mut cmd.force, cli.force);
+    apply_opt(&mut cmd.fresh, file.fresh);
+    apply_opt(&mut cmd.fresh, cli.fresh);
+    apply_opt(&mut cmd.jobs, file.jobs);
+    apply_opt(&mut cmd.jobs, cli.jobs);
+    apply_opt(&mut cmd.out_dir, file.out_dir);
+    apply_opt(&mut cmd.out_dir, cli.out_dir);
+    if let Some(parsers) = file.parsers {
+        cmd.parsers = Some(parsers);
+    }
+    apply_opt(&mut cmd.prefix, file.prefix);
+    apply_opt(&mut cmd.prefix, cli.prefix);
+    apply_opt(&mut cmd.show_config, file.show_config);
+    apply_opt(&mut cmd.show_config, cli.show_config);
+    apply_opt(&mut cmd.target, file.target);
+    apply_opt(&mut cmd.target, cli.target);
+    apply_opt(&mut cmd.unlock_timeout, file.unlock_timeout);
+    apply_opt(&mut cmd.unlock_timeout, cli.unlock_timeout);
+
+    apply_opt(&mut cmd.tree_sitter.version, file.tree_sitter.version);
+    apply_opt(&mut cmd.tree_sitter.version, cli.tree_sitter.version);
+    apply_opt(&mut cmd.tree_sitter.platform, file.tree_sitter.platform);
+    apply_opt(&mut cmd.tree_sitter.platform, cli.tree_sitter.platform);
+    apply_opt(&mut cmd.tree_sitter.repo, file.tree_sitter.repo);
+    apply_opt(&mut cmd.tree_sitter.repo, cli.tree_sitter.repo);
+
+    if let Some(langs) = cli.languages {
+        cmd.languages = Some(langs);
+    }
+
+    cmd
+}
+
 fn merge_provenance(file: &BuildProvenance, cli: &BuildProvenance) -> BuildProvenance {
     BuildProvenance {
         build_dir: merge_source(file.build_dir, cli.build_dir),
@@ -329,16 +320,6 @@ fn merge_source(file: Source, cli: Source) -> Source {
     } else {
         cli
     }
-}
-
-// ── CLI override extraction ────────────────────────────────────────────
-
-/// Extract CLI overrides from parsed `ArgMatches` into `OptionalBuildCommand`
-/// with provenance tracking.
-#[must_use]
-pub fn extract_overrides(matches: &ArgMatches) -> (args::OptionalBuildCommand, BuildProvenance) {
-    let cli = BuildArgs::from_arg_matches(matches).unwrap_or_else(|err| err.exit());
-    overrides_from_build_args(cli, matches)
 }
 
 fn overrides_from_build_args(
@@ -451,21 +432,51 @@ fn overrides_from_build_args(
     (o, p)
 }
 
-/// Set a simple `Option<T>` override when the arg's `ValueSource` indicates
-/// the user supplied it (CLI or env).
-fn set_simple<T>(
-    matches: &ArgMatches,
-    id: &str,
-    value: Option<T>,
-    field: &mut Option<T>,
-    provenance: &mut Source,
-) {
-    if let Some(source) = source_for(matches, id) {
-        if let Some(val) = value {
-            *field = Some(val);
-            *provenance = source;
-        }
+#[must_use]
+pub fn parse_with_matches() -> (args::Args, ArgMatches) {
+    let mut cmd = args::Args::command();
+    if let Some(build_sub) = cmd.find_subcommand_mut("build") {
+        *build_sub = BuildArgs::augment_args(build_sub.clone());
     }
+    let matches = cmd.get_matches();
+    let args = args::Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    (args, matches)
+}
+
+pub fn print_current(command: &args::BuildCommand) -> Result<()> {
+    println!(
+        "{}",
+        toml::to_string(command).context("Generating current TOML config")?
+    );
+    Ok(())
+}
+
+pub fn print_default() -> Result<()> {
+    println!(
+        "{}",
+        toml::to_string(&args::BuildCommand::default())
+            .context("Generating default TOML config")?
+    );
+    Ok(())
+}
+
+pub fn print_indent(s: &str, indent: &str) {
+    s.lines().for_each(|line| println!("{indent}{line}"));
+}
+
+fn read_file_overrides(config: &Path) -> Result<args::OptionalBuildCommand> {
+    if !config.exists() {
+        return Ok(args::OptionalBuildCommand::default());
+    }
+
+    let contents = fs::read_to_string(config)
+        .with_context(|| format!("Reading config file {}", config.display()))?;
+
+    if contents.trim().is_empty() {
+        return Ok(args::OptionalBuildCommand::default());
+    }
+
+    toml::from_str(&contents).with_context(|| format!("Parsing config file {}", config.display()))
 }
 
 /// Resolve a boolean field that has both a positive (`--force`) and negative
@@ -495,16 +506,6 @@ fn resolve_bool(
     }
 }
 
-fn source_for(matches: &ArgMatches, id: &str) -> Option<Source> {
-    matches.value_source(id).and_then(Source::from_value_source)
-}
-
-// ── Display helpers ────────────────────────────────────────────────────
-
-pub fn print_indent(s: &str, indent: &str) {
-    s.lines().for_each(|line| println!("{indent}{line}"));
-}
-
 pub fn run(config_path: &Path, command: &args::ConfigCommand) -> Result<()> {
     match command {
         args::ConfigCommand::Current => print_current(&current(config_path, None)?),
@@ -512,21 +513,21 @@ pub fn run(config_path: &Path, command: &args::ConfigCommand) -> Result<()> {
     }
 }
 
-pub fn print_current(command: &args::BuildCommand) -> Result<()> {
-    println!(
-        "{}",
-        toml::to_string(command).context("Generating current TOML config")?
-    );
-    Ok(())
-}
-
-pub fn print_default() -> Result<()> {
-    println!(
-        "{}",
-        toml::to_string(&args::BuildCommand::default())
-            .context("Generating default TOML config")?
-    );
-    Ok(())
+/// Set a simple `Option<T>` override when the arg's `ValueSource` indicates
+/// the user supplied it (CLI or env).
+fn set_simple<T>(
+    matches: &ArgMatches,
+    id: &str,
+    value: Option<T>,
+    field: &mut Option<T>,
+    provenance: &mut Source,
+) {
+    if let Some(source) = source_for(matches, id) {
+        if let Some(val) = value {
+            *field = Some(val);
+            *provenance = source;
+        }
+    }
 }
 
 pub fn show(command: &args::BuildCommand) -> Result<()> {
@@ -546,17 +547,8 @@ pub fn show(command: &args::BuildCommand) -> Result<()> {
     Ok(())
 }
 
-// ── Parsing ────────────────────────────────────────────────────────────
-
-#[must_use]
-pub fn parse_with_matches() -> (args::Args, ArgMatches) {
-    let mut cmd = args::Args::command();
-    if let Some(build_sub) = cmd.find_subcommand_mut("build") {
-        *build_sub = BuildArgs::augment_args(build_sub.clone());
-    }
-    let matches = cmd.get_matches();
-    let args = args::Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
-    (args, matches)
+fn source_for(matches: &ArgMatches, id: &str) -> Option<Source> {
+    matches.value_source(id).and_then(Source::from_value_source)
 }
 
 pub fn try_parse_from_with_matches<I, T>(itr: I) -> StdResult<(args::Args, ArgMatches), clap::Error>
@@ -571,4 +563,18 @@ where
     let matches = cmd.try_get_matches_from(itr)?;
     let args = args::Args::from_arg_matches(&matches)?;
     Ok((args, matches))
+}
+
+// ============================================================
+// Impls
+// ============================================================
+
+impl Source {
+    fn from_value_source(source: ValueSource) -> Option<Self> {
+        match source {
+            ValueSource::CommandLine => Some(Self::CommandLine),
+            ValueSource::EnvVariable => Some(Self::Environment),
+            _ => None,
+        }
+    }
 }

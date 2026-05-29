@@ -12,21 +12,258 @@ use ratatui::text::{Line, Span};
 use crate::args::ProgressStyle;
 use crate::git;
 
-// ── Column geometry ──────────────────────────────────────────────
-/// Fixed width of the time column (right-aligned, " 0.00s" … "59:59").
-const TIME_COL_WIDTH: usize = 6;
+// ============================================================
+// Constants
+// ============================================================
+
+/// Width of the icon column (●, ✓, ✗ are all single-width).
+const ICON_COL_WIDTH: usize = 1;
+/// Minimum width for the message column.
+const MIN_MSG_WIDTH: usize = 1;
+/// Minimum width of the name column (left-aligned).
+const MIN_NAME_WIDTH: usize = 4;
 /// Minimum width of the git-ref column (left-aligned).
 const MIN_REF_WIDTH: usize = 4;
 /// Minimum width of the step column (right-aligned, e.g. "[1/4]").
 const MIN_STEP_WIDTH: usize = 5;
-/// Minimum width of the name column (left-aligned).
-const MIN_NAME_WIDTH: usize = 4;
-/// Width of the icon column (●, ✓, ✗ are all single-width).
-const ICON_COL_WIDTH: usize = 1;
+const MSG_STYLE: Style = Style::new();
+const REF_STYLE: Style = Style::new();
 /// Width of a spacer between columns (a single space).
 const SPACER_WIDTH: usize = 1;
-/// Minimum width for the message column.
-const MIN_MSG_WIDTH: usize = 1;
+/// Fixed width of the time column (right-aligned, " 0.00s" … "59:59").
+const TIME_COL_WIDTH: usize = 6;
+const TIME_STYLE: Style = Style::new();
+
+// ============================================================
+// Enums
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Column {
+    Time,
+    Ref,
+    Step,
+    Icon,
+    Name,
+    Msg,
+}
+
+pub(crate) enum ItemInfo<'a> {
+    Repo(&'a RepoEntry),
+    Grammar(&'a GrammarEntry),
+}
+
+/// Complete lifecycle state for a display row.
+///
+/// This intentionally keeps terminality and success classification in one
+/// field, so a row cannot be both "cancelled" and "still building".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemState {
+    /// Just registered, not yet started.
+    New,
+    /// In progress. The optional outcome is known after cache classification:
+    /// cached rows stay live while they are re-installed, and built rows stay
+    /// live while they are generated/built/installed.
+    InProgress(Option<SuccessOutcome>),
+    /// Successfully completed.
+    Done(SuccessOutcome),
+    /// Cancelled by shutdown.
+    Cancelled,
+    /// Failed.
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mode {
+    Fancy,
+    Plain,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RowKind {
+    Repo,
+    Grammar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuccessOutcome {
+    /// Cache hit.
+    Cached,
+    /// Not cached; work was needed.
+    Built,
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedLayout {
+    pub time: usize,
+    pub ref_: usize,
+    pub step: usize,
+    pub name: usize,
+    /// Total width consumed by non-message columns: time + sp + ref + sp +
+    /// step + sp + icon(1) + sp + name + sp.
+    pub fixed_width: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CellKey {
+    item_id: ItemId,
+    column: Column,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GrammarEntry {
+    pub repo: Arc<str>,
+    pub repo_id: Option<ItemId>,
+    pub name: Arc<str>,
+    pub git_ref: git::Ref,
+    pub state: ItemState,
+    pub msg: Arc<str>,
+    pub step: usize,
+    pub total: usize,
+    /// Creation time for the whole item. This is not reset between steps.
+    pub started_at: Instant,
+    /// Frozen whole-item elapsed time for terminal states.
+    pub frozen_elapsed: Option<Duration>,
+}
+
+pub(crate) struct GridCache {
+    cells: HashMap<CellKey, Span<'static>>,
+    pub dirty_items: HashSet<ItemId>,
+    pub layout: CachedLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ItemId(NonZeroU64);
+
+#[derive(Debug, Clone)]
+pub(crate) struct RepoEntry {
+    pub name: Arc<str>,
+    pub git_ref: git::Ref,
+    pub state: ItemState,
+    pub msg: Arc<str>,
+    pub step: usize,
+    pub total: usize,
+    /// Creation time for the whole item. This is not reset between steps.
+    pub started_at: Instant,
+    /// Frozen whole-item elapsed time for terminal states.
+    pub frozen_elapsed: Option<Duration>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RowSpec {
+    pub id: ItemId,
+    pub kind: RowKind,
+    /// The text to display in the name column (already includes indent).
+    pub display_name: Arc<str>,
+    /// Indentation prefix for the name column (applied before padding).
+    pub indent: &'static str,
+}
+
+pub(crate) struct State {
+    pub mode: Mode,
+    pub repos: HashMap<ItemId, RepoEntry>,
+    pub grammars: HashMap<ItemId, GrammarEntry>,
+    pub build_dir: PathBuf,
+    pub out_dir: PathBuf,
+    footer_build: Line<'static>,
+    footer_out: Line<'static>,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+pub(crate) fn compute_icon_cell(info: &ItemInfo<'_>) -> Span<'static> {
+    let state = info.state();
+    Span::styled(
+        state.icon(),
+        Style::default()
+            .fg(state.indicator_color())
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+pub(crate) fn compute_msg_cell(
+    info: &ItemInfo<'_>,
+    layout: &CachedLayout,
+    term_width: usize,
+) -> Span<'static> {
+    let msg_width = term_width
+        .saturating_sub(layout.fixed_width)
+        .max(MIN_MSG_WIDTH);
+    Span::styled(truncate_str(info.msg(), msg_width), MSG_STYLE)
+}
+
+pub(crate) fn compute_name_cell(
+    display_name: &str,
+    indent: &str,
+    info: &ItemInfo<'_>,
+    layout: &CachedLayout,
+) -> Span<'static> {
+    let full = format!("{indent}{display_name}");
+    let padded = format!("{:<width$}", full, width = layout.name);
+    Span::styled(
+        padded,
+        Style::default()
+            .fg(info.state().name_color())
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+pub(crate) fn compute_ref_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
+    let ref_str = info.git_ref().short();
+    let padded = format!("{:<width$}", ref_str, width = layout.ref_);
+    Span::styled(padded, REF_STYLE)
+}
+
+pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
+    let step_str = if info.total() > 0 {
+        format!("[{}/{}]", info.step().min(info.total()), info.total())
+    } else {
+        String::new()
+    };
+    // Right-aligned
+    let padded = format!("{:>width$}", step_str, width = layout.step);
+    Span::styled(padded, REF_STYLE)
+}
+
+pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
+    let time = format_elapsed_duration(info.elapsed());
+    // Right-aligned
+    let padded = format!("{:>width$}", time, width = layout.time);
+    Span::styled(padded, TIME_STYLE)
+}
+
+fn count_item_state(
+    state: ItemState,
+    cached: &mut usize,
+    built: &mut usize,
+    building: &mut usize,
+    failed: &mut usize,
+    cancelled: &mut usize,
+) {
+    match state {
+        ItemState::New | ItemState::InProgress(_) => *building += 1,
+        ItemState::Done(SuccessOutcome::Cached) => *cached += 1,
+        ItemState::Done(SuccessOutcome::Built) => *built += 1,
+        ItemState::Cancelled => *cancelled += 1,
+        ItemState::Failed => *failed += 1,
+    }
+}
+
+/// Pre-computed dimmed footer lines (static; never change).
+fn dim_line(text: String) -> Line<'static> {
+    Line::from(Span::styled(
+        text,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    ))
+}
 
 /// Pre-compute the fixed (non-message) portion of a row line.
 ///
@@ -44,14 +281,17 @@ const fn fixed_width(time: usize, rf: usize, step: usize, name: usize) -> usize 
         + SPACER_WIDTH
 }
 
-// ---------------------------------------------------------------------------
-// Mode
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Mode {
-    Fancy,
-    Plain,
+fn format_elapsed_duration(dur: Duration) -> String {
+    let secs = dur.as_secs_f64();
+    if secs < 60.0 {
+        format!("{secs:>5.2}s")
+    } else {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mins = secs as u64 / 60;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let remaining = secs as u64 % 60;
+        format!("{mins:>3}:{remaining:02}")
+    }
 }
 
 /// Determine the display mode from CLI flags and environment.
@@ -76,192 +316,89 @@ pub fn mode_from_args(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) 
     mode
 }
 
-// ---------------------------------------------------------------------------
-// Item lifecycle + outcome
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SuccessOutcome {
-    /// Cache hit.
-    Cached,
-    /// Not cached; work was needed.
-    Built,
+fn push_summary_building(spans: &mut Vec<Span<'static>>, count: usize) {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("{count} building"),
+        Style::default().fg(if count > 0 {
+            Color::White
+        } else {
+            Color::DarkGray
+        }),
+    ));
 }
 
-impl SuccessOutcome {
-    fn color(self) -> Color {
-        match self {
-            SuccessOutcome::Cached => Color::Yellow,
-            SuccessOutcome::Built => Color::Blue,
-        }
+fn push_summary_cancelled(spans: &mut Vec<Span<'static>>, count: usize, _leading: bool) {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("✗ {count} cancelled"),
+        Style::default().fg(if count > 0 {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        }),
+    ));
+}
+
+fn push_summary_failed(spans: &mut Vec<Span<'static>>, count: usize) {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("✗ {count} failed"),
+        Style::default().fg(if count > 0 {
+            Color::Red
+        } else {
+            Color::DarkGray
+        }),
+    ));
+}
+
+fn push_summary_success(
+    spans: &mut Vec<Span<'static>>,
+    count: usize,
+    label: &'static str,
+    label_color: Color,
+    leading: bool,
+) {
+    if !leading {
+        spans.push(Span::raw("  "));
+    }
+
+    if count > 0 {
+        spans.push(Span::styled(
+            format!("✓ {count} "),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            label,
+            Style::default()
+                .fg(label_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!("✓ {count} {label}"),
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 }
 
-/// Complete lifecycle state for a display row.
-///
-/// This intentionally keeps terminality and success classification in one
-/// field, so a row cannot be both "cancelled" and "still building".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemState {
-    /// Just registered, not yet started.
-    New,
-    /// In progress. The optional outcome is known after cache classification:
-    /// cached rows stay live while they are re-installed, and built rows stay
-    /// live while they are generated/built/installed.
-    InProgress(Option<SuccessOutcome>),
-    /// Successfully completed.
-    Done(SuccessOutcome),
-    /// Cancelled by shutdown.
-    Cancelled,
-    /// Failed.
-    Failed,
-}
-
-impl ItemState {
-    #[must_use]
-    pub fn is_live(self) -> bool {
-        matches!(self, Self::New | Self::InProgress(_))
-    }
-
-    #[must_use]
-    pub fn success_outcome(self) -> Option<SuccessOutcome> {
-        match self {
-            Self::InProgress(outcome) => outcome,
-            Self::Done(outcome) => Some(outcome),
-            Self::New | Self::Cancelled | Self::Failed => None,
-        }
-    }
-
-    fn icon(self) -> &'static str {
-        match self {
-            Self::New | Self::InProgress(_) => "●",
-            Self::Done(_) => "✓",
-            Self::Cancelled | Self::Failed => "✗",
-        }
-    }
-
-    fn name_color(self) -> Color {
-        match self {
-            Self::Failed => Color::Red,
-            Self::Cancelled => Color::Yellow,
-            Self::New | Self::InProgress(None) => Color::DarkGray,
-            Self::InProgress(Some(outcome)) | Self::Done(outcome) => outcome.color(),
-        }
-    }
-
-    fn indicator_color(self) -> Color {
-        match self {
-            Self::Done(_) => Color::Green,
-            Self::Cancelled => Color::Yellow,
-            Self::Failed => Color::Red,
-            Self::New | Self::InProgress(_) => Color::DarkGray,
-        }
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else if max <= 1 {
+        "…".to_string()
+    } else {
+        let mut truncated: String = s.chars().take(max - 1).collect();
+        truncated.push('…');
+        truncated
     }
 }
 
-// ---------------------------------------------------------------------------
-// State entries
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub(crate) struct RepoEntry {
-    pub name: Arc<str>,
-    pub git_ref: git::Ref,
-    pub state: ItemState,
-    pub msg: Arc<str>,
-    pub step: usize,
-    pub total: usize,
-    /// Creation time for the whole item. This is not reset between steps.
-    pub started_at: Instant,
-    /// Frozen whole-item elapsed time for terminal states.
-    pub frozen_elapsed: Option<Duration>,
-}
-
-impl RepoEntry {
-    pub(crate) fn elapsed(&self) -> Duration {
-        self.frozen_elapsed
-            .unwrap_or_else(|| self.started_at.elapsed())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct GrammarEntry {
-    pub repo: Arc<str>,
-    pub repo_id: Option<ItemId>,
-    pub name: Arc<str>,
-    pub git_ref: git::Ref,
-    pub state: ItemState,
-    pub msg: Arc<str>,
-    pub step: usize,
-    pub total: usize,
-    /// Creation time for the whole item. This is not reset between steps.
-    pub started_at: Instant,
-    /// Frozen whole-item elapsed time for terminal states.
-    pub frozen_elapsed: Option<Duration>,
-}
-
-impl GrammarEntry {
-    pub(crate) fn elapsed(&self) -> Duration {
-        self.frozen_elapsed
-            .unwrap_or_else(|| self.started_at.elapsed())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Column identifiers for the grid cache
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Column {
-    Time,
-    Ref,
-    Step,
-    Icon,
-    Name,
-    Msg,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CellKey {
-    item_id: ItemId,
-    column: Column,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ItemId(NonZeroU64);
-
-impl ItemId {
-    #[must_use]
-    pub(crate) fn new(value: NonZeroU64) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub(crate) fn next_after(self) -> Self {
-        let next = self
-            .0
-            .get()
-            .checked_add(1)
-            .and_then(NonZeroU64::new)
-            .expect("display item id exhausted");
-        Self(next)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cached layout (column widths)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub(crate) struct CachedLayout {
-    pub time: usize,
-    pub ref_: usize,
-    pub step: usize,
-    pub name: usize,
-    /// Total width consumed by non-message columns: time + sp + ref + sp +
-    /// step + sp + icon(1) + sp + name + sp.
-    pub fixed_width: usize,
-}
+// ============================================================
+// Impls
+// ============================================================
 
 impl Default for CachedLayout {
     fn default() -> Self {
@@ -290,14 +427,11 @@ impl CachedLayout {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Grid cache
-// ---------------------------------------------------------------------------
-
-pub(crate) struct GridCache {
-    cells: HashMap<CellKey, Span<'static>>,
-    pub dirty_items: HashSet<ItemId>,
-    pub layout: CachedLayout,
+impl GrammarEntry {
+    pub(crate) fn elapsed(&self) -> Duration {
+        self.frozen_elapsed
+            .unwrap_or_else(|| self.started_at.elapsed())
+    }
 }
 
 impl GridCache {
@@ -348,33 +482,22 @@ impl GridCache {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Row specification
-// ---------------------------------------------------------------------------
+impl ItemId {
+    #[must_use]
+    pub(crate) fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
 
-#[derive(Debug, Clone)]
-pub(crate) enum RowKind {
-    Repo,
-    Grammar,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RowSpec {
-    pub id: ItemId,
-    pub kind: RowKind,
-    /// The text to display in the name column (already includes indent).
-    pub display_name: Arc<str>,
-    /// Indentation prefix for the name column (applied before padding).
-    pub indent: &'static str,
-}
-
-// ---------------------------------------------------------------------------
-// Unified item info (abstracts over RepoEntry / GrammarEntry)
-// ---------------------------------------------------------------------------
-
-pub(crate) enum ItemInfo<'a> {
-    Repo(&'a RepoEntry),
-    Grammar(&'a GrammarEntry),
+    #[must_use]
+    pub(crate) fn next_after(self) -> Self {
+        let next = self
+            .0
+            .get()
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .expect("display item id exhausted");
+        Self(next)
+    }
 }
 
 impl ItemInfo<'_> {
@@ -421,97 +544,53 @@ impl ItemInfo<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cell factories — each produces a fully padded, fully styled Span
-// ---------------------------------------------------------------------------
+impl ItemState {
+    #[must_use]
+    pub fn is_live(self) -> bool {
+        matches!(self, Self::New | Self::InProgress(_))
+    }
 
-const TIME_STYLE: Style = Style::new();
-const REF_STYLE: Style = Style::new();
-const MSG_STYLE: Style = Style::new();
+    #[must_use]
+    pub fn success_outcome(self) -> Option<SuccessOutcome> {
+        match self {
+            Self::InProgress(outcome) => outcome,
+            Self::Done(outcome) => Some(outcome),
+            Self::New | Self::Cancelled | Self::Failed => None,
+        }
+    }
 
-pub(crate) fn compute_time_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
-    let time = format_elapsed_duration(info.elapsed());
-    // Right-aligned
-    let padded = format!("{:>width$}", time, width = layout.time);
-    Span::styled(padded, TIME_STYLE)
+    fn icon(self) -> &'static str {
+        match self {
+            Self::New | Self::InProgress(_) => "●",
+            Self::Done(_) => "✓",
+            Self::Cancelled | Self::Failed => "✗",
+        }
+    }
+
+    fn name_color(self) -> Color {
+        match self {
+            Self::Failed => Color::Red,
+            Self::Cancelled => Color::Yellow,
+            Self::New | Self::InProgress(None) => Color::DarkGray,
+            Self::InProgress(Some(outcome)) | Self::Done(outcome) => outcome.color(),
+        }
+    }
+
+    fn indicator_color(self) -> Color {
+        match self {
+            Self::Done(_) => Color::Green,
+            Self::Cancelled => Color::Yellow,
+            Self::Failed => Color::Red,
+            Self::New | Self::InProgress(_) => Color::DarkGray,
+        }
+    }
 }
 
-pub(crate) fn compute_ref_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
-    let ref_str = info.git_ref().short();
-    let padded = format!("{:<width$}", ref_str, width = layout.ref_);
-    Span::styled(padded, REF_STYLE)
-}
-
-pub(crate) fn compute_step_cell(info: &ItemInfo<'_>, layout: &CachedLayout) -> Span<'static> {
-    let step_str = if info.total() > 0 {
-        format!("[{}/{}]", info.step().min(info.total()), info.total())
-    } else {
-        String::new()
-    };
-    // Right-aligned
-    let padded = format!("{:>width$}", step_str, width = layout.step);
-    Span::styled(padded, REF_STYLE)
-}
-
-pub(crate) fn compute_icon_cell(info: &ItemInfo<'_>) -> Span<'static> {
-    let state = info.state();
-    Span::styled(
-        state.icon(),
-        Style::default()
-            .fg(state.indicator_color())
-            .add_modifier(Modifier::BOLD),
-    )
-}
-
-pub(crate) fn compute_name_cell(
-    display_name: &str,
-    indent: &str,
-    info: &ItemInfo<'_>,
-    layout: &CachedLayout,
-) -> Span<'static> {
-    let full = format!("{indent}{display_name}");
-    let padded = format!("{:<width$}", full, width = layout.name);
-    Span::styled(
-        padded,
-        Style::default()
-            .fg(info.state().name_color())
-            .add_modifier(Modifier::BOLD),
-    )
-}
-
-pub(crate) fn compute_msg_cell(
-    info: &ItemInfo<'_>,
-    layout: &CachedLayout,
-    term_width: usize,
-) -> Span<'static> {
-    let msg_width = term_width
-        .saturating_sub(layout.fixed_width)
-        .max(MIN_MSG_WIDTH);
-    Span::styled(truncate_str(info.msg(), msg_width), MSG_STYLE)
-}
-
-// ---------------------------------------------------------------------------
-// State — the source of truth
-// ---------------------------------------------------------------------------
-
-/// Pre-computed dimmed footer lines (static; never change).
-fn dim_line(text: String) -> Line<'static> {
-    Line::from(Span::styled(
-        text,
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM),
-    ))
-}
-
-pub(crate) struct State {
-    pub mode: Mode,
-    pub repos: HashMap<ItemId, RepoEntry>,
-    pub grammars: HashMap<ItemId, GrammarEntry>,
-    pub build_dir: PathBuf,
-    pub out_dir: PathBuf,
-    footer_build: Line<'static>,
-    footer_out: Line<'static>,
+impl RepoEntry {
+    pub(crate) fn elapsed(&self) -> Duration {
+        self.frozen_elapsed
+            .unwrap_or_else(|| self.started_at.elapsed())
+    }
 }
 
 impl State {
@@ -707,116 +786,11 @@ impl State {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn count_item_state(
-    state: ItemState,
-    cached: &mut usize,
-    built: &mut usize,
-    building: &mut usize,
-    failed: &mut usize,
-    cancelled: &mut usize,
-) {
-    match state {
-        ItemState::New | ItemState::InProgress(_) => *building += 1,
-        ItemState::Done(SuccessOutcome::Cached) => *cached += 1,
-        ItemState::Done(SuccessOutcome::Built) => *built += 1,
-        ItemState::Cancelled => *cancelled += 1,
-        ItemState::Failed => *failed += 1,
+impl SuccessOutcome {
+    fn color(self) -> Color {
+        match self {
+            SuccessOutcome::Cached => Color::Yellow,
+            SuccessOutcome::Built => Color::Blue,
+        }
     }
-}
-
-fn push_summary_success(
-    spans: &mut Vec<Span<'static>>,
-    count: usize,
-    label: &'static str,
-    label_color: Color,
-    leading: bool,
-) {
-    if !leading {
-        spans.push(Span::raw("  "));
-    }
-
-    if count > 0 {
-        spans.push(Span::styled(
-            format!("✓ {count} "),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            label,
-            Style::default()
-                .fg(label_color)
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else {
-        spans.push(Span::styled(
-            format!("✓ {count} {label}"),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-}
-
-fn push_summary_building(spans: &mut Vec<Span<'static>>, count: usize) {
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        format!("{count} building"),
-        Style::default().fg(if count > 0 {
-            Color::White
-        } else {
-            Color::DarkGray
-        }),
-    ));
-}
-
-fn push_summary_failed(spans: &mut Vec<Span<'static>>, count: usize) {
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        format!("✗ {count} failed"),
-        Style::default().fg(if count > 0 {
-            Color::Red
-        } else {
-            Color::DarkGray
-        }),
-    ));
-}
-
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else if max <= 1 {
-        "…".to_string()
-    } else {
-        let mut truncated: String = s.chars().take(max - 1).collect();
-        truncated.push('…');
-        truncated
-    }
-}
-
-fn format_elapsed_duration(dur: Duration) -> String {
-    let secs = dur.as_secs_f64();
-    if secs < 60.0 {
-        format!("{secs:>5.2}s")
-    } else {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let mins = secs as u64 / 60;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let remaining = secs as u64 % 60;
-        format!("{mins:>3}:{remaining:02}")
-    }
-}
-
-fn push_summary_cancelled(spans: &mut Vec<Span<'static>>, count: usize, _leading: bool) {
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        format!("✗ {count} cancelled"),
-        Style::default().fg(if count > 0 {
-            Color::Yellow
-        } else {
-            Color::DarkGray
-        }),
-    ));
 }
