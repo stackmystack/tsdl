@@ -15,167 +15,15 @@ use tracing::debug;
 
 use crate::{args, build, build::BuildDir, git, parser, Error, Result, ResultExt};
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Key(Arc<str>);
-
-impl Key {
-    #[must_use]
-    pub fn new(language: &parser::LanguageName, grammar: &parser::GrammarName) -> Self {
-        Self(Arc::from(format!("{language}/{grammar}")))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn language_prefix(language: &parser::LanguageName) -> String {
-        format!("{language}/")
-    }
-}
-
-impl fmt::Display for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for Key {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for Key {
-    fn from(value: &str) -> Self {
-        Self(Arc::from(value))
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GrammarHash(Arc<str>);
-
-impl GrammarHash {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for GrammarHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for GrammarHash {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for GrammarHash {
-    fn from(value: &str) -> Self {
-        Self(Arc::from(value))
-    }
-}
-
-/// The logical build cache contents.
-///
-/// Persistence details such as the cache file path intentionally live in
-/// [`Store`], not in this serializable structure. That keeps the on-disk TOML
-/// schema independent from the runtime `--build-dir` location.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Db {
-    #[serde(default)]
-    pub parsers: BTreeMap<Key, Entry>,
-}
-
-/// File-backed storage for a [`Db`].
-#[derive(Debug, Clone)]
-pub struct Store {
-    file: PathBuf,
-}
-
-/// Cache entry for a single parser.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    /// Hash of the grammar.js file(s).
-    pub hash: GrammarHash,
-    /// Resolved parser revision used by the cache. Moving refs include the
-    /// checked-out commit.
-    pub revision: Revision,
-    /// Build inputs that affect parser output, excluding the requested output set.
-    pub recipe: BuildRecipe,
-    /// Parser outputs known to be available for this entry.
-    pub outputs: args::Target,
-}
-
-/// Build inputs that affect parser output, excluding the requested output set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BuildRecipe {
-    pub build_script: Option<String>,
-    pub git_ref: parser::Ref,
-    pub prefix: String,
-    pub repo: url::Url,
-    pub tree_sitter: args::TreeSitter,
-}
-
-impl BuildRecipe {
-    #[must_use]
-    pub fn from_spec(spec: &build::Spec) -> Self {
-        Self {
-            build_script: spec.build_script.clone(),
-            git_ref: spec.git_ref.clone(),
-            prefix: spec.prefix.clone(),
-            repo: spec.repo.clone(),
-            tree_sitter: spec.tree_sitter.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", tag = "kind")]
-pub enum Revision {
-    Stable,
-    Moving { commit: git::Sha },
-}
-
-impl Revision {
-    #[must_use]
-    pub const fn stable() -> Self {
-        Self::Stable
-    }
-
-    #[must_use]
-    pub const fn moving(commit: git::Sha) -> Self {
-        Self::Moving { commit }
-    }
-}
-
-impl fmt::Display for Revision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stable => write!(f, "stable"),
-            Self::Moving { commit } => write!(f, "moving commit={}", commit.as_str()),
-        }
-    }
-}
+// ============================================================
+// Enums
+// ============================================================
 
 /// A cache lookup result for a requested parser build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Hit,
     Miss(Miss),
-}
-
-/// Details explaining why a cache entry cannot satisfy a requested parser build.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Miss {
-    pub reasons: Vec<MissReason>,
 }
 
 /// One reason a cached parser build cannot be reused.
@@ -224,14 +72,279 @@ pub enum MissReason {
     },
 }
 
-impl Decision {
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum Revision {
+    Stable,
+    Moving { commit: git::Sha },
+}
+
+// ============================================================
+// Structs
+// ============================================================
+
+/// Build inputs that affect parser output, excluding the requested output set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildRecipe {
+    pub build_script: Option<String>,
+    pub git_ref: parser::Ref,
+    pub prefix: String,
+    pub repo: url::Url,
+    pub tree_sitter: args::TreeSitter,
+}
+
+/// The logical build cache contents.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Db {
+    #[serde(default)]
+    pub parsers: BTreeMap<Key, Entry>,
+}
+
+/// Cache entry for a single parser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entry {
+    /// Hash of the grammar.js file(s).
+    pub hash: GrammarHash,
+    /// Resolved parser revision used by the cache. Moving refs include the
+    /// checked-out commit.
+    pub revision: Revision,
+    /// Build inputs that affect parser output, excluding the requested output set.
+    pub recipe: BuildRecipe,
+    /// Parser outputs known to be available for this entry.
+    pub outputs: args::Target,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GrammarHash(Arc<str>);
+
+struct HashWriter<'a>(&'a mut Sha1);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Key(Arc<str>);
+
+/// Details explaining why a cache entry cannot satisfy a requested parser build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Miss {
+    pub reasons: Vec<MissReason>,
+}
+
+/// File-backed storage for a [`Db`].
+#[derive(Debug, Clone)]
+pub struct Store {
+    file: PathBuf,
+}
+
+/// Represents a "Delta" to be applied to the cache after a successful build
+#[derive(Debug, Clone)]
+pub struct Update {
+    pub entry: Entry,
+    pub name: Key,
+}
+
+// ============================================================
+// Free functions
+// ============================================================
+
+/// Hash the contents of a file using SHA-1 and return the hex string.
+pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("Opening file for hashing: {}", path.display()))?;
+
+    let mut hasher = Sha1::new();
+
+    tokio::io::copy(&mut file, &mut HashWriter(&mut hasher))
+        .await
+        .with_context(|| format!("Reading file for hashing: {}", path.display()))?;
+
+    let result = hasher.finalize();
+    let mut hex = String::with_capacity(result.len() * 2);
+    for byte in result {
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(GrammarHash::from(hex))
+}
+
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
+}
+
+/// Verify that every path in `artifacts` exists as a regular file.
+///
+/// Returns [`Decision::Hit`] when all artifacts are present, or a
+/// [`Decision::Miss`] listing every missing or non-file path.
+pub async fn verify_artifacts(artifacts: Vec<PathBuf>) -> Decision {
+    let mut reasons = Vec::new();
+
+    for path in artifacts {
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => reasons.push(MissReason::ArtifactNotFile { path }),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                reasons.push(MissReason::ArtifactMissing { path });
+            }
+            Err(err) => reasons.push(MissReason::ArtifactInaccessible {
+                path,
+                error: err.to_string(),
+            }),
+        }
+    }
+
+    Decision::from_reasons(reasons)
+}
+
+fn write_cache_file_atomically(file: &Path, contents: &str) -> Result<()> {
+    let parent = file.parent().ok_or_else(|| Error::Message {
+        message: format!(
+            "Cache file path has no parent directory: {}",
+            file.display()
+        ),
+    })?;
+
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("Creating cache directory {}", parent.display()))?;
+
+    let mut temp = tempfile::Builder::new()
+        .prefix(".cache.toml.")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("Creating temporary cache file in {}", parent.display()))?;
+
+    temp.write_all(contents.as_bytes())
+        .with_context(|| format!("Writing temporary cache file {}", temp.path().display()))?;
+    temp.as_file_mut()
+        .sync_all()
+        .with_context(|| format!("Syncing temporary cache file {}", temp.path().display()))?;
+
+    temp.persist(file)
+        .map_err(|err| err.error)
+        .with_context(|| format!("Installing cache file to {}", file.display()))?;
+
+    if let Err(err) = sync_directory(parent) {
+        debug!(
+            "Could not sync cache directory {} after saving {}: {err}",
+            parent.display(),
+            file.display()
+        );
+    }
+
+    Ok(())
+}
+
+// ============================================================
+// Impls
+// ============================================================
+
+impl AsyncWrite for HashWriter<'_> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.0.update(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl BuildRecipe {
     #[must_use]
-    pub fn miss(reason: MissReason) -> Self {
-        Self::Miss(Miss {
-            reasons: vec![reason],
+    pub fn from_spec(spec: &build::Spec) -> Self {
+        Self {
+            build_script: spec.build_script.clone(),
+            git_ref: spec.git_ref.clone(),
+            prefix: spec.prefix.clone(),
+            repo: spec.repo.clone(),
+            tree_sitter: spec.tree_sitter.clone(),
+        }
+    }
+}
+
+impl Db {
+    /// Clear all entries.
+    pub fn clear(&mut self) {
+        self.parsers.clear();
+    }
+
+    /// Get cache entry for a parser.
+    #[must_use]
+    pub fn get(&self, name: &Key) -> Option<&Entry> {
+        self.parsers.get(name)
+    }
+
+    /// True when the cache contains at least one entry for `language`
+    /// that was built from the same repository and git ref.
+    ///
+    /// The tree-sitter CLI version, build script, prefix, and target are
+    /// intentionally excluded — they affect artefact validity (checked by
+    /// [`needs_rebuild`]) but not whether a prior checkout of the parser
+    /// source is still usable.
+    #[must_use]
+    pub fn has_compatible_entry_for_language(
+        &self,
+        language: &parser::LanguageName,
+        spec: &build::Spec,
+    ) -> bool {
+        let prefix = Key::language_prefix(language);
+        self.parsers.iter().any(|(key, entry)| {
+            key.as_str().starts_with(&prefix)
+                && entry.recipe.repo == spec.repo
+                && entry.recipe.git_ref == spec.git_ref
         })
     }
 
+    /// Check if a parser needs rebuilding by comparing grammar hash and build definition.
+    #[must_use]
+    pub fn needs_rebuild(
+        &self,
+        name: &Key,
+        hash: &GrammarHash,
+        spec: &build::Spec,
+        revision: &Revision,
+    ) -> bool {
+        self.rebuild_decision(name, hash, spec, revision)
+            .needs_rebuild()
+    }
+
+    /// Explain whether a parser cache entry can satisfy the requested build.
+    pub fn rebuild_decision(
+        &self,
+        name: &Key,
+        hash: &GrammarHash,
+        spec: &build::Spec,
+        revision: &Revision,
+    ) -> Decision {
+        let decision = match self.get(name) {
+            None => Decision::miss(MissReason::MissingEntry),
+            Some(entry) => entry.rebuild_decision(hash, spec, revision),
+        };
+
+        debug!("Cache decision for {name}: {decision}");
+        decision
+    }
+
+    /// Insert or update a parser cache entry.
+    pub fn set(&mut self, name: Key, mut entry: Entry) {
+        if let Some(existing) = self.parsers.get(&name) {
+            if existing.same_subject(&entry) {
+                entry.outputs = existing.outputs.union(entry.outputs);
+            }
+        }
+
+        self.parsers.insert(name, entry);
+    }
+}
+
+impl Decision {
     #[must_use]
     pub fn from_reasons(reasons: Vec<MissReason>) -> Self {
         if reasons.is_empty() {
@@ -247,6 +360,13 @@ impl Decision {
     }
 
     #[must_use]
+    pub fn miss(reason: MissReason) -> Self {
+        Self::Miss(Miss {
+            reasons: vec![reason],
+        })
+    }
+
+    #[must_use]
     pub fn needs_rebuild(&self) -> bool {
         !self.is_hit()
     }
@@ -256,141 +376,6 @@ impl Decision {
         match self {
             Self::Hit => "cache hit".to_string(),
             Self::Miss(miss) => miss.short_message(),
-        }
-    }
-}
-
-impl fmt::Display for Decision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Decision::Hit => write!(f, "cache hit"),
-            Decision::Miss(miss) => write!(f, "cache miss: {miss}"),
-        }
-    }
-}
-
-impl Miss {
-    #[must_use]
-    pub fn short_message(&self) -> String {
-        match self.reasons.as_slice() {
-            [] => "cache changed".to_string(),
-            [reason] => reason.short_message().to_string(),
-            reasons => {
-                let labels = reasons
-                    .iter()
-                    .map(MissReason::short_label)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("cache changed: {labels}")
-            }
-        }
-    }
-}
-
-impl fmt::Display for Miss {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, reason) in self.reasons.iter().enumerate() {
-            if index > 0 {
-                write!(f, "; ")?;
-            }
-            write!(f, "{reason}")?;
-        }
-        Ok(())
-    }
-}
-
-impl MissReason {
-    #[must_use]
-    pub fn short_label(&self) -> &'static str {
-        match self {
-            Self::MissingEntry => "missing",
-            Self::CacheIgnored => "ignored",
-            Self::HashChanged { .. } => "hash",
-            Self::RepoChanged { .. } => "repo",
-            Self::RefChanged { .. } => "ref",
-            Self::RevisionChanged { .. } => "revision",
-            Self::TreeSitterChanged { .. } => "tree-sitter",
-            Self::BuildScriptChanged => "script",
-            Self::PrefixChanged { .. } => "prefix",
-            Self::OutputsMissing { .. } => "outputs",
-            Self::ArtifactMissing { .. }
-            | Self::ArtifactNotFile { .. }
-            | Self::ArtifactInaccessible { .. } => "artifact",
-        }
-    }
-
-    #[must_use]
-    pub fn short_message(&self) -> &'static str {
-        match self {
-            Self::MissingEntry => "not cached",
-            Self::CacheIgnored => "cache ignored",
-            Self::HashChanged { .. } => "grammar changed",
-            Self::RepoChanged { .. } => "repo changed",
-            Self::RefChanged { .. } => "git ref changed",
-            Self::RevisionChanged { .. } => "git ref resolved commit changed",
-            Self::TreeSitterChanged { .. } => "tree-sitter changed",
-            Self::BuildScriptChanged => "build script changed",
-            Self::PrefixChanged { .. } => "prefix changed",
-            Self::OutputsMissing { .. } => "requested output not cached",
-            Self::ArtifactMissing { .. } => "artifact missing",
-            Self::ArtifactNotFile { .. } => "artifact invalid",
-            Self::ArtifactInaccessible { .. } => "artifact inaccessible",
-        }
-    }
-}
-
-impl fmt::Display for MissReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingEntry => write!(f, "missing cache entry"),
-            Self::CacheIgnored => write!(f, "cache ignored"),
-            Self::HashChanged { cached, current } => {
-                write!(f, "grammar hash changed cached={cached} current={current}")
-            }
-            Self::RepoChanged { cached, current } => {
-                write!(f, "repo changed cached={cached} current={current}")
-            }
-            Self::RefChanged { cached, current } => write!(
-                f,
-                "git ref changed cached={} current={}",
-                cached.requested().as_str(),
-                current.requested().as_str()
-            ),
-            Self::RevisionChanged { cached, current } => {
-                write!(f, "revision changed cached={cached} current={current}")
-            }
-            Self::TreeSitterChanged { cached, current } => write!(
-                f,
-                "tree-sitter changed cached=version:{} repo:{} platform:{} current=version:{} repo:{} platform:{}",
-                cached.version,
-                cached.repo,
-                cached.platform,
-                current.version,
-                current.repo,
-                current.platform
-            ),
-            Self::BuildScriptChanged => write!(f, "build script changed"),
-            Self::PrefixChanged { cached, current } => {
-                write!(f, "prefix changed cached={cached:?} current={current:?}")
-            }
-            Self::OutputsMissing {
-                available,
-                requested,
-            } => {
-                write!(
-                    f,
-                    "requested output not cached available={available:?} requested={requested:?}"
-                )
-            }
-            Self::ArtifactMissing { path } => {
-                write!(f, "artifact missing path={}", path.display())
-            }
-            Self::ArtifactNotFile { path } => {
-                write!(f, "artifact is not a regular file path={}", path.display())
-            }
-            Self::ArtifactInaccessible { path, error } => {
-                write!(f, "artifact inaccessible path={} error={error}", path.display())
-            }
         }
     }
 }
@@ -469,26 +454,223 @@ impl Entry {
     }
 }
 
-/// Represents a "Delta" to be applied to the cache after a successful build
-#[derive(Debug, Clone)]
-pub struct Update {
-    pub entry: Entry,
-    pub name: Key,
+impl fmt::Display for Decision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Decision::Hit => write!(f, "cache hit"),
+            Decision::Miss(miss) => write!(f, "cache miss: {miss}"),
+        }
+    }
 }
 
-impl Store {
+impl fmt::Display for GrammarHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for Miss {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, reason) in self.reasons.iter().enumerate() {
+            if index > 0 {
+                write!(f, "; ")?;
+            }
+            write!(f, "{reason}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for MissReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingEntry => write!(f, "missing cache entry"),
+            Self::CacheIgnored => write!(f, "cache ignored"),
+            Self::HashChanged { cached, current } => {
+                write!(f, "grammar hash changed cached={cached} current={current}")
+            }
+            Self::RepoChanged { cached, current } => {
+                write!(f, "repo changed cached={cached} current={current}")
+            }
+            Self::RefChanged { cached, current } => write!(
+                f,
+                "git ref changed cached={} current={}",
+                cached.requested().as_str(),
+                current.requested().as_str()
+            ),
+            Self::RevisionChanged { cached, current } => {
+                write!(f, "revision changed cached={cached} current={current}")
+            }
+            Self::TreeSitterChanged { cached, current } => write!(
+                f,
+                "tree-sitter changed cached=version:{} repo:{} platform:{} current=version:{} repo:{} platform:{}",
+                cached.version,
+                cached.repo,
+                cached.platform,
+                current.version,
+                current.repo,
+                current.platform
+            ),
+            Self::BuildScriptChanged => write!(f, "build script changed"),
+            Self::PrefixChanged { cached, current } => {
+                write!(f, "prefix changed cached={cached:?} current={current:?}")
+            }
+            Self::OutputsMissing {
+                available,
+                requested,
+            } => {
+                write!(
+                    f,
+                    "requested output not cached available={available:?} requested={requested:?}"
+                )
+            }
+            Self::ArtifactMissing { path } => {
+                write!(f, "artifact missing path={}", path.display())
+            }
+            Self::ArtifactNotFile { path } => {
+                write!(f, "artifact is not a regular file path={}", path.display())
+            }
+            Self::ArtifactInaccessible { path, error } => {
+                write!(f, "artifact inaccessible path={} error={error}", path.display())
+            }
+        }
+    }
+}
+
+impl fmt::Display for Revision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stable => write!(f, "stable"),
+            Self::Moving { commit } => write!(f, "moving commit={}", commit.as_str()),
+        }
+    }
+}
+
+impl From<&str> for GrammarHash {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<&str> for Key {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<String> for GrammarHash {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<String> for Key {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl GrammarHash {
     #[must_use]
-    pub fn new(build_dir: &BuildDir) -> Self {
-        Self {
-            file: build_dir.cache_file(),
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Key {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn language_prefix(language: &parser::LanguageName) -> String {
+        format!("{language}/")
+    }
+
+    #[must_use]
+    pub fn new(language: &parser::LanguageName, grammar: &parser::GrammarName) -> Self {
+        Self(Arc::from(format!("{language}/{grammar}")))
+    }
+}
+
+impl Miss {
+    #[must_use]
+    pub fn short_message(&self) -> String {
+        match self.reasons.as_slice() {
+            [] => "cache changed".to_string(),
+            [reason] => reason.short_message().to_string(),
+            reasons => {
+                let labels = reasons
+                    .iter()
+                    .map(MissReason::short_label)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("cache changed: {labels}")
+            }
+        }
+    }
+}
+
+impl MissReason {
+    #[must_use]
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::MissingEntry => "missing",
+            Self::CacheIgnored => "ignored",
+            Self::HashChanged { .. } => "hash",
+            Self::RepoChanged { .. } => "repo",
+            Self::RefChanged { .. } => "ref",
+            Self::RevisionChanged { .. } => "revision",
+            Self::TreeSitterChanged { .. } => "tree-sitter",
+            Self::BuildScriptChanged => "script",
+            Self::PrefixChanged { .. } => "prefix",
+            Self::OutputsMissing { .. } => "outputs",
+            Self::ArtifactMissing { .. }
+            | Self::ArtifactNotFile { .. }
+            | Self::ArtifactInaccessible { .. } => "artifact",
         }
     }
 
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.file
+    pub fn short_message(&self) -> &'static str {
+        match self {
+            Self::MissingEntry => "not cached",
+            Self::CacheIgnored => "cache ignored",
+            Self::HashChanged { .. } => "grammar changed",
+            Self::RepoChanged { .. } => "repo changed",
+            Self::RefChanged { .. } => "git ref changed",
+            Self::RevisionChanged { .. } => "git ref resolved commit changed",
+            Self::TreeSitterChanged { .. } => "tree-sitter changed",
+            Self::BuildScriptChanged => "build script changed",
+            Self::PrefixChanged { .. } => "prefix changed",
+            Self::OutputsMissing { .. } => "requested output not cached",
+            Self::ArtifactMissing { .. } => "artifact missing",
+            Self::ArtifactNotFile { .. } => "artifact invalid",
+            Self::ArtifactInaccessible { .. } => "artifact inaccessible",
+        }
+    }
+}
+
+impl Revision {
+    #[must_use]
+    pub const fn stable() -> Self {
+        Self::Stable
     }
 
+    #[must_use]
+    pub const fn moving(commit: git::Sha) -> Self {
+        Self::Moving { commit }
+    }
+}
+
+impl Store {
     /// Delete the cache file from disk.
     pub async fn delete(&self) -> Result<()> {
         match tokio::fs::metadata(&self.file).await {
@@ -526,6 +708,18 @@ impl Store {
             .with_context(|| format!("Parsing cache file at {}", self.file.display()))
     }
 
+    #[must_use]
+    pub fn new(build_dir: &BuildDir) -> Self {
+        Self {
+            file: build_dir.cache_file(),
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.file
+    }
+
     /// Atomically save the cache to disk.
     pub async fn save(&self, db: &Db) -> Result<()> {
         let contents = toml::to_string_pretty(db).context("Serializing cache to TOML")?;
@@ -538,188 +732,6 @@ impl Store {
 
         debug!("Cache saved to {}", self.file.display());
         Ok(())
-    }
-}
-
-impl Db {
-    /// Clear all entries.
-    pub fn clear(&mut self) {
-        self.parsers.clear();
-    }
-
-    /// Get cache entry for a parser.
-    #[must_use]
-    pub fn get(&self, name: &Key) -> Option<&Entry> {
-        self.parsers.get(name)
-    }
-
-    /// Explain whether a parser cache entry can satisfy the requested build.
-    pub fn rebuild_decision(
-        &self,
-        name: &Key,
-        hash: &GrammarHash,
-        spec: &build::Spec,
-        revision: &Revision,
-    ) -> Decision {
-        let decision = match self.get(name) {
-            None => Decision::miss(MissReason::MissingEntry),
-            Some(entry) => entry.rebuild_decision(hash, spec, revision),
-        };
-
-        debug!("Cache decision for {name}: {decision}");
-        decision
-    }
-
-    /// Check if a parser needs rebuilding by comparing grammar hash and build definition.
-    #[must_use]
-    pub fn needs_rebuild(
-        &self,
-        name: &Key,
-        hash: &GrammarHash,
-        spec: &build::Spec,
-        revision: &Revision,
-    ) -> bool {
-        self.rebuild_decision(name, hash, spec, revision)
-            .needs_rebuild()
-    }
-
-    /// True when the cache contains at least one entry for `language`
-    /// that was built from the same repository and git ref.
-    ///
-    /// The tree-sitter CLI version, build script, prefix, and target are
-    /// intentionally excluded — they affect artefact validity (checked by
-    /// [`needs_rebuild`]) but not whether a prior checkout of the parser
-    /// source is still usable.
-    #[must_use]
-    pub fn has_compatible_entry_for_language(
-        &self,
-        language: &parser::LanguageName,
-        spec: &build::Spec,
-    ) -> bool {
-        let prefix = Key::language_prefix(language);
-        self.parsers.iter().any(|(key, entry)| {
-            key.as_str().starts_with(&prefix)
-                && entry.recipe.repo == spec.repo
-                && entry.recipe.git_ref == spec.git_ref
-        })
-    }
-
-    /// Insert or update a parser cache entry.
-    pub fn set(&mut self, name: Key, mut entry: Entry) {
-        if let Some(existing) = self.parsers.get(&name) {
-            if existing.same_subject(&entry) {
-                entry.outputs = existing.outputs.union(entry.outputs);
-            }
-        }
-
-        self.parsers.insert(name, entry);
-    }
-}
-
-fn write_cache_file_atomically(file: &Path, contents: &str) -> Result<()> {
-    let parent = file.parent().ok_or_else(|| Error::Message {
-        message: format!(
-            "Cache file path has no parent directory: {}",
-            file.display()
-        ),
-    })?;
-
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("Creating cache directory {}", parent.display()))?;
-
-    let mut temp = tempfile::Builder::new()
-        .prefix(".cache.toml.")
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .with_context(|| format!("Creating temporary cache file in {}", parent.display()))?;
-
-    temp.write_all(contents.as_bytes())
-        .with_context(|| format!("Writing temporary cache file {}", temp.path().display()))?;
-    temp.as_file_mut()
-        .sync_all()
-        .with_context(|| format!("Syncing temporary cache file {}", temp.path().display()))?;
-
-    temp.persist(file)
-        .map_err(|err| err.error)
-        .with_context(|| format!("Installing cache file to {}", file.display()))?;
-
-    if let Err(err) = sync_directory(parent) {
-        debug!(
-            "Could not sync cache directory {} after saving {}: {err}",
-            parent.display(),
-            file.display()
-        );
-    }
-
-    Ok(())
-}
-
-fn sync_directory(path: &Path) -> std::io::Result<()> {
-    std::fs::File::open(path)?.sync_all()
-}
-
-/// Verify that every path in `artifacts` exists as a regular file.
-///
-/// Returns [`Decision::Hit`] when all artifacts are present, or a
-/// [`Decision::Miss`] listing every missing or non-file path.
-pub async fn verify_artifacts(artifacts: Vec<PathBuf>) -> Decision {
-    let mut reasons = Vec::new();
-
-    for path in artifacts {
-        match tokio::fs::metadata(&path).await {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => reasons.push(MissReason::ArtifactNotFile { path }),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                reasons.push(MissReason::ArtifactMissing { path });
-            }
-            Err(err) => reasons.push(MissReason::ArtifactInaccessible {
-                path,
-                error: err.to_string(),
-            }),
-        }
-    }
-
-    Decision::from_reasons(reasons)
-}
-
-/// Hash the contents of a file using SHA-1 and return the hex string.
-pub async fn hash_file(path: &Path) -> Result<GrammarHash> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .with_context(|| format!("Opening file for hashing: {}", path.display()))?;
-
-    let mut hasher = Sha1::new();
-
-    tokio::io::copy(&mut file, &mut HashWriter(&mut hasher))
-        .await
-        .with_context(|| format!("Reading file for hashing: {}", path.display()))?;
-
-    let result = hasher.finalize();
-    let mut hex = String::with_capacity(result.len() * 2);
-    for byte in result {
-        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    Ok(GrammarHash::from(hex))
-}
-
-struct HashWriter<'a>(&'a mut Sha1);
-
-impl AsyncWrite for HashWriter<'_> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        self.0.update(buf);
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
     }
 }
 

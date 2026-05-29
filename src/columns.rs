@@ -9,6 +9,13 @@ pub enum Layout {
     Plain,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DenseLayout {
+    rows: usize,
+    cols: usize,
+    widths: Vec<usize>,
+}
+
 /// Options controlling [`format`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options<'a> {
@@ -26,19 +33,28 @@ pub struct Options<'a> {
     pub line_ending: &'a str,
 }
 
-impl<'a> Options<'a> {
-    /// Options matching `git column --mode=always --indent=<indent> --width=<width>`.
-    #[must_use]
-    pub const fn git(indent: &'a str, width: usize) -> Self {
-        Self {
-            layout: Layout::Column,
-            dense: false,
-            width,
-            padding: 1,
-            indent,
-            line_ending: "\n",
+fn compute_column_widths(
+    item_widths: &[usize],
+    layout: Layout,
+    rows: usize,
+    cols: usize,
+) -> Vec<usize> {
+    let mut widths = vec![0; cols];
+
+    for (x, column_width) in widths.iter_mut().enumerate() {
+        for y in 0..rows {
+            let item_index = linear_index(layout, rows, cols, x, y);
+            if let Some(width) = item_widths.get(item_index) {
+                *column_width = (*column_width).max(*width);
+            }
         }
     }
+
+    widths
+}
+
+fn display_width(value: &str) -> usize {
+    console::measure_text_width(value)
 }
 
 /// Format a list of cells using the same row/column rules as `git column`.
@@ -97,13 +113,6 @@ pub fn format_git<S: AsRef<str>>(items: &[S], indent: &str, width: usize) -> Str
     format(items, Options::git(indent, width))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DenseLayout {
-    rows: usize,
-    cols: usize,
-    widths: Vec<usize>,
-}
-
 fn format_plain<S: AsRef<str>>(items: &[S], options: Options<'_>) -> String {
     let mut output = String::new();
 
@@ -157,6 +166,33 @@ fn format_table<S: AsRef<str>>(
     output
 }
 
+const fn is_last_cell_in_row(
+    layout: Layout,
+    item_index: usize,
+    item_count: usize,
+    rows: usize,
+    cols: usize,
+    x: usize,
+) -> bool {
+    match layout {
+        Layout::Column => item_index + rows >= item_count,
+        Layout::Row => x == cols - 1 || item_index == item_count - 1,
+        Layout::Plain => unreachable!(),
+    }
+}
+
+const fn linear_index(layout: Layout, rows: usize, cols: usize, x: usize, y: usize) -> usize {
+    match layout {
+        Layout::Column => x * rows + y,
+        Layout::Row => y * cols + x,
+        Layout::Plain => unreachable!(),
+    }
+}
+
+fn push_spaces(output: &mut String, count: usize) {
+    output.extend(std::iter::repeat_n(' ', count));
+}
+
 fn shrink_columns(
     item_widths: &[usize],
     options: Options<'_>,
@@ -195,55 +231,19 @@ fn shrink_columns(
     }
 }
 
-fn compute_column_widths(
-    item_widths: &[usize],
-    layout: Layout,
-    rows: usize,
-    cols: usize,
-) -> Vec<usize> {
-    let mut widths = vec![0; cols];
-
-    for (x, column_width) in widths.iter_mut().enumerate() {
-        for y in 0..rows {
-            let item_index = linear_index(layout, rows, cols, x, y);
-            if let Some(width) = item_widths.get(item_index) {
-                *column_width = (*column_width).max(*width);
-            }
+impl<'a> Options<'a> {
+    /// Options matching `git column --mode=always --indent=<indent> --width=<width>`.
+    #[must_use]
+    pub const fn git(indent: &'a str, width: usize) -> Self {
+        Self {
+            layout: Layout::Column,
+            dense: false,
+            width,
+            padding: 1,
+            indent,
+            line_ending: "\n",
         }
     }
-
-    widths
-}
-
-const fn linear_index(layout: Layout, rows: usize, cols: usize, x: usize, y: usize) -> usize {
-    match layout {
-        Layout::Column => x * rows + y,
-        Layout::Row => y * cols + x,
-        Layout::Plain => unreachable!(),
-    }
-}
-
-const fn is_last_cell_in_row(
-    layout: Layout,
-    item_index: usize,
-    item_count: usize,
-    rows: usize,
-    cols: usize,
-    x: usize,
-) -> bool {
-    match layout {
-        Layout::Column => item_index + rows >= item_count,
-        Layout::Row => x == cols - 1 || item_index == item_count - 1,
-        Layout::Plain => unreachable!(),
-    }
-}
-
-fn display_width(value: &str) -> usize {
-    console::measure_text_width(value)
-}
-
-fn push_spaces(output: &mut String, count: usize) {
-    output.extend(std::iter::repeat_n(' ', count));
 }
 
 #[cfg(test)]
