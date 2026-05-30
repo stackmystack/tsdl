@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt::Write,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -12,7 +13,7 @@ use tracing::debug;
 
 use crate::{build::BuildSpec, consts::TSDL_CACHE_FILE, error::TsdlError, TsdlResult};
 
-/// The build cache stored in  `<build-dir>/<TSDL_CACHE_FILE>`
+/// The build cache stored in  `build-dir/TSDL_CACHE_FILE`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
     pub parsers: BTreeMap<String, Entry>,
@@ -150,7 +151,12 @@ pub async fn hash_file(path: &Path) -> TsdlResult<String> {
     }
 
     let result = hasher.finalize();
-    Ok(result.iter().map(|b| format!("{:02x}", b)).collect())
+    Ok(result
+        .iter()
+        .fold(String::with_capacity(result.len() * 2), |mut acc, b| {
+            let _ = write!(acc, "{b:02x}");
+            acc
+        }))
 }
 
 #[cfg(test)]

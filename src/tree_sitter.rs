@@ -37,7 +37,7 @@ async fn cli(
     let tag = match tag {
         Tag::Exact { label, .. } => Cow::Borrowed(label),
         Tag::Ref(git_ref) => {
-            handle.msg(format!("Figuring out the exact tag for {tag}",));
+            handle.msg(format!("Figuring out the exact tag for {tag}"));
             let tree_sitter = PathBuf::new().join(build_dir).join("tree-sitter");
             git::clone(repo, &tree_sitter).await?;
             Cow::Owned(git::tag_for_ref(&tree_sitter, git_ref).await?)
@@ -50,7 +50,7 @@ async fn cli(
         .canon()?;
 
     if !res.exists() {
-        handle.msg(format!("Downloading {tag}",));
+        handle.msg(format!("Downloading {tag}"));
         let gz_basename = format!("{cli}.gz");
         let url = format!("{repo}/releases/download/{tag}/{gz_basename}");
         let gz = PathBuf::new().join(build_dir).join(gz_basename);
@@ -153,7 +153,7 @@ pub async fn prepare(
     progress.step(format!("Figuring out tag from ref {git_ref}"));
     let tag = tag(repo.as_str(), git_ref).await?;
 
-    progress.step(format!("Fetching {tag}",));
+    progress.step(format!("Fetching {tag}"));
     let cli = cli(
         build_dir,
         &progress,

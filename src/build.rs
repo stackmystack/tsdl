@@ -131,7 +131,7 @@ pub fn run(app: &mut App) -> TsdlResult<()> {
         }
 
         LockStatus::Unknown { pid, reason } => {
-            eprintln!("Could not verify lock owner PID {pid}: {reason}",);
+            eprintln!("Could not verify lock owner PID {pid}: {reason}");
             if prompt_user("Take over lock?", false)? {
                 lock.force_acquire()?
             } else {
