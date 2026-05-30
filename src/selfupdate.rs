@@ -8,18 +8,10 @@ use crate::{
     TsdlResult,
 };
 
-// ============================================================
-// Enums
-// ============================================================
-
 enum UpdateTarget {
     Exact(Version),
     Relative(VersionBump),
 }
-
-// ============================================================
-// Free functions
-// ============================================================
 
 fn download_and_replace(
     asset_name: &str,
@@ -73,10 +65,6 @@ fn parse_target(raw: &str) -> Result<UpdateTarget, String> {
     }
 }
 
-// ============================================================
-// Impl blocks
-// ============================================================
-
 pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
     let update_target = parse_target(target).map_err(TsdlError::message)?;
 
@@ -99,6 +87,36 @@ pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
     }
 
     let (release, version) = match update_target {
+        UpdateTarget::Exact(target_version) => {
+            let Some(found_release) = releases
+                .iter()
+                .find(|r| Version::parse(&r.version).is_ok_and(|v| v == target_version))
+            else {
+                return Err(TsdlError::message(format!(
+                    "version {target_version} not found in releases"
+                )));
+            };
+
+            if target_version == current_version {
+                handle.msg(format!("already at {target_version}"));
+                return Ok(());
+            }
+
+            let is_downgrade = target_version < current_version;
+            if is_downgrade
+                && !force
+                && !prompt_user(
+                    &format!("Downgrade from {current_version} to {target_version}?"),
+                    false,
+                )?
+            {
+                handle.msg("downgrade cancelled");
+                return Ok(());
+            }
+
+            (found_release.clone(), target_version)
+        }
+
         UpdateTarget::Relative(bump) => {
             let compatible: Vec<_> = releases
                 .iter()
@@ -139,37 +157,7 @@ pub fn run(app: &mut App, force: bool, target: &str) -> TsdlResult<()> {
             let latest_release = compatible[0];
             let latest_version = Version::parse(&latest_release.version)
                 .map_err(|e| TsdlError::context("Failed to parse latest version", e))?;
-            (latest_release, latest_version)
-        }
-
-        UpdateTarget::Exact(version) => {
-            let Some(release) = releases
-                .iter()
-                .find(|r| Version::parse(&r.version).is_ok_and(|v| v == version))
-            else {
-                return Err(TsdlError::message(format!(
-                    "version {version} not found in releases"
-                )));
-            };
-
-            if version == current_version {
-                handle.msg(format!("already at {version}"));
-                return Ok(());
-            }
-
-            let is_downgrade = version < current_version;
-            if is_downgrade
-                && !force
-                && !prompt_user(
-                    &format!("Downgrade from {current_version} to {version}?"),
-                    false,
-                )?
-            {
-                handle.msg("downgrade cancelled");
-                return Ok(());
-            }
-
-            (release, version)
+            (latest_release.clone(), latest_version)
         }
     };
 

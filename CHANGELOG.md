@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+- **selfupdate**: Add version selection via `patch`, `minor`, `major`, or explicit semver argument - ([...](...))
+  - `tsdl selfupdate` defaults to `minor` (same as before).
+  - `tsdl selfupdate patch` / `minor` / `major` filters compatible releases.
+  - `tsdl selfupdate 2.5.0` installs an exact version with downgrade confirmation.
+
 ## [2.0.0] - 2026-02-20
 
 This is a major rewrite, moving to a single-threaded async runtime, with actors.
