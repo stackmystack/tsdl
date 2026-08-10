@@ -8,7 +8,7 @@ build = "build.rs"
 description = "A downloader/builder of many tree-sitter parsers"
 edition = "2024"
 name = "tsdl"
-version = "2.0.0" # managed by release.sh
+version = "3.0.0" # managed by release.sh
 license = "MIT"
 
 [lib]

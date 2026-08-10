@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-10
+
 ### Features
 
 - **selfupdate**: Add version selection via `patch`, `minor`, `major`, or explicit semver argument - ([...](...))
