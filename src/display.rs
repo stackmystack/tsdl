@@ -320,8 +320,8 @@ fn count_item_state(
   failed: &mut usize,
   cancelled: &mut usize,
 ) {
-  use ItemState::*;
-  use SuccessOutcome::*;
+  use ItemState::{Cancelled, Done, Failed, InProgress, New};
+  use SuccessOutcome::{Built, Cached};
 
   match state {
     | Cancelled => *cancelled += 1,

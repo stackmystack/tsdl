@@ -26,7 +26,7 @@ fn main() -> ExitCode {
 }
 
 fn run(app: &app::App) -> Result<()> {
-  use app::ResolvedCommand::*;
+  use app::ResolvedCommand::{Build, ConfigCurrent, ConfigDefault, Selfupdate};
 
   match &app.command {
     | Build(build) => {

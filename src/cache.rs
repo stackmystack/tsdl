@@ -184,7 +184,7 @@ pub async fn verify_artifacts(artifacts: Vec<PathBuf>) -> Decision {
   let mut reasons = Vec::new();
 
   for path in artifacts {
-    use MissReason::*;
+    use MissReason::{ArtifactInaccessible, ArtifactMissing, ArtifactNotFile};
     use io::ErrorKind::NotFound;
 
     match tokio::fs::metadata(&path).await {

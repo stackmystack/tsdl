@@ -241,7 +241,9 @@ impl Error {
 
   /// Recursively format the error tree with per-level indentation.
   fn format(&self, w: &mut impl fmt::Write, indent: usize) -> fmt::Result {
-    use Error::*;
+    use Error::{
+      Build, Command, Config, Context, Interrupted, Io, Language, LanguageCollection, Message, Step,
+    };
 
     let prefix = " ".repeat(indent);
 

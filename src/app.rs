@@ -61,7 +61,10 @@ fn resolve_build(
 
 /// map cli args + matches into a [`resolvedcommand`] (build, config, or self-update).
 fn resolve_command(args: &args::Args, matches: &ArgMatches) -> Result<ResolvedCommand> {
-  use args::{Command::*, ConfigCommand::*};
+  use args::{
+    Command::{Build, Config, Selfupdate},
+    ConfigCommand::{Current, Default},
+  };
 
   match &args.command {
     | Build => resolve_build(&args.config, args::build_matches(matches), "`build`")
@@ -105,7 +108,7 @@ pub fn setup() -> Result<App> {
 impl ResolvedCommand {
   /// Return a logging policy based on the command type.
   fn logging_policy<'a>(&'a self, explicit: Option<&'a Path>) -> logging::Policy<'a> {
-    use logging::{Implicit::*, Policy};
+    use logging::{Implicit::BuildDir, Policy};
 
     let implicit = match self {
       | Self::Build(build) => BuildDir {

@@ -388,7 +388,7 @@ impl Target {
   /// Check whether `self` covers the requested target (e.g. All covers everything).
   #[must_use]
   pub fn covers(&self, other: Target) -> bool {
-    use Target::*;
+    use Target::{All, Native, Wasm};
 
     matches!((self, other), (All, _) | (Native, Native) | (Wasm, Wasm))
   }
