@@ -7,15 +7,15 @@ version_bare=${version#v}
 
 echo "Preparing $version..."
 
-# Lint and test first.
-just lint
-just test
-
 # Update Cargo.toml version.
 msg="# managed by release.sh"
 sed -E "s/^version = .*[[:space:]]+$msg$/version = \"${version_bare}\" $msg/" \
     Cargo.toml > Cargo.toml.tmp
 mv Cargo.toml.tmp Cargo.toml
+
+# Lint and test.
+just lint
+just test
 
 # Move [Unreleased] content under a new version heading in CHANGELOG.md.
 # If [Unreleased] is empty, no section is created.
