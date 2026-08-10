@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Release build are now optimized for size, gaining 50-60%.
+
 ## [3.0.0] - 2026-08-10
 
 ### Features

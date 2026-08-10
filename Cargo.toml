@@ -40,6 +40,12 @@ unlock-timeout = 10
 version = "0.26.5"
 repo = "https://github.com/tree-sitter/tree-sitter"
 
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+
 [dependencies]
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 better-panic = "0.3"
