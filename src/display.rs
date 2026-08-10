@@ -381,7 +381,7 @@ fn format_elapsed_duration(dur: Duration) -> String {
 pub fn mode_from_args(progress: &ProgressStyle, verbose: &Verbosity<InfoLevel>) -> Mode {
   let mut mode = match progress {
     | ProgressStyle::Auto => {
-      if atty::is(atty::Stream::Stdout) {
+      if should_use_fancy() {
         Mode::Fancy
       } else {
         Mode::Plain
@@ -468,6 +468,17 @@ fn push_summary_success(
       Style::default().fg(Color::DarkGray),
     ));
   }
+}
+
+#[must_use]
+pub fn should_use_fancy() -> bool {
+  use std::io::IsTerminal;
+
+  let is_tty = std::io::stdout().is_terminal();
+  let term_ok = std::env::var("TERM").map_or(true, |t| t != "dumb");
+  let not_ci = std::env::var("CI").is_err();
+
+  is_tty && term_ok && not_ci
 }
 
 /// Truncate a string with an ellipsis if it exceeds `max` characters.

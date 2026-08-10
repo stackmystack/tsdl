@@ -11,7 +11,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_log::AsTrace;
 use tracing_subscriber::{Layer, layer::SubscriberExt};
 
-use crate::{Error, Result, ResultExt, absolute_normalize, args, consts};
+use crate::{Error, Result, ResultExt, absolute_normalize, args, consts, display};
 
 // ============================================================
 // Enums
@@ -83,7 +83,7 @@ pub fn init(
   use args::LogColor::{Auto, No, Yes};
 
   let color = match log_color {
-    | Auto => atty::is(atty::Stream::Stdout),
+    | Auto => display::should_use_fancy(),
     | No => false,
     | Yes => true,
   };

@@ -42,7 +42,6 @@ repo = "https://github.com/tree-sitter/tree-sitter"
 
 [dependencies]
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
-atty = "0.2"
 better-panic = "0.3"
 clap = { version = "4.6", features = ["cargo", "derive", "env"] }
 clap-verbosity-flag = "3.0"
