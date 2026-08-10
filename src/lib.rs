@@ -147,16 +147,16 @@ fn normalize_components(path: &Path) -> PathBuf {
   let mut normalized = PathBuf::new();
 
   for component in path.components() {
-    use Component::*;
+    use Component::{CurDir, Normal, ParentDir, Prefix, RootDir};
 
     match component {
-      | Prefix(prefix) => normalized.push(prefix.as_os_str()),
-      | RootDir => normalized.push(component.as_os_str()),
       | CurDir => {}
+      | Normal(part) => normalized.push(part),
       | ParentDir => {
         normalized.pop();
       }
-      | Normal(part) => normalized.push(part),
+      | Prefix(prefix) => normalized.push(prefix.as_os_str()),
+      | RootDir => normalized.push(component.as_os_str()),
     }
   }
 

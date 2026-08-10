@@ -110,7 +110,7 @@ impl CacheActor {
   /// Process incoming cache messages until the channel closes.
   async fn run(mut self) {
     while let Some(msg) = self.rx.recv().await {
-      use CacheMessage::*;
+      use CacheMessage::{Get, HasCompatibleEntries, NeedsRebuild, Save, Update};
 
       match msg {
         | Get { name, tx } => {

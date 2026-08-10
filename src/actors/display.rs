@@ -195,7 +195,7 @@ fn draw_lines_in_viewport<B: Backend>(
 /// Transition an item state to `Done`. Returns an error if the state is not
 /// `InProgress(Some(_))`.
 fn finish_item(state: display::ItemState) -> Result<display::ItemState, String> {
-  use display::ItemState::*;
+  use display::ItemState::{Cancelled, Done, Failed, InProgress, New};
 
   match state {
     | Cancelled | Done(_) | Failed => {
@@ -245,7 +245,7 @@ fn invalid_finish(reason: &str, state: display::ItemState) -> Result<display::It
 
 /// Set the success outcome on an item state without changing its progress phase.
 fn mark_success(state: display::ItemState, outcome: display::SuccessOutcome) -> display::ItemState {
-  use display::ItemState::*;
+  use display::ItemState::{Cancelled, Done, Failed, InProgress, New};
 
   match state {
     | Cancelled | Done(_) | Failed => state,
@@ -255,8 +255,11 @@ fn mark_success(state: display::ItemState, outcome: display::SuccessOutcome) -> 
 
 /// Format a plain-text message for a grammar row.
 fn plain_grammar_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
-  use UpdateKind::*;
-  use display::{ItemState::*, SuccessOutcome};
+  use UpdateKind::{Cached, Cancel, Err, Fin, Msg, SetOutcomeBuilt, SetOutcomeCached, Step};
+  use display::{
+    ItemState::{Cancelled, Done, Failed, InProgress, New},
+    SuccessOutcome,
+  };
 
   match kind {
     | Cached => "cached".to_string(),
@@ -272,8 +275,8 @@ fn plain_grammar_message(kind: UpdateKind, state: display::ItemState, msg: &str)
 
 /// Format a plain-text message for a repo row.
 fn plain_repo_message(kind: UpdateKind, state: display::ItemState, msg: &str) -> String {
-  use UpdateKind::*;
-  use display::ItemState::*;
+  use UpdateKind::{Cached, Cancel, Err, Fin, Msg, SetOutcomeBuilt, SetOutcomeCached, Step};
+  use display::ItemState::{Cancelled, Done, Failed, InProgress, New};
 
   match kind {
     | Cached => "cached".to_string(),
@@ -316,7 +319,7 @@ fn split_lines_for_viewport(
 
 /// Transition `New` or `InProgress` into `InProgress(None)`.
 fn start_item(state: display::ItemState) -> display::ItemState {
-  use display::ItemState::*;
+  use display::ItemState::{Cancelled, Done, Failed, InProgress, New};
 
   match state {
     | Cancelled | Done(_) | Failed => state,
@@ -351,7 +354,10 @@ impl DisplayActor {
     &self,
     repo_id: display::ItemId,
   ) -> Option<display::SuccessOutcome> {
-    use display::{ItemState::*, SuccessOutcome::*};
+    use display::{
+      ItemState::{Cancelled, Done, Failed, InProgress, New},
+      SuccessOutcome::{Built, Cached},
+    };
 
     let mut saw_cached = false;
 
@@ -387,7 +393,10 @@ impl DisplayActor {
       .values()
       .filter(|g| g.repo_id == Some(repo_id))
     {
-      use display::{ItemState::*, SuccessOutcome::*};
+      use display::{
+        ItemState::{Cancelled, Done, Failed, InProgress, New},
+        SuccessOutcome::{Built, Cached},
+      };
 
       match grammar.state {
         | Cancelled | Failed => {}
@@ -472,12 +481,12 @@ impl DisplayActor {
 
   /// Apply a state update to a repo entry.
   fn apply_repo_update(repo: &mut display::RepoEntry, kind: UpdateKind, msg: Arc<str>) {
+    use display::ItemState::{Cancelled, Done, Failed};
+    use display::SuccessOutcome::{Built, Cached};
+
     if !repo.state.is_live() {
       return;
     }
-
-    use display::ItemState::*;
-    use display::SuccessOutcome::*;
 
     match kind {
       | UpdateKind::Cached => {
@@ -551,10 +560,10 @@ impl DisplayActor {
 
     let mut maybe_parent_id: Option<display::ItemId> = None;
     if let Some(grammar) = self.state.grammars.get_mut(&id) {
+      use UpdateKind::{Cached, Cancel, Err, Fin, SetOutcomeBuilt, SetOutcomeCached, Step};
+
       Self::apply_grammar_update(grammar, kind, msg);
       self.grid.mark_dirty(id);
-
-      use UpdateKind::*;
 
       if matches!(
         kind,
@@ -639,7 +648,7 @@ impl DisplayActor {
 
   /// Process a single message from the channel.
   fn handle_message(&mut self, msg: Message) {
-    use Message::*;
+    use Message::{RegisterGrammar, RegisterLanguage, RegisterReference, Shutdown, Update};
 
     match msg {
       | RegisterLanguage {
@@ -1023,8 +1032,8 @@ impl DisplayActor {
     self.print_plain_metadata();
 
     while let Some(msg) = self.rx.recv().await {
-      use Message::*;
-      use UpdateKind::*;
+      use Message::{RegisterGrammar, RegisterLanguage, RegisterReference, Shutdown, Update};
+      use UpdateKind::{Msg, SetOutcomeBuilt, SetOutcomeCached};
 
       match msg {
         | RegisterLanguage {

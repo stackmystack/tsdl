@@ -400,6 +400,8 @@ impl Lock {
     owner: &Owner,
     timeout: Duration,
   ) -> StdResult<Guard, TakeoverError> {
+    use Status::{Acquired, Cyclic, LockedBy, Unknown};
+
     info!(
       "Waiting up to {} for lock release from PID {}",
       crate::format_duration(timeout),
@@ -419,8 +421,6 @@ impl Lock {
           last_observation: Box::new(last_observation),
         });
       }
-
-      use Status::*;
 
       match self.try_acquire()? {
         | Acquired(guard) => return Ok(guard),

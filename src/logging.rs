@@ -80,7 +80,7 @@ pub fn init(
   log_color: args::LogColor,
   verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 ) -> Result<Session> {
-  use args::LogColor::*;
+  use args::LogColor::{Auto, No, Yes};
 
   let color = match log_color {
     | Auto => atty::is(atty::Stream::Stdout),

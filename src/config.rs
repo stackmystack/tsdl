@@ -550,7 +550,7 @@ fn resolve_bool(
 
 /// Run a config command (current or default).
 pub fn run(config_path: &Path, command: &args::ConfigCommand) -> Result<()> {
-  use args::ConfigCommand::*;
+  use args::ConfigCommand::{Current, Default};
 
   match command {
     | Current => print_current(&current(config_path, None)?),

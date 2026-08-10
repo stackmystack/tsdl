@@ -72,7 +72,7 @@ fn acquire_lock(lock: &lock::Lock, unlock_timeout: Duration) -> Result<lock::Gua
   // SIGTERM, or another process may replace it.  Each iteration re-checks
   // the lock status and presents the current owner to the user.
   loop {
-    use lock::Status::*;
+    use lock::Status::{Acquired, Cyclic, LockedBy, Unknown};
 
     match lock.try_acquire()? {
       | Acquired(guard) => return Ok(guard),
@@ -158,9 +158,9 @@ fn get_language_coords(
   language: &str,
   defined_parsers: Option<&BTreeMap<String, args::ParserConfig>>,
 ) -> Result<(Url, parser::Ref, Option<String>)> {
-  let config = defined_parsers.and_then(|parsers| parsers.get(language));
+  use args::ParserConfig::{Full, Ref};
 
-  use args::ParserConfig::*;
+  let config = defined_parsers.and_then(|parsers| parsers.get(language));
 
   match config {
     | None => Ok((default_repo(language)?, parser::Ref::head(), None)),
